@@ -4,7 +4,7 @@
 
 Remote and hybrid knowledge workers can spend long periods in deep work and fail to notice ordinary calendar notifications. The result is being late to accepted, high-stakes commitments or joining after the commitment has already started.
 
-The user does not need another calendar view. They need a reliable, context-aware interruption that is strong enough to break through focus, while respecting screen-sharing privacy, calendar changes, and explicit user intent.
+The user does not need another calendar view. They need a reliable, context-aware interruption that is strong enough to break through focus, while respecting calendar changes, explicit user intent, and the user's choice to keep reminders visible while sharing.
 
 ## Solution
 
@@ -12,7 +12,7 @@ Provide a personal macOS utility that protects accepted, timed Google Calendar e
 
 The product starts with a blocking Early Reminder, then presents a Strong Alert at the commitment’s start time. The Early Reminder stays in front of other app windows until the user clears it. The Strong Alert offers the most direct next action—Join when a Recognized Meeting Link exists, or Handled otherwise—and repeats at a configurable Repeat Interval until the user takes an explicit action or the commitment reaches its scheduled end.
 
-The experience is intentionally narrow: Google Calendar is the source of truth for calendar changes, the user chooses which calendars are protected, and the product never guesses which accepted event is important. Visual reminders remain private on displays being shared Full-Screen Sharing, while non-shared displays may still show them.
+The experience is intentionally narrow: Google Calendar is the source of truth for calendar changes, the user chooses which calendars are protected, and the product never guesses which accepted event is important. Visual reminders remain visible during Full-Screen Sharing, window sharing, and app sharing so sharing cannot silently suppress the protection experience.
 
 ## User Stories
 
@@ -38,7 +38,7 @@ The experience is intentionally narrow: Google Calendar is the source of truth f
 20. As a user, I want to Snooze the Early Reminder for five or ten minutes, so that I can briefly finish a safe stopping point.
 21. As a user, I want Snooze capped at the commitment’s start time, so that it cannot defer protection past the point when lateness begins.
 22. As a user, I want Snooze available only once per Occurrence, so that repeated deferral does not undermine the safety net.
-23. As a user, I want the Strong Alert to take over non-shared displays at the commitment’s start time, so that ordinary notification blindness cannot make me late.
+23. As a user, I want the Strong Alert to take over every available display at the commitment’s start time, so that ordinary notification blindness or screen sharing cannot make me late.
 24. As a user, I want the Strong Alert to feel calm but urgent, so that it is effective without feeling hostile or theatrical.
 25. As a user, I want the Strong Alert to show the commitment title, current timing state, relevant calendar or account, and the next action, so that I can act without searching.
 26. As a user, I want Join to be prominent when a Recognized Meeting Link exists, so that I can enter the commitment immediately.
@@ -57,15 +57,11 @@ The experience is intentionally narrow: Google Calendar is the source of truth f
 39. As a user, I want Pause to suppress active alerts and future protection immediately, so that I have an emergency escape hatch.
 40. As a user, I want Pause durations of one hour, end of day, or a custom expiration, so that every pause has a clear and temporary boundary.
 41. As a user, I want protection to resume immediately when Pause ends if a commitment is still ongoing, so that Pause defers protection rather than silently erasing it.
-42. As a user, I want visual reminders hidden from any display being shared through Full-Screen Sharing, so that private calendar information is not exposed to an audience.
-43. As a user, I want non-shared displays to remain eligible for visual reminders while another display is shared, so that privacy does not unnecessarily eliminate protection.
-44. As a user, I want window or app sharing to leave normal visual behavior in place, so that only a full-display privacy boundary changes the alert experience.
-45. As a user, I want an active alert to become private immediately if full-display sharing starts, without clearing the underlying protection decision, so that sharing cannot expose a commitment or permanently suppress it.
-46. As a user, I want an active alert to resume after sharing ends if the commitment is still ongoing, so that privacy handling does not turn into a missed commitment.
-47. As a user, I want no public signal by default when every display is shared, so that the app never exposes a reminder to viewers.
-48. As a user, I want to optionally enable a private audio cue for the all-displays-shared case, so that I can still receive a signal when I have a private listening channel.
-49. As a user, I want audio suppressed by default whenever any screen sharing is active, so that a visual privacy decision is not undermined by a public sound.
-50. As a user, I want the Strong Alert to cover every non-shared display, so that I cannot miss it simply because I was working on another screen.
+42. As a user, I want visual reminders to remain visible during Full-Screen Sharing, so that sharing cannot silently suppress the protection experience.
+43. As a user, I want visual reminders to remain visible during window or app sharing, so that every sharing mode has the same predictable alert behavior.
+44. As a user, I want an active alert to remain visible if sharing starts, without clearing the underlying protection decision, so that sharing cannot turn an active commitment into a missed reminder.
+45. As a user, I want the reminder to remain visible when every display is shared, so that the app keeps its punctuality promise in any sharing configuration.
+50. As a user, I want the Strong Alert to cover every available display, so that I cannot miss it simply because I was working on another screen or sharing a display.
 51. As a user, I want overlapping commitments represented as a Commitment Conflict, so that the app makes scheduling reality visible instead of silently choosing for me.
 52. As a user, I want the commitment needing attention now to become the single primary conflict, so that the next punctuality risk is clear.
 53. As a user, I want other overlapping commitments retained in a conflict list, so that I can understand the consequences of the primary choice.
@@ -103,7 +99,7 @@ The experience is intentionally narrow: Google Calendar is the source of truth f
 - Recurring events are handled by Occurrence. A rescheduled Occurrence receives a fresh protection decision.
 - Duplicate representations merge only when they share a Recognized Meeting Link and matching start time.
 - The Early Reminder is global, blocking, configurable from five to thirty minutes, and defaults to ten minutes. It stays in front of other app windows until the user clears it.
-- The Strong Alert is the start-time intervention. It takes over non-shared displays, is calm but urgent, overrides macOS Focus modes, and exposes the next action.
+- The Strong Alert is the start-time intervention. It takes over every available display, is calm but urgent, overrides macOS Focus modes, and exposes the next action.
 - The global Repeat Interval ranges from one to five minutes and defaults to one minute. Repetition remains enabled after start until Join, Handled, Dismiss, or scheduled end.
 - Join is prominent when a Recognized Meeting Link exists. A Join click ends protection for the reminder lifecycle; the product does not need to verify attendance.
 - Handled ends protection without changing Google Calendar. It is primary for linkless commitments and available as a secondary action for commitments handled elsewhere.
@@ -111,8 +107,7 @@ The experience is intentionally narrow: Google Calendar is the source of truth f
 - Snooze is available once per Occurrence before start, offers five- and ten-minute choices, and is capped at the start time.
 - Clearing or closing an alert surface without an explicit action does not change protection.
 - Pause is a global, temporary escape hatch with one-hour, end-of-day, and custom-expiration choices. It immediately suppresses active and future protection; protection resumes according to the current commitment state when it expires.
-- Full-Screen Sharing is a display privacy boundary. Visual reminders do not appear on shared displays, but may appear on non-shared displays. Window or app sharing does not activate that visual boundary.
-- If every display is shared, there is no public signal by default. An optional private audio cue may be enabled; audio is otherwise suppressed whenever any screen sharing is active.
+- Full-Screen Sharing, window sharing, and app sharing do not suppress or relocate visual reminders. The same reminder behavior applies regardless of sharing mode or how many displays are shared.
 - Commitment Conflicts have one primary commitment at a time. Same-start commitments remain equal choices until the user chooses, and all equal choices remain available at alert time if no choice was made.
 - Connected Account freshness is evaluated at a fifteen-minute boundary. Stale accounts show persistent, non-interruptive Coverage Warnings and do not create new reminders.
 - Already-known reminders may fire as Unverified Reminders after coverage becomes stale, preserving the normal action path with visible uncertainty.
@@ -131,7 +126,7 @@ The experience is intentionally narrow: Google Calendar is the source of truth f
 - Calendar fixtures should cover multiple Connected Accounts, selected and unselected Monitored Calendars, Accepted Events, declined or unaccepted events, all-day events, recurring Occurrences, reschedules, cancellations, changed links, duplicate representations, and same-start conflicts.
 - User-visible reminder tests should cover Early Reminder, Strong Alert, Unverified Reminder, Missed Commitment, and Coverage Warning states, including their permitted and forbidden transitions.
 - Action tests should verify Join, Handled, Dismiss, Restore Protection, Snooze, Acknowledge, Pause, and incidental surface clearing independently from the calendar source.
-- Display/privacy tests should verify multiple displays, Full-Screen Sharing, window or app sharing, sharing beginning during an active alert, all displays being shared, optional private audio, and Focus-mode override behavior.
+- Display tests should verify that reminders remain visible across multiple displays, Full-Screen Sharing, window sharing, app sharing, sharing beginning during an active alert, all displays being shared, and Focus-mode override behavior.
 - Lifecycle tests should cover login activation, account failure, stale-to-fresh recovery, lock/sleep recovery, app recovery, late acceptance, coverage activation near a commitment, and commitment end boundaries.
 - Conflict tests should verify primary selection, conflict lists, same-start equality, no-choice behavior, and transitions when one commitment is joined or handled.
 - Accessibility acceptance should verify that every external alert action is keyboard reachable, VoiceOver-readable, motion-safe, and sufficiently contrasted.
@@ -155,7 +150,7 @@ The experience is intentionally narrow: Google Calendar is the source of truth f
 ## Further Notes
 
 - The product principle is: the least disruptive intervention that still reliably gets the user to the commitment on time.
-- The MVP boundary and privacy behavior are captured in the existing ADRs for calendar-only scope, Full-Screen Sharing privacy, and calendar truth with occurrence-local decisions.
+- The MVP boundary and sharing behavior are captured in the ADRs for calendar-only scope, visible alerts during screen sharing, and calendar truth with occurrence-local decisions.
 - The primary success outcome is behavioral: the user is no longer late. The product should not depend on a metrics dashboard to communicate value.
 - Transition Support is a later, advisory capability that helps the user wrap up current work without inspecting or managing work context.
 - This spec is intended to be published as a GitHub issue with the `ready-for-agent` label once the repository has a Git remote or an explicit GitHub repository is supplied.

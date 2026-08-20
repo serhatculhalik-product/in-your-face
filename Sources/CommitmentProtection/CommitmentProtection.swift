@@ -76,7 +76,7 @@ public struct CalendarEvent: Codable, Equatable, Identifiable, Sendable {
 public protocol GoogleCalendarConnecting: Sendable {
     func connect() async throws -> GoogleCalendarConnection
     func restore(accountID: String) async throws -> GoogleCalendarConnection?
-    func disconnect(accountID: String)
+    func disconnect(accountID: String) throws
     func loadEvents(
         accountID: String,
         calendarID: String,
@@ -112,6 +112,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
     @Published public private(set) var connectionState: ConnectionState = .notConnected
     @Published public private(set) var isRestoringConnection = false
     @Published public private(set) var isProtectionConfirmed = false
+    @Published public private(set) var isBlockingAvailable = true
     @Published public private(set) var isTestAlertPresented = false
     @Published public private(set) var isLaunchAtLoginEnabled = false
     @Published public private(set) var upcomingCommitment: CalendarEvent?
@@ -189,6 +190,9 @@ public final class CommitmentProtectionFlow: ObservableObject {
         }
         guard !selectedCalendars.isEmpty else { return .noCoverage }
         guard isProtectionConfirmed else { return .noCoverage }
+        if earlyReminderCommitment != nil && !isBlockingAvailable {
+            return .unavailable
+        }
         if case .failed = connectionState {
             return .unavailable
         }
@@ -233,11 +237,17 @@ public final class CommitmentProtectionFlow: ObservableObject {
         }
     }
 
-    public func disconnectGoogleAccount() {
+    @discardableResult
+    public func disconnectGoogleAccount() -> Bool {
         invalidateRefreshes()
         let accountID = connectedAccount?.id ?? loadConfiguration()?.accountID
         if let accountID {
-            calendarConnector.disconnect(accountID: accountID)
+            do {
+                try calendarConnector.disconnect(accountID: accountID)
+            } catch {
+                connectionState = .failed(error.localizedDescription)
+                return false
+            }
         }
 
         connectedAccount = nil
@@ -250,6 +260,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
         clearedEarlyReminderEventStartDate = nil
         connectionState = .notConnected
         stateStore.removeObject(forKey: Self.stateKey)
+        return true
     }
 
     public func restoreSavedConnection() async {
@@ -307,6 +318,10 @@ public final class CommitmentProtectionFlow: ObservableObject {
         saveConfiguration()
         Task { await refreshCommitmentProtection() }
         return true
+    }
+
+    public func setBlockingAvailability(_ isAvailable: Bool) {
+        isBlockingAvailable = isAvailable
     }
 
     public func setEarlyReminderLeadTime(minutes: Int) {
@@ -409,7 +424,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
             earlyReminderCommitment = nextCommitment
         } catch {
             guard generation == refreshGeneration else { return }
-            clearProtectionState()
+            clearDisplayedProtectionState()
             connectionState = .failed(error.localizedDescription)
         }
     }
@@ -499,10 +514,14 @@ public final class CommitmentProtectionFlow: ObservableObject {
     }
 
     private func clearProtectionState() {
-        upcomingCommitment = nil
-        earlyReminderCommitment = nil
+        clearDisplayedProtectionState()
         clearedEarlyReminderEventID = nil
         clearedEarlyReminderEventStartDate = nil
+    }
+
+    private func clearDisplayedProtectionState() {
+        upcomingCommitment = nil
+        earlyReminderCommitment = nil
     }
 }
 

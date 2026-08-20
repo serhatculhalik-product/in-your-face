@@ -25,6 +25,7 @@ public enum GoogleCalendarConnectorError: Equatable, LocalizedError, Sendable {
     case profileRequestFailed(Int)
     case calendarRequestFailed(Int, String?)
     case credentialStorageFailed
+    case credentialRemovalFailed
     case malformedResponse
 
     public var errorDescription: String? {
@@ -55,6 +56,8 @@ public enum GoogleCalendarConnectorError: Equatable, LocalizedError, Sendable {
             return "The Google calendars could not be loaded."
         case .credentialStorageFailed:
             return "Google sign-in succeeded, but the account could not be saved securely."
+        case .credentialRemovalFailed:
+            return "Google sign-out could not remove the account securely. Try again."
         case .malformedResponse:
             return "Google returned data the app could not read."
         }
@@ -136,8 +139,8 @@ public struct GoogleCalendarConnector: GoogleCalendarConnecting, Sendable {
         return try await loadConnection(accessToken: token.accessToken)
     }
 
-    public func disconnect(accountID: String) {
-        GoogleRefreshTokenStore.remove(accountID: accountID)
+    public func disconnect(accountID: String) throws {
+        try GoogleRefreshTokenStore.remove(accountID: accountID)
     }
 
     public func loadEvents(
@@ -534,8 +537,11 @@ enum GoogleRefreshTokenStore {
         return refreshToken
     }
 
-    static func remove(accountID: String) {
-        _ = SecItemDelete(baseQuery(accountID: accountID) as CFDictionary)
+    static func remove(accountID: String) throws {
+        let status = SecItemDelete(baseQuery(accountID: accountID) as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw GoogleCalendarConnectorError.credentialRemovalFailed
+        }
         UserDefaults.standard.removeObject(forKey: legacyKey(accountID: accountID))
     }
 

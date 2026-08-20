@@ -1,6 +1,6 @@
 # On-Time Commitment Protection
 
-This context defines the language for a personal macOS app that helps knowledge workers arrive on time to accepted, high-stakes Google Calendar commitments. The product escalates reminders only as much as necessary while preserving user control and privacy.
+This context defines the language for a personal macOS app that helps knowledge workers arrive on time to accepted, high-stakes Google Calendar commitments. The product escalates reminders only as much as necessary while preserving user control and clear sharing behavior.
 
 ## Calendar language
 
@@ -63,7 +63,7 @@ A user-initiated Strong Alert shown during onboarding so the user can verify the
 _Avoid_: Demo notification, sample reminder
 
 **Strong Alert**:
-The urgent start-time intervention that takes over non-shared displays and presents the next action. It is not suppressed by macOS Focus modes; Full-Screen Sharing privacy and an explicit Pause still apply. Audio is optional and suppressed by default whenever any screen sharing is active. Closing its surface without an explicit action does not end protection; it returns on the Repeat Interval.
+The urgent start-time intervention that presents the next action across the user's available displays. It is not suppressed by macOS Focus modes or by Full-Screen Sharing, window sharing, or app sharing; an explicit Pause still applies. Closing its surface without an explicit action does not end protection; it returns on the Repeat Interval.
 _Avoid_: Notification, popup, takeover (as the canonical product term)
 
 **Overdue Commitment**:
@@ -105,7 +105,7 @@ _Avoid_: Dismiss (which applies before the occurrence ends), archive
 ## Privacy and control language
 
 **Full-Screen Sharing**:
-Sharing an entire display. Visual reminders never appear on a display being shared, while non-shared displays remain eligible to show them; sharing a window or app does not activate this display privacy behavior. If sharing begins while a Strong Alert is active, the alert becomes private on the shared display without being cleared and resumes there only if the commitment is still ongoing after sharing ends. If every display is shared, there is no public signal by default; an optional private audio cue may still be enabled.
+Sharing an entire display. Visual reminders remain visible during Full-Screen Sharing, window sharing, and app sharing; the app does not use sharing state to suppress or relocate a reminder. If sharing begins while a reminder is active, the reminder remains visible and protection continues.
 _Avoid_: Screen sharing (when the distinction matters)
 
 **Pause**:
