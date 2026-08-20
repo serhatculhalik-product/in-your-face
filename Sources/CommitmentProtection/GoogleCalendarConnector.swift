@@ -282,6 +282,7 @@ public struct GoogleCalendarConnector: GoogleCalendarConnecting, Sendable {
             URLQueryItem(name: "timeMax", value: formatter.string(from: endDate)),
             URLQueryItem(name: "singleEvents", value: "true"),
             URLQueryItem(name: "orderBy", value: "startTime"),
+            URLQueryItem(name: "conferenceDataVersion", value: "1"),
             URLQueryItem(name: "maxResults", value: "2500")
         ]
 
@@ -358,9 +359,27 @@ func decodeGoogleCalendarEvents(
             isAllDay: isAllDay,
             isAccepted: isAccepted,
             calendarID: calendarID,
-            accountID: accountID
+            accountID: accountID,
+            recognizedMeetingLink: recognizedMeetingLink(for: item)
         )
     }
+}
+
+private func recognizedMeetingLink(for item: GoogleEventItem) -> URL? {
+    let candidates = [item.hangoutLink]
+        .compactMap { $0.flatMap(URL.init(string:)) }
+        + (item.conferenceData?.entryPoints ?? [])
+            .compactMap { $0.uri.flatMap(URL.init(string:)) }
+
+    return candidates.first(where: isRecognizedMeetingLink)
+}
+
+private func isRecognizedMeetingLink(_ url: URL) -> Bool {
+    guard let host = url.host?.lowercased() else { return false }
+    return host == "meet.google.com" ||
+        host == "zoom.us" || host.hasSuffix(".zoom.us") ||
+        host == "teams.microsoft.com" || host.hasSuffix(".teams.microsoft.com") ||
+        host == "webex.com" || host.hasSuffix(".webex.com")
 }
 
 private struct TokenResponse: Decodable, Sendable {
@@ -445,10 +464,21 @@ private struct GoogleEventItem: Decodable, Sendable {
     let id: String?
     let summary: String?
     let status: String?
+    let hangoutLink: String?
     let start: GoogleEventDateTime
     let end: GoogleEventDateTime
     let attendees: [GoogleEventAttendee]?
     let organizer: GoogleEventAttendee?
+    let conferenceData: GoogleConferenceData?
+}
+
+private struct GoogleConferenceData: Decodable, Sendable {
+    let entryPoints: [GoogleConferenceEntryPoint]?
+}
+
+private struct GoogleConferenceEntryPoint: Decodable, Sendable {
+    let entryPointType: String?
+    let uri: String?
 }
 
 private struct GoogleEventDateTime: Decodable, Sendable {

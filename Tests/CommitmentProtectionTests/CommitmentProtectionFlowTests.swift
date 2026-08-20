@@ -145,6 +145,168 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertFalse(flow.isTestAlertPresented)
     }
 
+    func testStrongAlertUsesJoinAndEndsProtectionWithoutAttendanceVerification() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let meetingURL = URL(string: "https://meet.google.com/abc-defg-hij")!
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now,
+            endDate: now.addingTimeInterval(60 * 60),
+            timeZoneIdentifier: "Europe/Istanbul",
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id,
+            recognizedMeetingLink: meetingURL
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [commitment],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertEqual(flow.strongAlertCommitment, commitment)
+        XCTAssertTrue(flow.isStrongAlertPresented)
+        XCTAssertEqual(flow.strongAlertPrimaryActionTitle, "Join")
+        XCTAssertEqual(flow.joinStrongAlert(), meetingURL)
+        XCTAssertNil(flow.strongAlertCommitment)
+        XCTAssertFalse(flow.isStrongAlertPresented)
+    }
+
+    func testStrongAlertUsesHandledWhenNoRecognizedMeetingLink() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "On-site review",
+            startDate: now,
+            endDate: now.addingTimeInterval(60 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [commitment],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertEqual(flow.strongAlertPrimaryActionTitle, "Handled")
+        flow.handleStrongAlert()
+        XCTAssertNil(flow.strongAlertCommitment)
+        XCTAssertFalse(flow.isStrongAlertPresented)
+    }
+
+    func testStrongAlertTimingAndContextDescribeTheActiveCommitment() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(-2 * 60),
+            endDate: now.addingTimeInterval(30 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [commitment],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertEqual(
+            flow.strongAlertTimingText(for: commitment, at: now),
+            "Overdue · started 2 min ago"
+        )
+        XCTAssertEqual(flow.strongAlertContextText(for: commitment), "Work · alex@example.com")
+    }
+
+    func testOverdueStrongAlertRepeatsAfterSurfaceCloseUntilCommitmentEnds() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(-5 * 60),
+            endDate: now.addingTimeInterval(5 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [commitment],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+        XCTAssertTrue(flow.isStrongAlertPresented)
+
+        flow.closeStrongAlertSurface(at: now.addingTimeInterval(1))
+        XCTAssertFalse(flow.isStrongAlertPresented)
+
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(60))
+        XCTAssertFalse(flow.isStrongAlertPresented)
+
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(61))
+        XCTAssertTrue(flow.isStrongAlertPresented)
+
+        flow.closeStrongAlertSurface(at: now.addingTimeInterval(62))
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(5 * 60))
+        XCTAssertNil(flow.strongAlertCommitment)
+        XCTAssertFalse(flow.isStrongAlertPresented)
+    }
+
+    func testRepeatIntervalDefaultsToOneMinuteAndPersistsWithinConfiguration() {
+        let suiteName = "CommitmentProtectionFlowTests.repeat.(UUID().uuidString)"
+        let stateStore = UserDefaults(suiteName: suiteName)!
+        defer { stateStore.removePersistentDomain(forName: suiteName) }
+
+        let flow = CommitmentProtectionFlow(
+            calendarConnector: TestGoogleCalendarConnector(),
+            launchAtLogin: TestLaunchAtLoginController(),
+            stateStore: stateStore
+        )
+
+        XCTAssertEqual(flow.strongAlertRepeatIntervalMinutes, 1)
+        flow.setStrongAlertRepeatInterval(minutes: 5)
+
+        let relaunchedFlow = CommitmentProtectionFlow(
+            calendarConnector: TestGoogleCalendarConnector(),
+            launchAtLogin: TestLaunchAtLoginController(),
+            stateStore: stateStore
+        )
+        XCTAssertEqual(relaunchedFlow.strongAlertRepeatIntervalMinutes, 5)
+
+        flow.setStrongAlertRepeatInterval(minutes: 0)
+        XCTAssertEqual(flow.strongAlertRepeatIntervalMinutes, 1)
+        flow.setStrongAlertRepeatInterval(minutes: 10)
+        XCTAssertEqual(flow.strongAlertRepeatIntervalMinutes, 5)
+    }
+
     func testGoogleConnectionRequiresOAuthConfiguration() async {
         let connector = GoogleCalendarConnector(
             configuration: GoogleCalendarOAuthConfiguration(clientID: "")
@@ -681,6 +843,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
                 {
                     "id": "accepted-event",
                     "summary": "Accepted review",
+                    "hangoutLink": "https://meet.google.com/abc-defg-hij",
                     "start": {
                         "dateTime": "2026-08-20T10:00:00+03:00",
                         "timeZone": "Europe/Istanbul"
@@ -722,6 +885,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertEqual(events[0].title, "Accepted review")
         XCTAssertTrue(events[0].isAccepted)
         XCTAssertFalse(events[0].isAllDay)
+        XCTAssertEqual(events[0].recognizedMeetingLink, URL(string: "https://meet.google.com/abc-defg-hij"))
         XCTAssertTrue(events[1].isAllDay)
         XCTAssertTrue(events[1].isAccepted)
         XCTAssertFalse(events[2].isAccepted)
@@ -746,6 +910,16 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         for _ in 0..<10 {
             await Task.yield()
         }
+    }
+
+    private func activateProtection(
+        for flow: CommitmentProtectionFlow,
+        calendarID: String
+    ) async {
+        await flow.connectGoogleAccount()
+        flow.setCalendarSelected(true, calendarID: calendarID)
+        XCTAssertTrue(flow.confirmProtection())
+        await settleScheduledRefreshes()
     }
 }
 

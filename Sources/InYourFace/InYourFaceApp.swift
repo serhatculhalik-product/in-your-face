@@ -48,6 +48,13 @@ struct InYourFaceApp: App {
         }
         .windowResizability(.contentSize)
 
+        Window("Strong Alert", id: "strong-alert") {
+            StrongAlertWindowView()
+                .environmentObject(flow)
+        }
+        .windowStyle(.hiddenTitleBar)
+        .windowResizability(.contentSize)
+
         MenuBarExtra {
             MenuBarContent()
                 .environmentObject(flow)
@@ -105,6 +112,7 @@ private struct SetupView: View {
                 if flow.connectedAccount != nil {
                     CalendarSelectionCard()
                     EarlyReminderSettingsCard()
+                    StrongAlertSettingsCard()
                     TestAlertCard()
                 }
 
@@ -120,6 +128,13 @@ private struct SetupView: View {
                 openWindow(id: "early-reminder")
             } else {
                 EarlyReminderWindowController.shared.close()
+            }
+        }
+        .onChange(of: flow.isStrongAlertPresented) { _, isPresented in
+            if isPresented {
+                openWindow(id: "strong-alert")
+            } else {
+                StrongAlertWindowController.shared.close()
             }
         }
         .transaction { transaction in
@@ -314,6 +329,34 @@ private struct EarlyReminderSettingsCard: View {
     }
 }
 
+private struct StrongAlertSettingsCard: View {
+    @EnvironmentObject private var flow: CommitmentProtectionFlow
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Strong Alert")
+                .font(.headline)
+            Text("After a commitment starts, repeat the alert until you Join, choose Handled, or it ends.")
+                .foregroundStyle(.secondary)
+
+            Stepper(
+                value: Binding(
+                    get: { flow.strongAlertRepeatIntervalMinutes },
+                    set: { flow.setStrongAlertRepeatInterval(minutes: $0) }
+                ),
+                in: 1...5
+            ) {
+                Text("Repeat every \(flow.strongAlertRepeatIntervalMinutes) minute\(flow.strongAlertRepeatIntervalMinutes == 1 ? "" : "s")")
+            }
+            .accessibilityLabel("Strong Alert repeat interval")
+            .accessibilityValue("\(flow.strongAlertRepeatIntervalMinutes) minutes")
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 16))
+    }
+}
+
 private struct TestAlertCard: View {
     @EnvironmentObject private var flow: CommitmentProtectionFlow
     @Environment(\.openWindow) private var openWindow
@@ -497,6 +540,77 @@ private struct EarlyReminderView: View {
         .onChange(of: windowController.isGlobalInteractionBarrierAvailable) { _, isAvailable in
             flow.setBlockingAvailability(isAvailable)
         }
+    }
+}
+
+private struct StrongAlertWindowView: View {
+    @EnvironmentObject private var flow: CommitmentProtectionFlow
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        StrongAlertContentView(flow: flow)
+            .accessibilityAddTraits(.isModal)
+            .transaction { transaction in
+                if reduceMotion {
+                    transaction.animation = nil
+                }
+            }
+            .onAppear {
+                presentStrongAlertSurface()
+            }
+            .onChange(of: flow.isStrongAlertPresented) { _, isPresented in
+                if isPresented {
+                    presentStrongAlertSurface()
+                } else {
+                    StrongAlertWindowController.shared.close()
+                }
+            }
+    }
+
+    private func presentStrongAlertSurface() {
+        StrongAlertWindowController.shared.present(
+            content: AnyView(StrongAlertContentView(flow: flow)),
+            surfaceDidClose: {
+                flow.closeStrongAlertSurface()
+            }
+        )
+    }
+}
+
+private struct StrongAlertContentView: View {
+    @ObservedObject var flow: CommitmentProtectionFlow
+
+    var body: some View {
+        Group {
+            if let commitment = flow.strongAlertCommitment {
+                TimelineView(.periodic(from: Date(), by: 1)) { context in
+                    StrongAlertView(
+                        title: commitment.title,
+                        timing: flow.strongAlertTimingText(for: commitment, at: context.date),
+                        detail: flow.strongAlertContextText(for: commitment),
+                        primaryActionTitle: commitment.recognizedMeetingLink == nil ? "Handled" : "Join",
+                        primaryAction: {
+                            if commitment.recognizedMeetingLink == nil {
+                                flow.handleStrongAlert()
+                            } else if let meetingLink = flow.joinStrongAlert() {
+                                NSWorkspace.shared.open(meetingLink)
+                            }
+                            StrongAlertWindowController.shared.close()
+                        },
+                        secondaryActionTitle: commitment.recognizedMeetingLink == nil ? nil : "Handled",
+                        secondaryAction: {
+                            flow.handleStrongAlert()
+                            StrongAlertWindowController.shared.close()
+                        }
+                    )
+                }
+            } else {
+                Text("No commitment needs attention.")
+                    .foregroundStyle(.secondary)
+                    .padding(32)
+            }
+        }
+        .frame(minWidth: 460, minHeight: 330)
     }
 }
 
@@ -1215,6 +1329,8 @@ private struct StrongAlertView: View {
     let detail: String
     let primaryActionTitle: String
     let primaryAction: () -> Void
+    var secondaryActionTitle: String? = nil
+    var secondaryAction: (() -> Void)? = nil
 
     var body: some View {
         VStack(spacing: 20) {
@@ -1232,9 +1348,16 @@ private struct StrongAlertView: View {
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
                 .accessibilityLabel(primaryActionTitle)
+            if let secondaryActionTitle, let secondaryAction {
+                Button(secondaryActionTitle, action: secondaryAction)
+                    .keyboardShortcut("h")
+                    .buttonStyle(.bordered)
+                    .accessibilityLabel(secondaryActionTitle)
+            }
         }
         .padding(32)
         .frame(minWidth: 460)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
     }
 }
 
@@ -1320,6 +1443,13 @@ private struct MenuBarLabel: View {
                 openWindow(id: "early-reminder")
             } else {
                 EarlyReminderWindowController.shared.close()
+            }
+        }
+        .onChange(of: flow.isStrongAlertPresented) { _, isPresented in
+            if isPresented {
+                openWindow(id: "strong-alert")
+            } else {
+                StrongAlertWindowController.shared.close()
             }
         }
     }

@@ -45,6 +45,7 @@ public struct CalendarEvent: Codable, Equatable, Identifiable, Sendable {
     public let isAccepted: Bool
     public let calendarID: String
     public let accountID: String
+    public let recognizedMeetingLink: URL?
 
     public init(
         id: String,
@@ -55,7 +56,8 @@ public struct CalendarEvent: Codable, Equatable, Identifiable, Sendable {
         isAllDay: Bool,
         isAccepted: Bool,
         calendarID: String,
-        accountID: String
+        accountID: String,
+        recognizedMeetingLink: URL? = nil
     ) {
         self.id = id
         self.title = title
@@ -66,6 +68,7 @@ public struct CalendarEvent: Codable, Equatable, Identifiable, Sendable {
         self.isAccepted = isAccepted
         self.calendarID = calendarID
         self.accountID = accountID
+        self.recognizedMeetingLink = recognizedMeetingLink
     }
 
     public var isEligibleForProtection: Bool {
@@ -114,10 +117,13 @@ public final class CommitmentProtectionFlow: ObservableObject {
     @Published public private(set) var isProtectionConfirmed = false
     @Published public private(set) var isBlockingAvailable = true
     @Published public private(set) var isTestAlertPresented = false
+    @Published public private(set) var isStrongAlertPresented = false
     @Published public private(set) var isLaunchAtLoginEnabled = false
     @Published public private(set) var upcomingCommitment: CalendarEvent?
     @Published public private(set) var earlyReminderCommitment: CalendarEvent?
+    @Published public private(set) var strongAlertCommitment: CalendarEvent?
     @Published public private(set) var earlyReminderLeadTimeMinutes: Int
+    @Published public private(set) var strongAlertRepeatIntervalMinutes: Int
 
     private let calendarConnector: any GoogleCalendarConnecting
     private let launchAtLogin: any LaunchAtLoginControlling
@@ -125,8 +131,14 @@ public final class CommitmentProtectionFlow: ObservableObject {
     private let now: () -> Date
     private static let stateKey = "commitment-protection.configuration"
     private static let earlyReminderLeadTimeKey = "commitment-protection.early-reminder-lead-time"
+    private static let strongAlertRepeatIntervalKey = "commitment-protection.strong-alert-repeat-interval"
     private var clearedEarlyReminderEventID: String?
     private var clearedEarlyReminderEventStartDate: Date?
+    private var strongAlertEventID: String?
+    private var strongAlertEventStartDate: Date?
+    private var strongAlertNextPresentationDate: Date?
+    private var handledStrongAlertEventID: String?
+    private var handledStrongAlertEventStartDate: Date?
     private var monitoringTask: Task<Void, Never>?
     private var refreshGeneration = 0
 
@@ -169,6 +181,10 @@ public final class CommitmentProtectionFlow: ObservableObject {
         earlyReminderLeadTimeMinutes = savedLeadTime == 0
             ? 10
             : Self.clampedEarlyReminderLeadTime(savedLeadTime)
+        let savedRepeatInterval = stateStore.integer(forKey: Self.strongAlertRepeatIntervalKey)
+        strongAlertRepeatIntervalMinutes = savedRepeatInterval == 0
+            ? 1
+            : Self.clampedStrongAlertRepeatInterval(savedRepeatInterval)
 
         do {
             try launchAtLogin.enable()
@@ -256,8 +272,11 @@ public final class CommitmentProtectionFlow: ObservableObject {
         isProtectionConfirmed = false
         upcomingCommitment = nil
         earlyReminderCommitment = nil
+        clearStrongAlertState()
         clearedEarlyReminderEventID = nil
         clearedEarlyReminderEventStartDate = nil
+        handledStrongAlertEventID = nil
+        handledStrongAlertEventStartDate = nil
         connectionState = .notConnected
         stateStore.removeObject(forKey: Self.stateKey)
         return true
@@ -324,6 +343,19 @@ public final class CommitmentProtectionFlow: ObservableObject {
         isBlockingAvailable = isAvailable
     }
 
+    public func setStrongAlertRepeatInterval(minutes: Int) {
+        let clampedMinutes = Self.clampedStrongAlertRepeatInterval(minutes)
+        guard clampedMinutes != strongAlertRepeatIntervalMinutes else { return }
+
+        strongAlertRepeatIntervalMinutes = clampedMinutes
+        stateStore.set(clampedMinutes, forKey: Self.strongAlertRepeatIntervalKey)
+        isProtectionConfirmed = false
+        invalidateRefreshes()
+        clearProtectionState()
+        saveConfiguration()
+        Task { await refreshCommitmentProtection() }
+    }
+
     public func setEarlyReminderLeadTime(minutes: Int) {
         let clampedMinutes = Self.clampedEarlyReminderLeadTime(minutes)
         guard clampedMinutes != earlyReminderLeadTimeMinutes else { return }
@@ -345,7 +377,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
                 guard let self else { return }
                 await self.refreshCommitmentProtection()
                 do {
-                    try await Task.sleep(nanoseconds: 30_000_000_000)
+                    try await Task.sleep(nanoseconds: self.monitoringSleepIntervalNanoseconds())
                 } catch {
                     return
                 }
@@ -387,14 +419,14 @@ public final class CommitmentProtectionFlow: ObservableObject {
             guard generation == refreshGeneration else { return }
             connectionState = .connected
 
-            let nextCommitment = events
+            let eligibleEvents = events
                 .filter { event in
                     guard event.isEligibleForProtection,
-                          let startDate = event.startDate,
+                          event.startDate != nil,
                           let endDate = event.endDate else {
                         return false
                     }
-                    return startDate > currentDate && endDate > currentDate
+                    return endDate > currentDate
                 }
                 .sorted { left, right in
                     guard let leftStart = left.startDate,
@@ -403,13 +435,26 @@ public final class CommitmentProtectionFlow: ObservableObject {
                     }
                     return leftStart == rightStart ? left.id < right.id : leftStart < rightStart
                 }
-                .first
+            let nextCommitment = eligibleEvents.first(where: { event in
+                guard let startDate = event.startDate else { return false }
+                return startDate > currentDate
+            })
+            let activeCommitment = eligibleEvents.first(where: { event in
+                guard let startDate = event.startDate else { return false }
+                return startDate <= currentDate
+            })
 
             upcomingCommitment = nextCommitment
             if clearedEarlyReminderEventID != nextCommitment?.id ||
                 clearedEarlyReminderEventStartDate != nextCommitment?.startDate {
                 clearedEarlyReminderEventID = nil
                 clearedEarlyReminderEventStartDate = nil
+            }
+
+            if let activeCommitment {
+                updateStrongAlert(for: activeCommitment, at: currentDate)
+            } else {
+                clearStrongAlertState()
             }
 
             guard let nextCommitment,
@@ -435,6 +480,60 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
     public func dismissTestAlert() {
         isTestAlertPresented = false
+    }
+
+    public var strongAlertPrimaryActionTitle: String {
+        strongAlertCommitment?.recognizedMeetingLink == nil ? "Handled" : "Join"
+    }
+
+    @discardableResult
+    public func joinStrongAlert() -> URL? {
+        guard let meetingLink = strongAlertCommitment?.recognizedMeetingLink else { return nil }
+        handleStrongAlert()
+        return meetingLink
+    }
+
+    public func handleStrongAlert() {
+        guard let commitment = strongAlertCommitment else { return }
+        handledStrongAlertEventID = commitment.id
+        handledStrongAlertEventStartDate = commitment.startDate
+        clearStrongAlertState()
+    }
+
+    public func closeStrongAlertSurface(at date: Date = Date()) {
+        guard isStrongAlertPresented, strongAlertCommitment != nil else { return }
+        isStrongAlertPresented = false
+        strongAlertNextPresentationDate = date.addingTimeInterval(
+            Double(strongAlertRepeatIntervalMinutes) * 60
+        )
+    }
+
+    public func strongAlertTimingText(for commitment: CalendarEvent, at date: Date) -> String {
+        guard let startDate = commitment.startDate,
+              let endDate = commitment.endDate else {
+            return "Timing unavailable"
+        }
+        guard date >= startDate else {
+            return countdownText(for: commitment, at: date)
+        }
+        guard date < endDate else { return "Commitment ended" }
+
+        let elapsedMinutes = Int(date.timeIntervalSince(startDate) / 60)
+        if elapsedMinutes < 1 {
+            return "Starting now"
+        }
+        return elapsedMinutes == 1
+            ? "Overdue · started 1 min ago"
+            : "Overdue · started \(elapsedMinutes) min ago"
+    }
+
+    public func strongAlertContextText(for commitment: CalendarEvent) -> String {
+        let calendarName = availableCalendars.first(where: { $0.id == commitment.calendarID })?.name
+            ?? commitment.calendarID
+        let accountName = connectedAccount?.id == commitment.accountID
+            ? connectedAccount?.email ?? commitment.accountID
+            : commitment.accountID
+        return "\(calendarName) · \(accountName)"
     }
 
     public func clearEarlyReminder() {
@@ -487,6 +586,51 @@ public final class CommitmentProtectionFlow: ObservableObject {
         min(max(minutes, 5), 30)
     }
 
+    private static func clampedStrongAlertRepeatInterval(_ minutes: Int) -> Int {
+        min(max(minutes, 1), 5)
+    }
+
+    private func updateStrongAlert(for commitment: CalendarEvent, at date: Date) {
+        if handledStrongAlertEventID == commitment.id,
+           handledStrongAlertEventStartDate == commitment.startDate {
+            clearStrongAlertState()
+            return
+        }
+
+        if strongAlertEventID != commitment.id ||
+            strongAlertEventStartDate != commitment.startDate {
+            strongAlertEventID = commitment.id
+            strongAlertEventStartDate = commitment.startDate
+            strongAlertNextPresentationDate = date
+            isStrongAlertPresented = false
+        }
+
+        strongAlertCommitment = commitment
+        guard let nextPresentationDate = strongAlertNextPresentationDate,
+              date >= nextPresentationDate else {
+            return
+        }
+
+        isStrongAlertPresented = true
+        strongAlertNextPresentationDate = date.addingTimeInterval(
+            Double(strongAlertRepeatIntervalMinutes) * 60
+        )
+    }
+
+    private func monitoringSleepIntervalNanoseconds() -> UInt64 {
+        let currentDate = now()
+        var interval = 30.0
+        if let startDate = upcomingCommitment?.startDate,
+           startDate > currentDate {
+            interval = min(interval, startDate.timeIntervalSince(currentDate))
+        }
+        if let nextPresentationDate = strongAlertNextPresentationDate,
+           nextPresentationDate > currentDate {
+            interval = min(interval, nextPresentationDate.timeIntervalSince(currentDate))
+        }
+        return UInt64(max(interval, 0.25) * 1_000_000_000)
+    }
+
     private func loadConfiguration() -> SavedConfiguration? {
         guard let data = stateStore.data(forKey: Self.stateKey) else { return nil }
         return try? JSONDecoder().decode(SavedConfiguration.self, from: data)
@@ -517,11 +661,22 @@ public final class CommitmentProtectionFlow: ObservableObject {
         clearDisplayedProtectionState()
         clearedEarlyReminderEventID = nil
         clearedEarlyReminderEventStartDate = nil
+        handledStrongAlertEventID = nil
+        handledStrongAlertEventStartDate = nil
     }
 
     private func clearDisplayedProtectionState() {
         upcomingCommitment = nil
         earlyReminderCommitment = nil
+        clearStrongAlertState()
+    }
+
+    private func clearStrongAlertState() {
+        isStrongAlertPresented = false
+        strongAlertCommitment = nil
+        strongAlertEventID = nil
+        strongAlertEventStartDate = nil
+        strongAlertNextPresentationDate = nil
     }
 }
 
