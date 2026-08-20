@@ -188,33 +188,33 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         }
     }
 
-    func testRefreshTokenStoreDoesNotWriteToUserDefaults() throws {
+    func testRefreshTokenStorePersistsInUserDefaults() {
         let accountID = "test-account-\(UUID().uuidString)"
         let defaultsKey = "google.refreshToken.\(accountID)"
         let refreshToken = "refresh-token-\(UUID().uuidString)"
         defer {
-            try? GoogleRefreshTokenStore.remove(accountID: accountID)
+            GoogleRefreshTokenStore.remove(accountID: accountID)
             UserDefaults.standard.removeObject(forKey: defaultsKey)
         }
 
-        try GoogleRefreshTokenStore.save(refreshToken: refreshToken, accountID: accountID)
+        GoogleRefreshTokenStore.save(refreshToken: refreshToken, accountID: accountID)
 
-        XCTAssertNil(UserDefaults.standard.string(forKey: defaultsKey))
-        XCTAssertEqual(try GoogleRefreshTokenStore.load(accountID: accountID), refreshToken)
+        XCTAssertEqual(UserDefaults.standard.string(forKey: defaultsKey), refreshToken)
+        XCTAssertEqual(GoogleRefreshTokenStore.load(accountID: accountID), refreshToken)
     }
 
-    func testRefreshTokenStoreMigratesLegacyUserDefaultsToken() throws {
+    func testRefreshTokenStoreLoadsExistingUserDefaultsToken() {
         let accountID = "legacy-account-\(UUID().uuidString)"
         let defaultsKey = "google.refreshToken.\(accountID)"
         let refreshToken = "legacy-refresh-token-\(UUID().uuidString)"
         defer {
-            try? GoogleRefreshTokenStore.remove(accountID: accountID)
+            GoogleRefreshTokenStore.remove(accountID: accountID)
             UserDefaults.standard.removeObject(forKey: defaultsKey)
         }
         UserDefaults.standard.set(refreshToken, forKey: defaultsKey)
 
-        XCTAssertEqual(try GoogleRefreshTokenStore.load(accountID: accountID), refreshToken)
-        XCTAssertNil(UserDefaults.standard.string(forKey: defaultsKey))
+        XCTAssertEqual(GoogleRefreshTokenStore.load(accountID: accountID), refreshToken)
+        XCTAssertEqual(UserDefaults.standard.string(forKey: defaultsKey), refreshToken)
     }
 
     func testSelectingCalendarRequiresConfirmationBeforeProtectionActivates() async {

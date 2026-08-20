@@ -2,7 +2,6 @@ import AppKit
 import CryptoKit
 import Foundation
 import Network
-import Security
 
 public struct GoogleCalendarOAuthConfiguration: Sendable {
     public let clientID: String
@@ -24,8 +23,6 @@ public enum GoogleCalendarConnectorError: Equatable, LocalizedError, Sendable {
     case missingRefreshToken
     case profileRequestFailed(Int)
     case calendarRequestFailed(Int, String?)
-    case credentialStorageFailed
-    case credentialRemovalFailed
     case malformedResponse
 
     public var errorDescription: String? {
@@ -54,10 +51,6 @@ public enum GoogleCalendarConnectorError: Equatable, LocalizedError, Sendable {
                 return "The Google calendars could not be loaded (\(reason))."
             }
             return "The Google calendars could not be loaded."
-        case .credentialStorageFailed:
-            return "Google sign-in succeeded, but the account could not be saved securely."
-        case .credentialRemovalFailed:
-            return "Google sign-out could not remove the account securely. Try again."
         case .malformedResponse:
             return "Google returned data the app could not read."
         }
@@ -78,8 +71,8 @@ public struct GoogleCalendarConnector: GoogleCalendarConnecting, Sendable {
 
         let callbackServer = try OAuthCallbackServer()
         let redirectURI = try await callbackServer.start()
-        let codeVerifier = try makeCodeVerifier()
-        let state = try makeRandomString(byteCount: 32)
+        let codeVerifier = makeCodeVerifier()
+        let state = makeRandomString(byteCount: 32)
         let authorizationURL = try makeAuthorizationURL(
             redirectURI: redirectURI,
             codeVerifier: codeVerifier,
@@ -126,12 +119,12 @@ public struct GoogleCalendarConnector: GoogleCalendarConnecting, Sendable {
         }
 
         let connection = try await loadConnection(accessToken: token.accessToken)
-        try GoogleRefreshTokenStore.save(refreshToken: refreshToken, accountID: connection.account.id)
+        GoogleRefreshTokenStore.save(refreshToken: refreshToken, accountID: connection.account.id)
         return connection
     }
 
     public func restore(accountID: String) async throws -> GoogleCalendarConnection? {
-        guard let refreshToken = try GoogleRefreshTokenStore.load(accountID: accountID) else {
+        guard let refreshToken = GoogleRefreshTokenStore.load(accountID: accountID) else {
             return nil
         }
 
@@ -140,7 +133,7 @@ public struct GoogleCalendarConnector: GoogleCalendarConnecting, Sendable {
     }
 
     public func disconnect(accountID: String) throws {
-        try GoogleRefreshTokenStore.remove(accountID: accountID)
+        GoogleRefreshTokenStore.remove(accountID: accountID)
     }
 
     public func loadEvents(
@@ -149,7 +142,7 @@ public struct GoogleCalendarConnector: GoogleCalendarConnecting, Sendable {
         from startDate: Date,
         to endDate: Date
     ) async throws -> [CalendarEvent] {
-        guard let refreshToken = try GoogleRefreshTokenStore.load(accountID: accountID) else {
+        guard let refreshToken = GoogleRefreshTokenStore.load(accountID: accountID) else {
             throw GoogleCalendarConnectorError.missingRefreshToken
         }
 
@@ -492,69 +485,22 @@ private func parseGoogleDate(_ value: String) -> Date? {
 }
 
 enum GoogleRefreshTokenStore {
-    private static let service = "com.serhatculhalik.in-your-face.google"
-    private static let accountPrefix = "refresh-token."
-    private static let legacyDefaultsPrefix = "google.refreshToken."
+    private static let defaultsPrefix = "google.refreshToken."
 
-    static func save(refreshToken: String, accountID: String) throws {
-        let query = baseQuery(accountID: accountID)
-        let attributes: [String: Any] = [
-            kSecValueData as String: Data(refreshToken.utf8)
-        ]
-        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-        if updateStatus == errSecItemNotFound {
-            var item = query
-            item[kSecValueData as String] = Data(refreshToken.utf8)
-            item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-            guard SecItemAdd(item as CFDictionary, nil) == errSecSuccess else {
-                throw GoogleCalendarConnectorError.credentialStorageFailed
-            }
-        } else if updateStatus != errSecSuccess {
-            throw GoogleCalendarConnectorError.credentialStorageFailed
-        }
-        UserDefaults.standard.removeObject(forKey: legacyKey(accountID: accountID))
+    static func save(refreshToken: String, accountID: String) {
+        UserDefaults.standard.set(refreshToken, forKey: key(accountID: accountID))
     }
 
-    static func load(accountID: String) throws -> String? {
-        var query = baseQuery(accountID: accountID)
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecItemNotFound {
-            guard let legacyToken = UserDefaults.standard.string(forKey: legacyKey(accountID: accountID)) else {
-                return nil
-            }
-            try save(refreshToken: legacyToken, accountID: accountID)
-            return legacyToken
-        }
-        guard status == errSecSuccess,
-              let data = result as? Data,
-              let refreshToken = String(data: data, encoding: .utf8) else {
-            throw GoogleCalendarConnectorError.credentialStorageFailed
-        }
-        return refreshToken
+    static func load(accountID: String) -> String? {
+        UserDefaults.standard.string(forKey: key(accountID: accountID))
     }
 
-    static func remove(accountID: String) throws {
-        let status = SecItemDelete(baseQuery(accountID: accountID) as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw GoogleCalendarConnectorError.credentialRemovalFailed
-        }
-        UserDefaults.standard.removeObject(forKey: legacyKey(accountID: accountID))
+    static func remove(accountID: String) {
+        UserDefaults.standard.removeObject(forKey: key(accountID: accountID))
     }
 
-    private static func baseQuery(accountID: String) -> [String: Any] {
-        [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: "\(accountPrefix)\(accountID)"
-        ]
-    }
-
-    private static func legacyKey(accountID: String) -> String {
-        "\(legacyDefaultsPrefix)\(accountID)"
+    private static func key(accountID: String) -> String {
+        "\(defaultsPrefix)\(accountID)"
     }
 }
 
@@ -690,17 +636,14 @@ private func formEncoded(_ items: [URLQueryItem]) -> Data? {
     return components.percentEncodedQuery?.data(using: .utf8)
 }
 
-private func makeCodeVerifier() throws -> String {
-    try makeRandomString(byteCount: 64)
+private func makeCodeVerifier() -> String {
+    makeRandomString(byteCount: 64)
 }
 
-private func makeRandomString(byteCount: Int) throws -> String {
-    var bytes = [UInt8](repeating: 0, count: byteCount)
-    let status = bytes.withUnsafeMutableBytes { buffer in
-        SecRandomCopyBytes(kSecRandomDefault, buffer.count, buffer.baseAddress!)
-    }
-    guard status == errSecSuccess else {
-        throw GoogleCalendarConnectorError.invalidCallback
+private func makeRandomString(byteCount: Int) -> String {
+    var generator = SystemRandomNumberGenerator()
+    let bytes = (0..<byteCount).map { _ in
+        generator.next() as UInt8
     }
     return Data(bytes)
         .base64EncodedString()
