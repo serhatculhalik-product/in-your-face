@@ -221,9 +221,9 @@ public struct GoogleCalendarConnector: GoogleCalendarConnecting, Sendable {
             email: email,
             displayName: profile.name ?? email
         )
-        let calendars = calendarList.items.compactMap { item -> MonitoredCalendar? in
+        let calendars = calendarList.items.compactMap { item -> CalendarOption? in
             guard let id = item.id else { return nil }
-            return MonitoredCalendar(
+            return CalendarOption(
                 id: id,
                 name: item.summaryOverride ?? item.summary ?? id,
                 accountID: account.id

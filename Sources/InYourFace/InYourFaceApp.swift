@@ -262,6 +262,7 @@ private struct LoginAvailabilityCard: View {
 private struct TestAlertView: View {
     @EnvironmentObject private var flow: CommitmentProtectionFlow
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         StrongAlertView(
@@ -275,6 +276,11 @@ private struct TestAlertView: View {
             }
         )
         .accessibilityAddTraits(.isModal)
+        .transaction { transaction in
+            if reduceMotion {
+                transaction.animation = nil
+            }
+        }
         .onDisappear {
             flow.dismissTestAlert()
         }

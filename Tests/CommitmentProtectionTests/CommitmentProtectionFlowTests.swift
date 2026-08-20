@@ -19,7 +19,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
 
     func testConnectingLoadsCalendarsButSelectionActivatesProtection() async {
         let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
-        let calendar = MonitoredCalendar(id: "calendar-1", name: "Work", accountID: account.id)
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
         let flow = CommitmentProtectionFlow(
             calendarConnector: TestGoogleCalendarConnector(
                 connection: GoogleCalendarConnection(account: account, calendars: [calendar])
@@ -41,7 +41,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
 
     func testSelectedCalendarProtectionRestoresAfterRelaunch() async {
         let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
-        let calendar = MonitoredCalendar(id: "calendar-1", name: "Work", accountID: account.id)
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
         let connection = GoogleCalendarConnection(account: account, calendars: [calendar])
         let suiteName = "CommitmentProtectionFlowTests.\(UUID().uuidString)"
         let stateStore = UserDefaults(suiteName: suiteName)!
@@ -73,7 +73,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
 
     func testSelectedCalendarDoesNotClaimActiveProtectionWhenLoginNeedsAttention() async {
         let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
-        let calendar = MonitoredCalendar(id: "calendar-1", name: "Work", accountID: account.id)
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
         let flow = CommitmentProtectionFlow(
             calendarConnector: TestGoogleCalendarConnector(
                 connection: GoogleCalendarConnection(account: account, calendars: [calendar])

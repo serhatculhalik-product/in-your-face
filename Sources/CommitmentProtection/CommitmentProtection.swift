@@ -13,7 +13,7 @@ public struct GoogleAccount: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
-public struct MonitoredCalendar: Codable, Equatable, Identifiable, Sendable {
+public struct CalendarOption: Codable, Equatable, Identifiable, Sendable {
     public let id: String
     public let name: String
     public let accountID: String
@@ -27,9 +27,9 @@ public struct MonitoredCalendar: Codable, Equatable, Identifiable, Sendable {
 
 public struct GoogleCalendarConnection: Codable, Equatable, Sendable {
     public let account: GoogleAccount
-    public let calendars: [MonitoredCalendar]
+    public let calendars: [CalendarOption]
 
-    public init(account: GoogleAccount, calendars: [MonitoredCalendar]) {
+    public init(account: GoogleAccount, calendars: [CalendarOption]) {
         self.account = account
         self.calendars = calendars
     }
@@ -62,7 +62,7 @@ public enum ConnectionState: Equatable, Sendable {
 @MainActor
 public final class CommitmentProtectionFlow: ObservableObject {
     @Published public private(set) var connectedAccount: GoogleAccount?
-    @Published public private(set) var availableCalendars: [MonitoredCalendar] = []
+    @Published public private(set) var availableCalendars: [CalendarOption] = []
     @Published public private(set) var selectedCalendarIDs: Set<String> = []
     @Published public private(set) var connectionState: ConnectionState = .notConnected
     @Published public private(set) var isRestoringConnection = false
