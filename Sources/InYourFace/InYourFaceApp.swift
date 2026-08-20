@@ -199,9 +199,7 @@ private struct ProtectionStatusCard: View {
                 ? "Your selected calendars are protected."
                 : "Protection is configured, but start-at-login needs attention."
         case .unavailable:
-            return flow.isBlockingAvailable
-                ? "Google Calendar could not be refreshed. Protection is unavailable until coverage returns."
-                : "Blocking requires Accessibility and Input Monitoring access before this reminder can protect you."
+            return "Google Calendar could not be refreshed. Protection is unavailable until coverage returns."
         }
     }
 
@@ -431,35 +429,7 @@ private struct EarlyReminderView: View {
         VStack(spacing: 18) {
             Label("Early Reminder", systemImage: "bell.fill")
                 .font(.headline)
-            if !windowController.isGlobalInteractionBarrierAvailable {
-                if let commitment = flow.earlyReminderCommitment {
-                    Text(commitment.title)
-                        .font(.title2.bold())
-                        .multilineTextAlignment(.center)
-                    Text(flow.localStartTimeText(for: commitment))
-                        .font(.title3.weight(.semibold))
-                }
-                Text("Blocking is unavailable until required privacy permissions are granted.")
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(.secondary)
-                Text("Grant Accessibility and Input Monitoring access to continue.")
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(.secondary)
-                Button("Open Accessibility Settings") {
-                    windowController.openAccessibilitySettings()
-                }
-                .buttonStyle(.borderedProminent)
-                Button("Open Input Monitoring Settings") {
-                    windowController.openInputMonitoringSettings()
-                }
-                Button("Try Again") {
-                    windowController.retryBlocking()
-                }
-                Button("Clear Early Reminder") {
-                    flow.clearEarlyReminder()
-                    EarlyReminderWindowController.shared.close()
-                }
-            } else if let commitment = flow.earlyReminderCommitment {
+            if let commitment = flow.earlyReminderCommitment {
                 Text(commitment.title)
                     .font(.title2.bold())
                     .multilineTextAlignment(.center)
@@ -467,9 +437,24 @@ private struct EarlyReminderView: View {
                     .font(.title3.weight(.semibold))
                 Text(flow.countdownText(for: commitment, at: Date()))
                     .foregroundStyle(.secondary)
-                Text("Protection stays active if you clear this reminder.")
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(.secondary)
+                if windowController.isGlobalInteractionBarrierAvailable {
+                    Text("Protection stays active if you clear this reminder.")
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Visual Early Reminder is active. Optional blocking is not enabled.")
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.secondary)
+                    Button("Open Accessibility Settings") {
+                        windowController.openAccessibilitySettings()
+                    }
+                    Button("Open Input Monitoring Settings") {
+                        windowController.openInputMonitoringSettings()
+                    }
+                    Button("Try Again") {
+                        windowController.retryBlocking()
+                    }
+                }
                 Button("Clear Early Reminder") {
                     flow.clearEarlyReminder()
                     EarlyReminderWindowController.shared.close()
@@ -632,38 +617,27 @@ private struct EarlyReminderFallbackView: View {
             Label("Early Reminder", systemImage: "bell.fill")
                 .font(.headline)
 
+            Text(content.title)
+                .font(.title2.bold())
+                .multilineTextAlignment(.center)
+            Text(content.timing)
+                .font(.title3.weight(.semibold))
+
             if isBlockingAvailable {
-                Text(content.title)
-                    .font(.title2.bold())
-                    .multilineTextAlignment(.center)
-                Text(content.timing)
-                    .font(.title3.weight(.semibold))
                 Text("Protection stays active if you clear this reminder.")
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
-                Button("Clear Early Reminder", action: clear)
-                    .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
             } else {
-                Text(content.title)
-                    .font(.title2.bold())
-                    .multilineTextAlignment(.center)
-                Text(content.timing)
-                    .font(.title3.weight(.semibold))
-                Text("Blocking is unavailable until required privacy permissions are granted.")
+                Text("Visual Early Reminder is active. Optional blocking is not enabled.")
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
                 Button("Open Accessibility Settings", action: openAccessibilitySettings)
-                    .buttonStyle(.borderedProminent)
                 Button("Open Input Monitoring Settings", action: openInputMonitoringSettings)
                 Button("Try Again", action: retryBlocking)
-                Button("Clear Early Reminder", action: clear)
-                    .buttonStyle(.borderedProminent)
-                Text("The reminder will remain available here while permissions are being restored.")
-                    .multilineTextAlignment(.center)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
             }
+            Button("Clear Early Reminder", action: clear)
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
         }
         .padding(28)
         .frame(minWidth: 380)
@@ -690,8 +664,8 @@ private final class EarlyReminderInteractionGate: @unchecked Sendable {
 
         if type == .tapDisabledByUserInput {
             // Respect a user/system request to stop this global event tap. The
-            // controller notices the disabled tap on its retry timer and moves
-            // the reminder into the permission-required state.
+            // The controller notices the disabled tap on its retry timer and
+            // returns the reminder to visual-only mode.
             gate.markDisabledByUserInput()
             return Unmanaged.passUnretained(event)
         }
@@ -710,13 +684,10 @@ private final class EarlyReminderInteractionGate: @unchecked Sendable {
 
         if existingEventTap != nil { return existingEventTap }
 
-        if !CGPreflightListenEventAccess() {
-            _ = CGRequestListenEventAccess()
+        guard CGPreflightListenEventAccess(),
+              AXIsProcessTrustedWithOptions(nil) else {
+            return nil
         }
-        let accessibilityOptions = [
-            "AXTrustedCheckOptionPrompt": true
-        ] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(accessibilityOptions)
 
         let eventMask = [
             CGEventType.leftMouseDown,

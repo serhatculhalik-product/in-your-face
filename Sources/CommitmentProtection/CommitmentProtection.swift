@@ -206,9 +206,6 @@ public final class CommitmentProtectionFlow: ObservableObject {
         }
         guard !selectedCalendars.isEmpty else { return .noCoverage }
         guard isProtectionConfirmed else { return .noCoverage }
-        if earlyReminderCommitment != nil && !isBlockingAvailable {
-            return .unavailable
-        }
         if case .failed = connectionState {
             return .unavailable
         }

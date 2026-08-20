@@ -703,7 +703,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertNil(flow.earlyReminderCommitment)
     }
 
-    func testMissingBlockingPermissionMakesCoverageUnavailable() async {
+    func testMissingBlockingPermissionKeepsVisualEarlyReminderActive() async {
         let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
         let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
         let now = Date(timeIntervalSince1970: 1_000_000)
@@ -732,7 +732,8 @@ final class CommitmentProtectionFlowTests: XCTestCase {
 
         flow.setBlockingAvailability(false)
 
-        XCTAssertEqual(flow.status, .unavailable)
+        XCTAssertEqual(flow.status, .active)
+        XCTAssertFalse(flow.isBlockingAvailable)
         XCTAssertEqual(flow.upcomingCommitment, commitment)
         XCTAssertEqual(flow.earlyReminderCommitment, commitment)
 
