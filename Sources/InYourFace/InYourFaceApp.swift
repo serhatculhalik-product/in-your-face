@@ -122,6 +122,7 @@ private struct SetupView: View {
         }
         .onAppear {
             flow.refreshLaunchAtLoginStatus()
+            SetupWindowController.shared.bringToFront()
         }
         .onChange(of: flow.earlyReminderCommitment) { _, commitment in
             if commitment != nil {
@@ -1381,7 +1382,9 @@ private struct MenuBarContent: View {
                 Divider()
 
                 Button("Open Setup") {
-                    openWindow(id: "setup")
+                    SetupWindowController.shared.show {
+                        openWindow(id: "setup")
+                    }
                 }
                 .keyboardShortcut("o")
 
@@ -1409,6 +1412,11 @@ private struct MenuBarLabel: View {
             flow.menuBarTitle,
             systemImage: flow.status == .active ? "checkmark.circle.fill" : "calendar.badge.exclamationmark"
         )
+        .onAppear {
+            SetupWindowController.shared.showAtLaunch {
+                openWindow(id: "setup")
+            }
+        }
         .onChange(of: flow.earlyReminderCommitment) { _, commitment in
             if commitment != nil {
                 openWindow(id: "early-reminder")
