@@ -1239,6 +1239,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
             if interactionGate.userDisabledEventTap() {
                 stopBarrierRetryMonitoring()
                 deactivateInteractionBarrier()
+                blockingMode.disableBlocking()
                 refreshFallbackPanelContent()
                 return
             }
