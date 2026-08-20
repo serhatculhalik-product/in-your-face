@@ -2,13 +2,14 @@ import AppKit
 import CryptoKit
 import Foundation
 import Network
-import Security
 
 public struct GoogleCalendarOAuthConfiguration: Sendable {
     public let clientID: String
+    public let clientSecret: String?
 
-    public init(clientID: String) {
+    public init(clientID: String, clientSecret: String? = nil) {
         self.clientID = clientID
+        self.clientSecret = clientSecret
     }
 }
 
@@ -18,12 +19,11 @@ public enum GoogleCalendarConnectorError: Equatable, LocalizedError, Sendable {
     case authorizationCancelled
     case authorizationFailed(String)
     case invalidCallback
-    case tokenExchangeFailed(Int)
+    case tokenExchangeFailed(Int, String?)
     case missingRefreshToken
     case profileRequestFailed(Int)
-    case calendarRequestFailed(Int)
+    case calendarRequestFailed(Int, String?)
     case malformedResponse
-    case keychainFailure(OSStatus)
 
     public var errorDescription: String? {
         switch self {
@@ -37,18 +37,22 @@ public enum GoogleCalendarConnectorError: Equatable, LocalizedError, Sendable {
             return "Google sign-in was not completed."
         case .invalidCallback:
             return "Google sign-in returned an invalid response."
-        case .tokenExchangeFailed:
+        case .tokenExchangeFailed(_, let reason):
+            if let reason, !reason.isEmpty {
+                return "Google sign-in could not be completed (\(reason))."
+            }
             return "Google sign-in could not be completed."
         case .missingRefreshToken:
             return "Google did not provide a refresh token. Try connecting again."
         case .profileRequestFailed:
             return "The Google account could not be loaded."
-        case .calendarRequestFailed:
+        case .calendarRequestFailed(_, let reason):
+            if let reason, !reason.isEmpty {
+                return "The Google calendars could not be loaded (\(reason))."
+            }
             return "The Google calendars could not be loaded."
         case .malformedResponse:
             return "Google returned data the app could not read."
-        case .keychainFailure:
-            return "The Google connection could not be saved securely."
         }
     }
 }
@@ -115,17 +119,41 @@ public struct GoogleCalendarConnector: GoogleCalendarConnecting, Sendable {
         }
 
         let connection = try await loadConnection(accessToken: token.accessToken)
-        try GoogleCredentialStore.save(refreshToken: refreshToken, accountID: connection.account.id)
+        GoogleRefreshTokenStore.save(refreshToken: refreshToken, accountID: connection.account.id)
         return connection
     }
 
     public func restore(accountID: String) async throws -> GoogleCalendarConnection? {
-        guard let refreshToken = try GoogleCredentialStore.load(accountID: accountID) else {
+        guard let refreshToken = GoogleRefreshTokenStore.load(accountID: accountID) else {
             return nil
         }
 
         let token = try await refreshAccessToken(refreshToken: refreshToken)
         return try await loadConnection(accessToken: token.accessToken)
+    }
+
+    public func disconnect(accountID: String) {
+        GoogleRefreshTokenStore.remove(accountID: accountID)
+    }
+
+    public func loadEvents(
+        accountID: String,
+        calendarID: String,
+        from startDate: Date,
+        to endDate: Date
+    ) async throws -> [CalendarEvent] {
+        guard let refreshToken = GoogleRefreshTokenStore.load(accountID: accountID) else {
+            return []
+        }
+
+        let token = try await refreshAccessToken(refreshToken: refreshToken)
+        return try await loadEvents(
+            accessToken: token.accessToken,
+            accountID: accountID,
+            calendarID: calendarID,
+            from: startDate,
+            to: endDate
+        )
     }
 
     private func makeAuthorizationURL(
@@ -141,7 +169,7 @@ public struct GoogleCalendarConnector: GoogleCalendarConnecting, Sendable {
             URLQueryItem(name: "client_id", value: configuration.clientID),
             URLQueryItem(name: "redirect_uri", value: redirectURI),
             URLQueryItem(name: "response_type", value: "code"),
-            URLQueryItem(name: "scope", value: "openid email profile https://www.googleapis.com/auth/calendar.calendarlist.readonly"),
+            URLQueryItem(name: "scope", value: "openid email profile https://www.googleapis.com/auth/calendar.readonly"),
             URLQueryItem(name: "access_type", value: "offline"),
             URLQueryItem(name: "prompt", value: "consent"),
             URLQueryItem(name: "code_challenge", value: codeChallenge(for: codeVerifier)),
@@ -162,16 +190,18 @@ public struct GoogleCalendarConnector: GoogleCalendarConnecting, Sendable {
         var request = URLRequest(url: URL(string: "https://oauth2.googleapis.com/token")!)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        request.httpBody = formEncoded([
+        var parameters = [
             ("client_id", configuration.clientID),
             ("code", code),
             ("code_verifier", codeVerifier),
             ("grant_type", "authorization_code"),
             ("redirect_uri", redirectURI)
-        ].map { URLQueryItem(name: $0.0, value: $0.1) })
+        ]
+        appendClientSecret(to: &parameters)
+        request.httpBody = formEncoded(parameters.map { URLQueryItem(name: $0.0, value: $0.1) })
 
-        let data = try await requestData(request, failure: { statusCode in
-            .tokenExchangeFailed(statusCode)
+        let data = try await requestData(request, failure: { statusCode, data in
+            .tokenExchangeFailed(statusCode, googleFailureReason(from: data))
         })
         return try decode(TokenResponse.self, from: data)
     }
@@ -180,14 +210,16 @@ public struct GoogleCalendarConnector: GoogleCalendarConnecting, Sendable {
         var request = URLRequest(url: URL(string: "https://oauth2.googleapis.com/token")!)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        request.httpBody = formEncoded([
+        var parameters = [
             ("client_id", configuration.clientID),
             ("refresh_token", refreshToken),
             ("grant_type", "refresh_token")
-        ].map { URLQueryItem(name: $0.0, value: $0.1) })
+        ]
+        appendClientSecret(to: &parameters)
+        request.httpBody = formEncoded(parameters.map { URLQueryItem(name: $0.0, value: $0.1) })
 
-        let data = try await requestData(request, failure: { statusCode in
-            .tokenExchangeFailed(statusCode)
+        let data = try await requestData(request, failure: { statusCode, data in
+            .tokenExchangeFailed(statusCode, googleFailureReason(from: data))
         })
         return try decode(TokenResponse.self, from: data)
     }
@@ -197,7 +229,7 @@ public struct GoogleCalendarConnector: GoogleCalendarConnecting, Sendable {
             url: URL(string: "https://openidconnect.googleapis.com/v1/userinfo")!,
             accessToken: accessToken
         )
-        let profileData = try await requestData(profileRequest, failure: { statusCode in
+        let profileData = try await requestData(profileRequest, failure: { statusCode, _ in
             .profileRequestFailed(statusCode)
         })
         let profile = try decode(UserInfoResponse.self, from: profileData)
@@ -208,8 +240,8 @@ public struct GoogleCalendarConnector: GoogleCalendarConnecting, Sendable {
             URLQueryItem(name: "maxResults", value: "250")
         ]
         let calendarRequest = authorizedRequest(url: calendarURL.url!, accessToken: accessToken)
-        let calendarData = try await requestData(calendarRequest, failure: { statusCode in
-            .calendarRequestFailed(statusCode)
+        let calendarData = try await requestData(calendarRequest, failure: { statusCode, data in
+            .calendarRequestFailed(statusCode, googleFailureReason(from: data))
         })
         let calendarList = try decode(CalendarListResponse.self, from: calendarData)
 
@@ -232,15 +264,49 @@ public struct GoogleCalendarConnector: GoogleCalendarConnecting, Sendable {
         return GoogleCalendarConnection(account: account, calendars: calendars)
     }
 
+    private func loadEvents(
+        accessToken: String,
+        accountID: String,
+        calendarID: String,
+        from startDate: Date,
+        to endDate: Date
+    ) async throws -> [CalendarEvent] {
+        let encodedCalendarID = calendarID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? calendarID
+        var components = URLComponents(
+            string: "https://www.googleapis.com/calendar/v3/calendars/\(encodedCalendarID)/events"
+        )!
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        components.queryItems = [
+            URLQueryItem(name: "timeMin", value: formatter.string(from: startDate)),
+            URLQueryItem(name: "timeMax", value: formatter.string(from: endDate)),
+            URLQueryItem(name: "singleEvents", value: "true"),
+            URLQueryItem(name: "orderBy", value: "startTime"),
+            URLQueryItem(name: "maxResults", value: "2500")
+        ]
+
+        let request = authorizedRequest(url: components.url!, accessToken: accessToken)
+        let data = try await requestData(request, failure: { statusCode, responseData in
+            .calendarRequestFailed(statusCode, googleFailureReason(from: responseData))
+        })
+        return try decodeGoogleCalendarEvents(from: data, accountID: accountID, calendarID: calendarID)
+    }
     private func authorizedRequest(url: URL, accessToken: String) -> URLRequest {
         var request = URLRequest(url: url)
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         return request
     }
 
+    private func appendClientSecret(to parameters: inout [(String, String)]) {
+        guard let clientSecret = configuration.clientSecret, !clientSecret.isEmpty else {
+            return
+        }
+        parameters.append(("client_secret", clientSecret))
+    }
+
     private func requestData(
         _ request: URLRequest,
-        failure: (Int) -> GoogleCalendarConnectorError
+        failure: (Int, Data) -> GoogleCalendarConnectorError
     ) async throws -> Data {
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -248,7 +314,7 @@ public struct GoogleCalendarConnector: GoogleCalendarConnecting, Sendable {
                 throw GoogleCalendarConnectorError.malformedResponse
             }
             guard (200..<300).contains(httpResponse.statusCode) else {
-                throw failure(httpResponse.statusCode)
+                throw failure(httpResponse.statusCode, data)
             }
             return data
         } catch let error as GoogleCalendarConnectorError {
@@ -267,6 +333,36 @@ public struct GoogleCalendarConnector: GoogleCalendarConnecting, Sendable {
     }
 }
 
+func decodeGoogleCalendarEvents(
+    from data: Data,
+    accountID: String,
+    calendarID: String
+) throws -> [CalendarEvent] {
+    let response = try JSONDecoder().decode(GoogleEventListResponse.self, from: data)
+    return response.items.compactMap { item in
+        guard let id = item.id, item.status != "cancelled" else { return nil }
+
+        let isAllDay = item.start.date != nil
+        let start = item.start.dateTime.flatMap(parseGoogleDate)
+        let end = item.end.dateTime.flatMap(parseGoogleDate)
+        let isAccepted = item.attendees?.contains {
+            $0.isSelf == true && $0.responseStatus == "accepted"
+        } == true || item.organizer?.isSelf == true
+
+        return CalendarEvent(
+            id: id,
+            title: item.summary ?? "Untitled commitment",
+            startDate: start,
+            endDate: end,
+            timeZoneIdentifier: item.start.timeZone,
+            isAllDay: isAllDay,
+            isAccepted: isAccepted,
+            calendarID: calendarID,
+            accountID: accountID
+        )
+    }
+}
+
 private struct TokenResponse: Decodable, Sendable {
     let accessToken: String
     let refreshToken: String?
@@ -274,6 +370,54 @@ private struct TokenResponse: Decodable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case accessToken = "access_token"
         case refreshToken = "refresh_token"
+    }
+}
+
+private struct OAuthFailureResponse: Decodable, Sendable {
+    let error: String?
+    let errorDescription: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case error
+        case errorDescription = "error_description"
+    }
+}
+
+private struct CalendarAPIErrorResponse: Decodable, Sendable {
+    let error: CalendarAPIError
+}
+
+private struct CalendarAPIError: Decodable, Sendable {
+    let code: Int?
+    let message: String?
+}
+
+func googleFailureReason(from data: Data) -> String? {
+    if let response = try? JSONDecoder().decode(OAuthFailureResponse.self, from: data) {
+        switch (response.error, response.errorDescription) {
+        case let (code?, description?):
+            return "\(code): \(description)"
+        case let (code?, nil):
+            return code
+        case let (nil, description?):
+            return description
+        case (nil, nil):
+            return nil
+        }
+    }
+
+    guard let response = try? JSONDecoder().decode(CalendarAPIErrorResponse.self, from: data) else {
+        return nil
+    }
+    switch (response.error.code, response.error.message) {
+    case let (code?, message?):
+        return "\(code): \(message)"
+    case let (code?, nil):
+        return String(code)
+    case let (nil, message?):
+        return message
+    case (nil, nil):
+        return nil
     }
 }
 
@@ -293,53 +437,70 @@ private struct CalendarListItem: Decodable, Sendable {
     let summaryOverride: String?
 }
 
-private enum GoogleCredentialStore {
-    private static let service = "com.serhatculhalik.in-your-face.google"
+private struct GoogleEventListResponse: Decodable, Sendable {
+    let items: [GoogleEventItem]
+}
 
-    static func save(refreshToken: String, accountID: String) throws {
-        let baseQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: accountID
-        ]
-        let attributes: [String: Any] = [
-            kSecValueData as String: Data(refreshToken.utf8),
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
-        ]
+private struct GoogleEventItem: Decodable, Sendable {
+    let id: String?
+    let summary: String?
+    let status: String?
+    let start: GoogleEventDateTime
+    let end: GoogleEventDateTime
+    let attendees: [GoogleEventAttendee]?
+    let organizer: GoogleEventAttendee?
+}
 
-        let updateStatus = SecItemUpdate(baseQuery as CFDictionary, attributes as CFDictionary)
-        if updateStatus == errSecSuccess {
-            return
-        }
-        guard updateStatus == errSecItemNotFound else {
-            throw GoogleCalendarConnectorError.keychainFailure(updateStatus)
-        }
+private struct GoogleEventDateTime: Decodable, Sendable {
+    let date: String?
+    let dateTime: String?
+    let timeZone: String?
 
-        var addQuery = baseQuery
-        attributes.forEach { addQuery[$0.key] = $0.value }
-        let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
-        guard addStatus == errSecSuccess else {
-            throw GoogleCalendarConnectorError.keychainFailure(addStatus)
-        }
+    private enum CodingKeys: String, CodingKey {
+        case date
+        case dateTime = "dateTime"
+        case timeZone
+    }
+}
+
+private struct GoogleEventAttendee: Decodable, Sendable {
+    let isSelf: Bool?
+    let responseStatus: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case isSelf = "self"
+        case responseStatus
+    }
+}
+
+private func parseGoogleDate(_ value: String) -> Date? {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    if let date = formatter.date(from: value) {
+        return date
     }
 
-    static func load(accountID: String) throws -> String? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: accountID,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecItemNotFound {
-            return nil
-        }
-        guard status == errSecSuccess, let data = result as? Data else {
-            throw GoogleCalendarConnectorError.keychainFailure(status)
-        }
-        return String(data: data, encoding: .utf8)
+    formatter.formatOptions = [.withInternetDateTime]
+    return formatter.date(from: value)
+}
+
+private enum GoogleRefreshTokenStore {
+    private static let keyPrefix = "google.refreshToken."
+
+    static func save(refreshToken: String, accountID: String) {
+        UserDefaults.standard.set(refreshToken, forKey: key(for: accountID))
+    }
+
+    static func load(accountID: String) -> String? {
+        UserDefaults.standard.string(forKey: key(for: accountID))
+    }
+
+    static func remove(accountID: String) {
+        UserDefaults.standard.removeObject(forKey: key(for: accountID))
+    }
+
+    private static func key(for accountID: String) -> String {
+        "\(keyPrefix)\(accountID)"
     }
 }
 

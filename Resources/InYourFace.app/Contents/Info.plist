@@ -22,6 +22,8 @@
 	<string>1</string>
 	<key>GoogleOAuthClientID</key>
 	<string></string>
+	<key>GoogleOAuthClientSecret</key>
+	<string></string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>LSUIElement</key>

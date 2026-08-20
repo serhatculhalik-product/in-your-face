@@ -1,3 +1,4 @@
+import AppKit
 import CommitmentProtection
 import ServiceManagement
 import SwiftUI
@@ -11,37 +12,45 @@ struct InYourFaceApp: App {
         let protectionFlow = CommitmentProtectionFlow(
             calendarConnector: GoogleCalendarConnector(
                 configuration: GoogleCalendarOAuthConfiguration(
-                    clientID: googleOAuthClientID()
+                    clientID: googleOAuthClientID(),
+                    clientSecret: googleOAuthClientSecret()
                 )
             ),
             launchAtLogin: MacLaunchAtLoginController()
         )
         _flow = StateObject(wrappedValue: protectionFlow)
-        Task { await protectionFlow.restoreSavedConnection() }
+        Task {
+            await protectionFlow.restoreSavedConnection()
+            protectionFlow.startMonitoring()
+        }
     }
 
     var body: some Scene {
-        WindowGroup("In Your Face", id: "setup") {
+        Window("In Your Face", id: "setup") {
             SetupView()
                 .environmentObject(flow)
                 .frame(minWidth: 520, minHeight: 560)
         }
 
-        WindowGroup("Test Alert", id: "test-alert") {
+        Window("Test Alert", id: "test-alert") {
             TestAlertView()
                 .environmentObject(flow)
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
 
+        Window("Early Reminder", id: "early-reminder") {
+            EarlyReminderView()
+                .environmentObject(flow)
+        }
+        .windowResizability(.contentSize)
+
         MenuBarExtra {
             MenuBarContent()
                 .environmentObject(flow)
         } label: {
-            Label(
-                flow.menuBarTitle,
-                systemImage: flow.status == .active ? "checkmark.circle.fill" : "calendar.badge.exclamationmark"
-            )
+            MenuBarLabel()
+                .environmentObject(flow)
         }
         .menuBarExtraStyle(.window)
     }
@@ -53,6 +62,18 @@ private func googleOAuthClientID() -> String {
         return bundledClientID
     }
     return ProcessInfo.processInfo.environment["GOOGLE_OAUTH_CLIENT_ID"] ?? ""
+}
+
+private func googleOAuthClientSecret() -> String? {
+    if let bundledClientSecret = Bundle.main.object(forInfoDictionaryKey: "GoogleOAuthClientSecret") as? String,
+       !bundledClientSecret.isEmpty {
+        return bundledClientSecret
+    }
+    guard let environmentClientSecret = ProcessInfo.processInfo.environment["GOOGLE_OAUTH_CLIENT_SECRET"],
+          !environmentClientSecret.isEmpty else {
+        return nil
+    }
+    return environmentClientSecret
 }
 
 @MainActor
@@ -69,6 +90,7 @@ private final class MacLaunchAtLoginController: LaunchAtLoginControlling {
 private struct SetupView: View {
     @EnvironmentObject private var flow: CommitmentProtectionFlow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         ScrollView {
@@ -79,6 +101,7 @@ private struct SetupView: View {
 
                 if flow.connectedAccount != nil {
                     CalendarSelectionCard()
+                    EarlyReminderSettingsCard()
                     TestAlertCard()
                 }
 
@@ -88,6 +111,11 @@ private struct SetupView: View {
         }
         .onAppear {
             flow.refreshLaunchAtLoginStatus()
+        }
+        .onChange(of: flow.earlyReminderCommitment) { _, commitment in
+            if commitment != nil {
+                openWindow(id: "early-reminder")
+            }
         }
         .transaction { transaction in
             if reduceMotion {
@@ -163,15 +191,19 @@ private struct AccountSetupCard: View {
             } else if let account = flow.connectedAccount {
                 Label(account.email, systemImage: "person.crop.circle.fill")
                     .foregroundStyle(.secondary)
+                Button("Log Out") {
+                    flow.disconnectGoogleAccount()
+                }
+                .buttonStyle(.bordered)
             } else {
-                Text("Connect one Google account to choose the calendars you want protected.")
+                Text("Sign in with Google to choose the calendars you want protected.")
                     .foregroundStyle(.secondary)
 
                 Button {
                     Task { await flow.connectGoogleAccount() }
                 } label: {
                     Label(
-                        flow.connectionState == .connecting ? "Opening Google…" : "Connect Google Account",
+                        flow.connectionState == .connecting ? "Opening Google…" : "Sign in with Google",
                         systemImage: "person.badge.key.fill"
                     )
                 }
@@ -214,6 +246,35 @@ private struct CalendarSelectionCard: View {
                 }
                 .toggleStyle(.checkbox)
             }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 16))
+    }
+}
+
+private struct EarlyReminderSettingsCard: View {
+    @EnvironmentObject private var flow: CommitmentProtectionFlow
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Early Reminder")
+                .font(.headline)
+            Text("A non-blocking reminder before an accepted commitment starts.")
+                .foregroundStyle(.secondary)
+
+            Stepper(
+                value: Binding(
+                    get: { flow.earlyReminderLeadTimeMinutes },
+                    set: { flow.setEarlyReminderLeadTime(minutes: $0) }
+                ),
+                in: 5...30,
+                step: 5
+            ) {
+                Text("Remind me \(flow.earlyReminderLeadTimeMinutes) minutes before")
+            }
+            .accessibilityLabel("Early Reminder lead time")
+            .accessibilityValue("\(flow.earlyReminderLeadTimeMinutes) minutes")
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -285,6 +346,106 @@ private struct TestAlertView: View {
     }
 }
 
+private struct EarlyReminderView: View {
+    @EnvironmentObject private var flow: CommitmentProtectionFlow
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        VStack(spacing: 18) {
+            Label("Early Reminder", systemImage: "bell.fill")
+                .font(.headline)
+            if let commitment = flow.earlyReminderCommitment {
+                Text(commitment.title)
+                    .font(.title2.bold())
+                    .multilineTextAlignment(.center)
+                Text(flow.localStartTimeText(for: commitment))
+                    .font(.title3.weight(.semibold))
+                Text(flow.countdownText(for: commitment, at: Date()))
+                    .foregroundStyle(.secondary)
+                Text("Protection stays active if you clear this reminder.")
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+                Button("Clear Early Reminder") {
+                    flow.clearEarlyReminder()
+                    EarlyReminderWindowController.shared.close()
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+            } else {
+                Text("No upcoming commitment needs an early reminder.")
+                    .foregroundStyle(.secondary)
+                Button("Close") {
+                    EarlyReminderWindowController.shared.close()
+                }
+                    .keyboardShortcut(.cancelAction)
+            }
+        }
+        .padding(28)
+        .frame(minWidth: 380)
+        .accessibilityAddTraits(.isModal)
+        .transaction { transaction in
+            if reduceMotion {
+                transaction.animation = nil
+            }
+        }
+        .onAppear {
+            EarlyReminderWindowController.shared.present()
+        }
+        .onDisappear {
+            EarlyReminderWindowController.shared.stop()
+        }
+    }
+}
+
+@MainActor
+private final class EarlyReminderWindowController {
+    static let shared = EarlyReminderWindowController()
+
+    private weak var window: NSWindow?
+    private var blockedWindows: [NSWindow] = []
+    private var isPresented = false
+
+    func present() {
+        guard !isPresented else {
+            window?.orderFrontRegardless()
+            return
+        }
+
+        guard let window = NSApp.windows.first(where: { $0.title == "Early Reminder" }) else {
+            DispatchQueue.main.async { [weak self] in
+                self?.present()
+            }
+            return
+        }
+
+        self.window = window
+        window.level = .modalPanel
+        window.hidesOnDeactivate = false
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        window.standardWindowButton(.closeButton)?.isEnabled = false
+        blockedWindows = NSApp.windows.filter { candidate in
+            candidate !== window && candidate.isVisible && !candidate.ignoresMouseEvents
+        }
+        blockedWindows.forEach { $0.ignoresMouseEvents = true }
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        isPresented = true
+    }
+
+    func stop() {
+        guard isPresented else { return }
+        blockedWindows.forEach { $0.ignoresMouseEvents = false }
+        blockedWindows.removeAll()
+        isPresented = false
+        window?.standardWindowButton(.closeButton)?.isEnabled = true
+    }
+
+    func close() {
+        stop()
+        window?.close()
+    }
+}
+
 private struct StrongAlertView: View {
     let title: String
     let timing: String
@@ -319,35 +480,81 @@ private struct MenuBarContent: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label(
-                flow.menuBarTitle,
-                systemImage: flow.status == .active ? "checkmark.shield" : "exclamationmark.triangle"
-            )
-                .font(.headline)
+        TimelineView(.periodic(from: Date(), by: 1)) { context in
+            VStack(alignment: .leading, spacing: 12) {
+                if let commitment = flow.upcomingCommitment {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(commitment.title)
+                            .font(.headline)
+                            .lineLimit(2)
+                        Text(flow.countdownText(for: commitment, at: context.date))
+                            .font(.subheadline.weight(.semibold))
+                        Text(flow.localStartTimeText(for: commitment))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
 
-            if let account = flow.connectedAccount {
-                Text(account.email)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    if flow.earlyReminderCommitment != nil {
+                        Button("Open Early Reminder") {
+                            openWindow(id: "early-reminder")
+                        }
+                        .keyboardShortcut("r")
+                    }
+
+                    Divider()
+                }
+
+                Label(
+                    flow.menuBarTitle,
+                    systemImage: flow.status == .active ? "checkmark.shield" : "exclamationmark.triangle"
+                )
+                    .font(.headline)
+
+                if let account = flow.connectedAccount {
+                    Text(account.email)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Button("Log Out") {
+                        flow.disconnectGoogleAccount()
+                    }
+                    .keyboardShortcut("l")
+                }
+
+                Divider()
+
+                Button("Open Setup") {
+                    openWindow(id: "setup")
+                }
+                .keyboardShortcut("o")
+
+                Button("Quit") {
+                    NSApplication.shared.terminate(nil)
+                }
+                .keyboardShortcut("q")
             }
-
-            Divider()
-
-            Button("Open Setup") {
-                openWindow(id: "setup")
-            }
-            .keyboardShortcut("o")
-
-            Button("Quit") {
-                NSApplication.shared.terminate(nil)
-            }
-            .keyboardShortcut("q")
         }
         .padding(16)
         .frame(width: 260)
         .onAppear {
             flow.refreshLaunchAtLoginStatus()
+        }
+    }
+}
+
+private struct MenuBarLabel: View {
+    @EnvironmentObject private var flow: CommitmentProtectionFlow
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Label(
+            flow.menuBarTitle,
+            systemImage: flow.status == .active ? "checkmark.circle.fill" : "calendar.badge.exclamationmark"
+        )
+        .onChange(of: flow.earlyReminderCommitment) { _, commitment in
+            if commitment != nil {
+                openWindow(id: "early-reminder")
+            }
         }
     }
 }
