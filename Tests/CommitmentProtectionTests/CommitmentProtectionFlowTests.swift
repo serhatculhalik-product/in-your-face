@@ -71,6 +71,23 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertEqual(relaunch.status, .active)
     }
 
+    func testSelectedCalendarDoesNotClaimActiveProtectionWhenLoginNeedsAttention() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = MonitoredCalendar(id: "calendar-1", name: "Work", accountID: account.id)
+        let flow = CommitmentProtectionFlow(
+            calendarConnector: TestGoogleCalendarConnector(
+                connection: GoogleCalendarConnection(account: account, calendars: [calendar])
+            ),
+            launchAtLogin: TestLaunchAtLoginController(shouldEnable: false)
+        )
+
+        await flow.connectGoogleAccount()
+        flow.setCalendarSelected(true, calendarID: calendar.id)
+
+        XCTAssertEqual(flow.status, .needsAttention)
+        XCTAssertEqual(flow.menuBarTitle, "Start at Login Needs Attention")
+    }
+
     func testTestAlertCanBePresentedAndDismissedWithoutACommitment() async {
         let flow = CommitmentProtectionFlow(
             calendarConnector: TestGoogleCalendarConnector(),
@@ -124,10 +141,24 @@ private struct TestGoogleCalendarConnector: GoogleCalendarConnecting {
 @MainActor
 private final class TestLaunchAtLoginController: LaunchAtLoginControlling {
     private(set) var enableWasCalled = false
-    private(set) var isEnabled = false
+    private(set) var isEnabled: Bool
+
+    private let shouldEnable: Bool
+
+    init(shouldEnable: Bool = true) {
+        self.shouldEnable = shouldEnable
+        isEnabled = shouldEnable
+    }
 
     func enable() throws {
         enableWasCalled = true
+        guard shouldEnable else {
+            throw TestLaunchAtLoginError.registrationFailed
+        }
         isEnabled = true
     }
+}
+
+private enum TestLaunchAtLoginError: Error {
+    case registrationFailed
 }

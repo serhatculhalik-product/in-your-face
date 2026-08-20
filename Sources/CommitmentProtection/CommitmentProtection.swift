@@ -49,6 +49,7 @@ public protocol LaunchAtLoginControlling: AnyObject {
 public enum ProtectionStatus: Equatable, Sendable {
     case noCoverage
     case active
+    case needsAttention
 }
 
 public enum ConnectionState: Equatable, Sendable {
@@ -99,7 +100,8 @@ public final class CommitmentProtectionFlow: ObservableObject {
         let selectedCalendars = availableCalendars.filter {
             $0.accountID == connectedAccount.id && selectedCalendarIDs.contains($0.id)
         }
-        return selectedCalendars.isEmpty ? .noCoverage : .active
+        guard !selectedCalendars.isEmpty else { return .noCoverage }
+        return isLaunchAtLoginEnabled ? .active : .needsAttention
     }
 
     public var menuBarTitle: String {
@@ -117,6 +119,8 @@ public final class CommitmentProtectionFlow: ObservableObject {
                 return "Active Protection"
             }
             return "Protected: \(calendarName)"
+        case .needsAttention:
+            return "Start at Login Needs Attention"
         }
     }
 

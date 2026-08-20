@@ -31,7 +31,10 @@ struct InYourFaceApp: App {
             MenuBarContent()
                 .environmentObject(flow)
         } label: {
-            Label(flow.menuBarTitle, systemImage: flow.status == .active ? "checkmark.circle.fill" : "calendar.badge.exclamationmark")
+            Label(
+                flow.menuBarTitle,
+                systemImage: flow.status == .active ? "checkmark.circle.fill" : "calendar.badge.exclamationmark"
+            )
         }
         .menuBarExtraStyle(.window)
     }
@@ -100,22 +103,39 @@ private struct ProtectionStatusCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Label(
-                flow.status == .active ? "Active Protection" : "No Coverage",
-                systemImage: flow.status == .active ? "checkmark.shield.fill" : "shield.slash"
+                statusTitle,
+                systemImage: statusIcon
             )
             .font(.headline)
-            .foregroundStyle(flow.status == .active ? .green : .orange)
+            .foregroundStyle(flow.status == .active ? Color.green : Color.orange)
 
             Text(
                 flow.status == .active
                     ? "Your selected calendars are protected."
-                    : "Select a calendar before commitments can be protected."
+                    : flow.status == .needsAttention
+                        ? "Protection is configured, but start-at-login needs attention."
+                        : "Select a calendar before commitments can be protected."
             )
             .foregroundStyle(.secondary)
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private var statusTitle: String {
+        switch flow.status {
+        case .noCoverage:
+            return "No Coverage"
+        case .active:
+            return "Active Protection"
+        case .needsAttention:
+            return "Start at Login Needs Attention"
+        }
+    }
+
+    private var statusIcon: String {
+        flow.status == .active ? "checkmark.shield.fill" : "exclamationmark.triangle"
     }
 }
 
@@ -273,7 +293,10 @@ private struct MenuBarContent: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label(flow.menuBarTitle, systemImage: flow.status == .active ? "checkmark.shield" : "shield.slash")
+            Label(
+                flow.menuBarTitle,
+                systemImage: flow.status == .active ? "checkmark.shield" : "exclamationmark.triangle"
+            )
                 .font(.headline)
 
             if let account = flow.connectedAccount {
