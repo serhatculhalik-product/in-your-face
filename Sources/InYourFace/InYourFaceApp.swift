@@ -150,11 +150,7 @@ private struct ProtectionStatusCard: View {
             .foregroundStyle(.primary)
 
             Text(
-                flow.status == .active
-                    ? (flow.isLaunchAtLoginEnabled
-                        ? "Your selected calendars are protected."
-                        : "Protection is configured, but start-at-login needs attention.")
-                    : "Select a calendar before commitments can be protected."
+                statusDetail
             )
             .foregroundStyle(.secondary)
         }
@@ -169,6 +165,21 @@ private struct ProtectionStatusCard: View {
             return "No Coverage"
         case .active:
             return "Active Protection"
+        case .unavailable:
+            return "Coverage Needs Attention"
+        }
+    }
+
+    private var statusDetail: String {
+        switch flow.status {
+        case .noCoverage:
+            return "Select and confirm a calendar before commitments can be protected."
+        case .active:
+            return flow.isLaunchAtLoginEnabled
+                ? "Your selected calendars are protected."
+                : "Protection is configured, but start-at-login needs attention."
+        case .unavailable:
+            return "Google Calendar could not be refreshed. Protection is unavailable until coverage returns."
         }
     }
 
@@ -246,6 +257,7 @@ private struct CalendarSelectionCard: View {
                 }
                 .toggleStyle(.checkbox)
             }
+
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -260,7 +272,7 @@ private struct EarlyReminderSettingsCard: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Early Reminder")
                 .font(.headline)
-            Text("A non-blocking reminder before an accepted commitment starts.")
+            Text("A blocking reminder before an accepted commitment starts.")
                 .foregroundStyle(.secondary)
 
             Stepper(
@@ -275,6 +287,19 @@ private struct EarlyReminderSettingsCard: View {
             }
             .accessibilityLabel("Early Reminder lead time")
             .accessibilityValue("\(flow.earlyReminderLeadTimeMinutes) minutes")
+
+            if !flow.isProtectionConfirmed {
+                Text("Review your calendars and reminder timing, then confirm protection.")
+                    .foregroundStyle(.secondary)
+                Button("Confirm Protection") {
+                    flow.confirmProtection()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(flow.selectedCalendarIDs.isEmpty)
+            } else {
+                Label("Protection settings confirmed", systemImage: "checkmark.circle")
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)

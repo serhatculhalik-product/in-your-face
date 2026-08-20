@@ -17,7 +17,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertEqual(flow.menuBarTitle, "No Coverage")
     }
 
-    func testConnectingLoadsCalendarsButSelectionActivatesProtection() async {
+    func testConnectingLoadsCalendarsAndConfirmationActivatesProtection() async {
         let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
         let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
         let flow = CommitmentProtectionFlow(
@@ -35,6 +35,8 @@ final class CommitmentProtectionFlowTests: XCTestCase {
 
         flow.setCalendarSelected(true, calendarID: calendar.id)
 
+        XCTAssertEqual(flow.status, .noCoverage)
+        XCTAssertTrue(flow.confirmProtection())
         XCTAssertEqual(flow.status, .active)
         XCTAssertEqual(flow.menuBarTitle, "Active Protection")
     }
@@ -54,6 +56,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         )
         await firstLaunch.connectGoogleAccount()
         firstLaunch.setCalendarSelected(true, calendarID: calendar.id)
+        XCTAssertTrue(firstLaunch.confirmProtection())
 
         let relaunch = CommitmentProtectionFlow(
             calendarConnector: TestGoogleCalendarConnector(connection: connection),
@@ -83,6 +86,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
 
         await flow.connectGoogleAccount()
         flow.setCalendarSelected(true, calendarID: calendar.id)
+        XCTAssertTrue(flow.confirmProtection())
 
         XCTAssertEqual(flow.status, .active)
         XCTAssertEqual(flow.menuBarTitle, "Active Protection · Login Needs Attention")
@@ -105,6 +109,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
 
         await flow.connectGoogleAccount()
         flow.setCalendarSelected(true, calendarID: calendar.id)
+        XCTAssertTrue(flow.confirmProtection())
         XCTAssertEqual(flow.status, .active)
 
         flow.disconnectGoogleAccount()
@@ -167,6 +172,133 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         )
     }
 
+    func testOAuthCallbackRejectsDuplicateQueryValues() {
+        let callbackURL = URL(string: "http://127.0.0.1/oauth/callback?state=first&state=second")!
+
+        XCTAssertThrowsError(try callbackValues(from: callbackURL)) { error in
+            XCTAssertEqual(error as? GoogleCalendarConnectorError, .invalidCallback)
+        }
+    }
+
+    func testOAuthCallbackRejectsDuplicateValuesWhenOneValueIsMissing() {
+        let callbackURL = URL(string: "http://127.0.0.1/oauth/callback?state&state=valid")!
+
+        XCTAssertThrowsError(try callbackValues(from: callbackURL)) { error in
+            XCTAssertEqual(error as? GoogleCalendarConnectorError, .invalidCallback)
+        }
+    }
+
+    func testRefreshTokenStoreDoesNotWriteToUserDefaults() throws {
+        let accountID = "test-account-\(UUID().uuidString)"
+        let defaultsKey = "google.refreshToken.\(accountID)"
+        let refreshToken = "refresh-token-\(UUID().uuidString)"
+        defer {
+            GoogleRefreshTokenStore.remove(accountID: accountID)
+            UserDefaults.standard.removeObject(forKey: defaultsKey)
+        }
+
+        try GoogleRefreshTokenStore.save(refreshToken: refreshToken, accountID: accountID)
+
+        XCTAssertNil(UserDefaults.standard.string(forKey: defaultsKey))
+        XCTAssertEqual(try GoogleRefreshTokenStore.load(accountID: accountID), refreshToken)
+    }
+
+    func testRefreshTokenStoreMigratesLegacyUserDefaultsToken() throws {
+        let accountID = "legacy-account-\(UUID().uuidString)"
+        let defaultsKey = "google.refreshToken.\(accountID)"
+        let refreshToken = "legacy-refresh-token-\(UUID().uuidString)"
+        defer {
+            GoogleRefreshTokenStore.remove(accountID: accountID)
+            UserDefaults.standard.removeObject(forKey: defaultsKey)
+        }
+        UserDefaults.standard.set(refreshToken, forKey: defaultsKey)
+
+        XCTAssertEqual(try GoogleRefreshTokenStore.load(accountID: accountID), refreshToken)
+        XCTAssertNil(UserDefaults.standard.string(forKey: defaultsKey))
+    }
+
+    func testSelectingCalendarRequiresConfirmationBeforeProtectionActivates() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar])
+        )
+
+        await flow.connectGoogleAccount()
+        flow.setCalendarSelected(true, calendarID: calendar.id)
+
+        XCTAssertFalse(flow.isProtectionConfirmed)
+        XCTAssertEqual(flow.status, .noCoverage)
+
+        XCTAssertTrue(flow.confirmProtection())
+        XCTAssertTrue(flow.isProtectionConfirmed)
+        XCTAssertEqual(flow.status, .active)
+    }
+
+    func testLegacySavedConfigurationRequiresExplicitConfirmation() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let suiteName = "CommitmentProtectionFlowTests.legacy.(UUID().uuidString)"
+        let stateStore = UserDefaults(suiteName: suiteName)!
+        defer { stateStore.removePersistentDomain(forName: suiteName) }
+        let legacyConfiguration = try! JSONSerialization.data(withJSONObject: [
+            "accountID": account.id,
+            "selectedCalendarIDs": [calendar.id]
+        ])
+        stateStore.set(legacyConfiguration, forKey: "commitment-protection.configuration")
+
+        let flow = CommitmentProtectionFlow(
+            calendarConnector: TestGoogleCalendarConnector(
+                connection: GoogleCalendarConnection(account: account, calendars: [calendar])
+            ),
+            launchAtLogin: TestLaunchAtLoginController(),
+            stateStore: stateStore
+        )
+
+        await flow.restoreSavedConnection()
+
+        XCTAssertEqual(flow.selectedCalendarIDs, [calendar.id])
+        XCTAssertFalse(flow.isProtectionConfirmed)
+        XCTAssertEqual(flow.status, .noCoverage)
+        XCTAssertTrue(flow.confirmProtection())
+        XCTAssertEqual(flow.status, .active)
+    }
+
+    func testDeselectingCalendarImmediatelyClearsItsProtectionState() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(10 * 60),
+            endDate: now.addingTimeInterval(70 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [commitment],
+            now: now
+        )
+
+        await flow.connectGoogleAccount()
+        flow.setCalendarSelected(true, calendarID: calendar.id)
+        XCTAssertTrue(flow.confirmProtection())
+        await settleScheduledRefreshes()
+        await flow.refreshCommitmentProtection(at: now)
+        XCTAssertEqual(flow.earlyReminderCommitment, commitment)
+
+        flow.setCalendarSelected(false, calendarID: calendar.id)
+
+        XCTAssertNil(flow.upcomingCommitment)
+        XCTAssertNil(flow.earlyReminderCommitment)
+        XCTAssertEqual(flow.status, .noCoverage)
+    }
+
     func testCalendarRequestFailureExplainsGoogleOAuthReason() {
         let error = GoogleCalendarConnectorError.calendarRequestFailed(
             403,
@@ -225,6 +357,8 @@ final class CommitmentProtectionFlowTests: XCTestCase {
 
         await flow.connectGoogleAccount()
         flow.setCalendarSelected(true, calendarID: calendar.id)
+        XCTAssertTrue(flow.confirmProtection())
+        await settleScheduledRefreshes()
         await flow.refreshCommitmentProtection(at: now)
 
         XCTAssertEqual(flow.upcomingCommitment, commitment)
@@ -266,6 +400,8 @@ final class CommitmentProtectionFlowTests: XCTestCase {
 
         await flow.connectGoogleAccount()
         flow.setCalendarSelected(true, calendarID: calendar.id)
+        XCTAssertTrue(flow.confirmProtection())
+        await settleScheduledRefreshes()
         await flow.refreshCommitmentProtection(at: now)
 
         XCTAssertNil(flow.upcomingCommitment)
@@ -295,6 +431,8 @@ final class CommitmentProtectionFlowTests: XCTestCase {
 
         await flow.connectGoogleAccount()
         flow.setCalendarSelected(true, calendarID: calendar.id)
+        XCTAssertTrue(flow.confirmProtection())
+        await settleScheduledRefreshes()
         await flow.refreshCommitmentProtection(at: now)
         flow.clearEarlyReminder()
         await flow.refreshCommitmentProtection(at: now)
@@ -341,6 +479,8 @@ final class CommitmentProtectionFlowTests: XCTestCase {
 
         await flow.connectGoogleAccount()
         flow.setCalendarSelected(true, calendarID: calendar.id)
+        XCTAssertTrue(flow.confirmProtection())
+        await settleScheduledRefreshes()
         await flow.refreshCommitmentProtection(at: now)
         flow.clearEarlyReminder()
 
@@ -349,6 +489,94 @@ final class CommitmentProtectionFlowTests: XCTestCase {
 
         XCTAssertEqual(flow.upcomingCommitment, rescheduledCommitment)
         XCTAssertEqual(flow.earlyReminderCommitment, rescheduledCommitment)
+    }
+
+    func testCalendarRefreshFailureClearsStaleProtection() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(10 * 60),
+            endDate: now.addingTimeInterval(70 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let state = TestGoogleCalendarConnectorState()
+        let flow = CommitmentProtectionFlow(
+            calendarConnector: TestGoogleCalendarConnector(
+                connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+                events: [commitment],
+                state: state
+            ),
+            launchAtLogin: TestLaunchAtLoginController(),
+            now: { now }
+        )
+
+        await flow.connectGoogleAccount()
+        flow.setCalendarSelected(true, calendarID: calendar.id)
+        XCTAssertTrue(flow.confirmProtection())
+        await settleScheduledRefreshes()
+        await flow.refreshCommitmentProtection(at: now)
+        XCTAssertEqual(flow.earlyReminderCommitment, commitment)
+
+        state.loadEventsError = TestCalendarLoadError.unavailable
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertNil(flow.upcomingCommitment)
+        XCTAssertNil(flow.earlyReminderCommitment)
+        XCTAssertEqual(flow.status, .unavailable)
+        XCTAssertEqual(flow.connectionState, .failed("The test calendar is unavailable."))
+    }
+
+    func testOlderRefreshCannotRestoreACommitmentAfterANewerRefreshClearsIt() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(10 * 60),
+            endDate: now.addingTimeInterval(70 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let state = RefreshRaceConnectorState(holdNextLoad: true)
+        let connector = RefreshRaceTestConnector(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [commitment],
+            state: state
+        )
+        let flow = CommitmentProtectionFlow(
+            calendarConnector: connector,
+            launchAtLogin: TestLaunchAtLoginController(),
+            now: { now }
+        )
+
+        await flow.connectGoogleAccount()
+        flow.setCalendarSelected(true, calendarID: calendar.id)
+        XCTAssertTrue(flow.confirmProtection())
+        for _ in 0..<20 {
+            if state.firstLoadStarted { break }
+            await Task.yield()
+        }
+        XCTAssertTrue(state.firstLoadStarted)
+
+        connector.events = []
+        XCTAssertTrue(flow.confirmProtection())
+        await settleScheduledRefreshes()
+        state.releaseFirstLoad()
+        await settleScheduledRefreshes()
+
+        XCTAssertNil(flow.upcomingCommitment)
+        XCTAssertNil(flow.earlyReminderCommitment)
     }
 
     func testLeadTimeIsGlobalAndPersistsWithinConfiguration() {
@@ -466,6 +694,12 @@ final class CommitmentProtectionFlowTests: XCTestCase {
             now: { now }
         )
     }
+
+    private func settleScheduledRefreshes() async {
+        for _ in 0..<10 {
+            await Task.yield()
+        }
+    }
 }
 
 private struct TestGoogleCalendarConnector: GoogleCalendarConnecting {
@@ -504,7 +738,11 @@ private struct TestGoogleCalendarConnector: GoogleCalendarConnecting {
         from startDate: Date,
         to endDate: Date
     ) async throws -> [CalendarEvent] {
-        events.filter {
+        if let error = state.loadEventsError {
+            throw error
+        }
+
+        return events.filter {
             $0.accountID == accountID &&
             $0.calendarID == calendarID &&
             ($0.startDate ?? .distantPast) < endDate &&
@@ -515,6 +753,73 @@ private struct TestGoogleCalendarConnector: GoogleCalendarConnecting {
 
 private final class TestGoogleCalendarConnectorState: @unchecked Sendable {
     var disconnectWasCalled = false
+    var loadEventsError: Error?
+}
+
+private final class RefreshRaceConnectorState: @unchecked Sendable {
+    var holdNextLoad: Bool
+    var firstLoadStarted = false
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+    init(holdNextLoad: Bool) {
+        self.holdNextLoad = holdNextLoad
+    }
+
+    func waitForFirstLoadIfNeeded() async {
+        guard holdNextLoad else { return }
+        holdNextLoad = false
+        firstLoadStarted = true
+        await withCheckedContinuation { continuation in
+            releaseContinuation = continuation
+        }
+    }
+
+    func releaseFirstLoad() {
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+}
+
+private final class RefreshRaceTestConnector: GoogleCalendarConnecting, @unchecked Sendable {
+    let connection: GoogleCalendarConnection
+    var events: [CalendarEvent]
+    let state: RefreshRaceConnectorState
+
+    init(
+        connection: GoogleCalendarConnection,
+        events: [CalendarEvent],
+        state: RefreshRaceConnectorState
+    ) {
+        self.connection = connection
+        self.events = events
+        self.state = state
+    }
+
+    func connect() async throws -> GoogleCalendarConnection {
+        connection
+    }
+
+    func restore(accountID: String) async throws -> GoogleCalendarConnection? {
+        connection.account.id == accountID ? connection : nil
+    }
+
+    func disconnect(accountID: String) {}
+
+    func loadEvents(
+        accountID: String,
+        calendarID: String,
+        from startDate: Date,
+        to endDate: Date
+    ) async throws -> [CalendarEvent] {
+        let response = events
+        await state.waitForFirstLoadIfNeeded()
+        return response.filter {
+            $0.accountID == accountID &&
+            $0.calendarID == calendarID &&
+            ($0.startDate ?? .distantPast) < endDate &&
+            ($0.endDate ?? .distantFuture) > startDate
+        }
+    }
 }
 
 private final class MutableTestGoogleCalendarConnector: GoogleCalendarConnecting, @unchecked Sendable {
@@ -574,4 +879,12 @@ private final class TestLaunchAtLoginController: LaunchAtLoginControlling {
 
 private enum TestLaunchAtLoginError: Error {
     case registrationFailed
+}
+
+private enum TestCalendarLoadError: LocalizedError {
+    case unavailable
+
+    var errorDescription: String? {
+        "The test calendar is unavailable."
+    }
 }

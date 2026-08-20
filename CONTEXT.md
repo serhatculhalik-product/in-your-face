@@ -51,7 +51,7 @@ _Avoid_: Overlap, double booking
 ## Reminder language
 
 **Early Reminder**:
-A non-blocking reminder shown before a commitment starts. Its global lead time ranges from five to thirty minutes and defaults to ten minutes. Clearing it does not change protection; only an explicit action such as Snooze or Dismiss does.
+A blocking reminder shown before a commitment starts. It stays in front of other app windows until the user clears it. Its global lead time ranges from five to thirty minutes and defaults to ten minutes. Clearing it does not change protection; only an explicit action such as Snooze or Dismiss does.
 _Avoid_: Warning, alert (when referring specifically to the early reminder)
 
 **Unverified Reminder**:

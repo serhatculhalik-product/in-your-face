@@ -10,7 +10,7 @@ The user does not need another calendar view. They need a reliable, context-awar
 
 Provide a personal macOS utility that protects accepted, timed Google Calendar events from user-selected calendars across multiple Connected Accounts.
 
-The product starts with a non-blocking Early Reminder, then presents a Strong Alert at the commitment’s start time. The Strong Alert offers the most direct next action—Join when a Recognized Meeting Link exists, or Handled otherwise—and repeats at a configurable Repeat Interval until the user takes an explicit action or the commitment reaches its scheduled end.
+The product starts with a blocking Early Reminder, then presents a Strong Alert at the commitment’s start time. The Early Reminder stays in front of other app windows until the user clears it. The Strong Alert offers the most direct next action—Join when a Recognized Meeting Link exists, or Handled otherwise—and repeats at a configurable Repeat Interval until the user takes an explicit action or the commitment reaches its scheduled end.
 
 The experience is intentionally narrow: Google Calendar is the source of truth for calendar changes, the user chooses which calendars are protected, and the product never guesses which accepted event is important. Visual reminders remain private on displays being shared Full-Screen Sharing, while non-shared displays may still show them.
 
@@ -102,7 +102,7 @@ The experience is intentionally narrow: Google Calendar is the source of truth f
 - A commitment’s scheduled instant is authoritative across time zones; presentation uses the user’s current local time and adds a time-zone label when relevant.
 - Recurring events are handled by Occurrence. A rescheduled Occurrence receives a fresh protection decision.
 - Duplicate representations merge only when they share a Recognized Meeting Link and matching start time.
-- The Early Reminder is global, non-blocking, configurable from five to thirty minutes, and defaults to ten minutes.
+- The Early Reminder is global, blocking, configurable from five to thirty minutes, and defaults to ten minutes. It stays in front of other app windows until the user clears it.
 - The Strong Alert is the start-time intervention. It takes over non-shared displays, is calm but urgent, overrides macOS Focus modes, and exposes the next action.
 - The global Repeat Interval ranges from one to five minutes and defaults to one minute. Repetition remains enabled after start until Join, Handled, Dismiss, or scheduled end.
 - Join is prominent when a Recognized Meeting Link exists. A Join click ends protection for the reminder lifecycle; the product does not need to verify attendance.
