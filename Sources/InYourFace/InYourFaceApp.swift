@@ -11,7 +11,7 @@ struct InYourFaceApp: App {
         let protectionFlow = CommitmentProtectionFlow(
             calendarConnector: GoogleCalendarConnector(
                 configuration: GoogleCalendarOAuthConfiguration(
-                    clientID: ProcessInfo.processInfo.environment["GOOGLE_OAUTH_CLIENT_ID"] ?? ""
+                    clientID: googleOAuthClientID()
                 )
             ),
             launchAtLogin: MacLaunchAtLoginController()
@@ -38,6 +38,14 @@ struct InYourFaceApp: App {
         }
         .menuBarExtraStyle(.window)
     }
+}
+
+private func googleOAuthClientID() -> String {
+    if let bundledClientID = Bundle.main.object(forInfoDictionaryKey: "GoogleOAuthClientID") as? String,
+       !bundledClientID.isEmpty {
+        return bundledClientID
+    }
+    return ProcessInfo.processInfo.environment["GOOGLE_OAUTH_CLIENT_ID"] ?? ""
 }
 
 @MainActor
@@ -69,6 +77,9 @@ private struct SetupView: View {
                 LoginAvailabilityCard()
             }
             .padding(32)
+        }
+        .onAppear {
+            flow.refreshLaunchAtLoginStatus()
         }
         .sheet(
             isPresented: Binding(
@@ -319,5 +330,8 @@ private struct MenuBarContent: View {
         }
         .padding(16)
         .frame(width: 260)
+        .onAppear {
+            flow.refreshLaunchAtLoginStatus()
+        }
     }
 }

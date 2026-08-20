@@ -6,6 +6,11 @@ repository_directory="${script_directory:h}"
 output_directory="${1:-${repository_directory}/.build/app}"
 app_path="${output_directory}/In Your Face.app"
 
+if [[ -z "${GOOGLE_OAUTH_CLIENT_ID:-}" ]]; then
+    echo "GOOGLE_OAUTH_CLIENT_ID must be set when packaging the app." >&2
+    exit 1
+fi
+
 binary_directory="$(swift build --configuration release --package-path "${repository_directory}" --show-bin-path)"
 binary_path="${binary_directory}/InYourFace"
 
@@ -13,6 +18,7 @@ rm -rf -- "${app_path}"
 mkdir -p "${app_path}/Contents/MacOS" "${app_path}/Contents/Resources"
 cp "${binary_path}" "${app_path}/Contents/MacOS/InYourFace"
 cp "${repository_directory}/Resources/InYourFace.app/Contents/Info.plist" "${app_path}/Contents/Info.plist"
+/usr/bin/plutil -replace GoogleOAuthClientID -string "${GOOGLE_OAUTH_CLIENT_ID}" "${app_path}/Contents/Info.plist"
 
 /usr/bin/codesign --force --deep --sign - "${app_path}"
 

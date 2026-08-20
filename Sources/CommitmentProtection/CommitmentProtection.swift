@@ -70,6 +70,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
     @Published public private(set) var isLaunchAtLoginEnabled = false
 
     private let calendarConnector: any GoogleCalendarConnecting
+    private let launchAtLogin: any LaunchAtLoginControlling
     private let stateStore: UserDefaults
     private static let stateKey = "commitment-protection.configuration"
 
@@ -84,6 +85,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
         stateStore: UserDefaults = .standard
     ) {
         self.calendarConnector = calendarConnector
+        self.launchAtLogin = launchAtLogin
         self.stateStore = stateStore
 
         do {
@@ -91,6 +93,10 @@ public final class CommitmentProtectionFlow: ObservableObject {
         } catch {
             isLaunchAtLoginEnabled = launchAtLogin.isEnabled
         }
+        isLaunchAtLoginEnabled = launchAtLogin.isEnabled
+    }
+
+    public func refreshLaunchAtLoginStatus() {
         isLaunchAtLoginEnabled = launchAtLogin.isEnabled
     }
 
