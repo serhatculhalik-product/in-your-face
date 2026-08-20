@@ -27,6 +27,13 @@ struct InYourFaceApp: App {
                 .frame(minWidth: 520, minHeight: 560)
         }
 
+        WindowGroup("Test Alert", id: "test-alert") {
+            TestAlertView()
+                .environmentObject(flow)
+        }
+        .windowStyle(.hiddenTitleBar)
+        .windowResizability(.contentSize)
+
         MenuBarExtra {
             MenuBarContent()
                 .environmentObject(flow)
@@ -61,6 +68,7 @@ private final class MacLaunchAtLoginController: LaunchAtLoginControlling {
 
 private struct SetupView: View {
     @EnvironmentObject private var flow: CommitmentProtectionFlow
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ScrollView {
@@ -81,17 +89,10 @@ private struct SetupView: View {
         .onAppear {
             flow.refreshLaunchAtLoginStatus()
         }
-        .sheet(
-            isPresented: Binding(
-                get: { flow.isTestAlertPresented },
-                set: { isPresented in
-                    if !isPresented {
-                        flow.dismissTestAlert()
-                    }
-                }
-            )
-        ) {
-            TestAlertView()
+        .transaction { transaction in
+            if reduceMotion {
+                transaction.animation = nil
+            }
         }
     }
 }
@@ -118,7 +119,7 @@ private struct ProtectionStatusCard: View {
                 systemImage: statusIcon
             )
             .font(.headline)
-            .foregroundStyle(flow.status == .active ? Color.green : Color.orange)
+            .foregroundStyle(.primary)
 
             Text(
                 flow.status == .active
@@ -131,7 +132,7 @@ private struct ProtectionStatusCard: View {
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 16))
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
     }
 
     private var statusTitle: String {
@@ -224,6 +225,7 @@ private struct CalendarSelectionCard: View {
 
 private struct TestAlertCard: View {
     @EnvironmentObject private var flow: CommitmentProtectionFlow
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -233,8 +235,10 @@ private struct TestAlertCard: View {
                 .foregroundStyle(.secondary)
             Button("Show Test Alert") {
                 flow.presentTestAlert()
+                openWindow(id: "test-alert")
             }
             .buttonStyle(.bordered)
+            .keyboardShortcut("t")
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -250,13 +254,14 @@ private struct LoginAvailabilityCard: View {
             flow.isLaunchAtLoginEnabled ? "Ready at login" : "Start-at-login needs attention",
             systemImage: flow.isLaunchAtLoginEnabled ? "power" : "exclamationmark.triangle"
         )
-        .foregroundStyle(flow.isLaunchAtLoginEnabled ? Color.secondary : Color.orange)
+        .foregroundStyle(.primary)
         .font(.callout)
     }
 }
 
 private struct TestAlertView: View {
     @EnvironmentObject private var flow: CommitmentProtectionFlow
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         StrongAlertView(
@@ -264,8 +269,15 @@ private struct TestAlertView: View {
             timing: "Starting now",
             detail: "This is the same strong-alert experience used for a real commitment. No calendar event will be changed.",
             primaryActionTitle: "Handled",
-            primaryAction: flow.dismissTestAlert
+            primaryAction: {
+                flow.dismissTestAlert()
+                dismiss()
+            }
         )
+        .accessibilityAddTraits(.isModal)
+        .onDisappear {
+            flow.dismissTestAlert()
+        }
     }
 }
 
@@ -280,7 +292,7 @@ private struct StrongAlertView: View {
         VStack(spacing: 20) {
             Label("Strong Alert", systemImage: "bell.and.waves.left.and.right.fill")
                 .font(.headline)
-                .foregroundStyle(.blue)
+                .foregroundStyle(.primary)
             Text(title)
                 .font(.largeTitle.bold())
             Text(timing)
