@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import CommitmentProtection
 
@@ -38,6 +39,38 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertEqual(flow.menuBarTitle, "Protected: Work")
     }
 
+    func testSelectedCalendarProtectionRestoresAfterRelaunch() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = MonitoredCalendar(id: "calendar-1", name: "Work", accountID: account.id)
+        let connection = GoogleCalendarConnection(account: account, calendars: [calendar])
+        let suiteName = "CommitmentProtectionFlowTests.\(UUID().uuidString)"
+        let stateStore = UserDefaults(suiteName: suiteName)!
+        defer { stateStore.removePersistentDomain(forName: suiteName) }
+
+        let firstLaunch = CommitmentProtectionFlow(
+            calendarConnector: TestGoogleCalendarConnector(connection: connection),
+            launchAtLogin: TestLaunchAtLoginController(),
+            stateStore: stateStore
+        )
+        await firstLaunch.connectGoogleAccount()
+        firstLaunch.setCalendarSelected(true, calendarID: calendar.id)
+
+        let relaunch = CommitmentProtectionFlow(
+            calendarConnector: TestGoogleCalendarConnector(connection: connection),
+            launchAtLogin: TestLaunchAtLoginController(),
+            stateStore: stateStore
+        )
+
+        XCTAssertEqual(relaunch.status, .noCoverage)
+
+        await relaunch.restoreSavedConnection()
+
+        XCTAssertEqual(relaunch.connectedAccount, account)
+        XCTAssertEqual(relaunch.availableCalendars, [calendar])
+        XCTAssertEqual(relaunch.selectedCalendarIDs, [calendar.id])
+        XCTAssertEqual(relaunch.status, .active)
+    }
+
     func testTestAlertCanBePresentedAndDismissedWithoutACommitment() async {
         let flow = CommitmentProtectionFlow(
             calendarConnector: TestGoogleCalendarConnector(),
@@ -51,6 +84,21 @@ final class CommitmentProtectionFlowTests: XCTestCase {
 
         flow.dismissTestAlert()
         XCTAssertFalse(flow.isTestAlertPresented)
+    }
+
+    func testGoogleConnectionRequiresOAuthConfiguration() async {
+        let connector = GoogleCalendarConnector(
+            configuration: GoogleCalendarOAuthConfiguration(clientID: "")
+        )
+
+        do {
+            _ = try await connector.connect()
+            XCTFail("A missing OAuth client ID should prevent connection")
+        } catch let error as GoogleCalendarConnectorError {
+            XCTAssertEqual(error, .missingClientID)
+        } catch {
+            XCTFail("Unexpected connection error: \(error)")
+        }
     }
 }
 
@@ -66,6 +114,10 @@ private struct TestGoogleCalendarConnector: GoogleCalendarConnecting {
 
     func connect() async throws -> GoogleCalendarConnection {
         connection
+    }
+
+    func restore(accountID: String) async throws -> GoogleCalendarConnection? {
+        connection.account.id == accountID ? connection : nil
     }
 }
 

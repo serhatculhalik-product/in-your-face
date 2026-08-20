@@ -8,12 +8,16 @@ struct InYourFaceApp: App {
     @StateObject private var flow: CommitmentProtectionFlow
 
     init() {
-        _flow = StateObject(
-            wrappedValue: CommitmentProtectionFlow(
-                calendarConnector: PreviewGoogleCalendarConnector(),
-                launchAtLogin: MacLaunchAtLoginController()
-            )
+        let protectionFlow = CommitmentProtectionFlow(
+            calendarConnector: GoogleCalendarConnector(
+                configuration: GoogleCalendarOAuthConfiguration(
+                    clientID: ProcessInfo.processInfo.environment["GOOGLE_OAUTH_CLIENT_ID"] ?? ""
+                )
+            ),
+            launchAtLogin: MacLaunchAtLoginController()
         )
+        _flow = StateObject(wrappedValue: protectionFlow)
+        Task { await protectionFlow.restoreSavedConnection() }
     }
 
     var body: some Scene {
@@ -30,22 +34,6 @@ struct InYourFaceApp: App {
             Label(flow.menuBarTitle, systemImage: flow.status == .active ? "checkmark.circle.fill" : "calendar.badge.exclamationmark")
         }
         .menuBarExtraStyle(.window)
-    }
-}
-
-private struct PreviewGoogleCalendarConnector: GoogleCalendarConnecting {
-    func connect() async throws -> GoogleCalendarConnection {
-        GoogleCalendarConnection(
-            account: GoogleAccount(
-                id: "preview-account",
-                email: "alex@example.com",
-                displayName: "Alex"
-            ),
-            calendars: [
-                MonitoredCalendar(id: "work-calendar", name: "Work", accountID: "preview-account"),
-                MonitoredCalendar(id: "personal-calendar", name: "Personal", accountID: "preview-account")
-            ]
-        )
     }
 }
 
@@ -139,7 +127,10 @@ private struct AccountSetupCard: View {
             Text("Google Calendar")
                 .font(.headline)
 
-            if let account = flow.connectedAccount {
+            if flow.isRestoringConnection {
+                ProgressView("Restoring Google Calendar…")
+                    .controlSize(.small)
+            } else if let account = flow.connectedAccount {
                 Label(account.email, systemImage: "person.crop.circle.fill")
                     .foregroundStyle(.secondary)
             } else {
@@ -150,7 +141,7 @@ private struct AccountSetupCard: View {
                     Task { await flow.connectGoogleAccount() }
                 } label: {
                     Label(
-                        flow.connectionState == .connecting ? "Connecting…" : "Connect Google Account",
+                        flow.connectionState == .connecting ? "Opening Google…" : "Connect Google Account",
                         systemImage: "person.badge.key.fill"
                     )
                 }
@@ -237,23 +228,42 @@ private struct TestAlertView: View {
     @EnvironmentObject private var flow: CommitmentProtectionFlow
 
     var body: some View {
+        StrongAlertView(
+            title: "Test Commitment",
+            timing: "Starting now",
+            detail: "This is the same strong-alert experience used for a real commitment. No calendar event will be changed.",
+            primaryActionTitle: "Handled",
+            primaryAction: flow.dismissTestAlert
+        )
+    }
+}
+
+private struct StrongAlertView: View {
+    let title: String
+    let timing: String
+    let detail: String
+    let primaryActionTitle: String
+    let primaryAction: () -> Void
+
+    var body: some View {
         VStack(spacing: 20) {
-            Image(systemName: "bell.and.waves.left.and.right.fill")
-                .font(.system(size: 48))
+            Label("Strong Alert", systemImage: "bell.and.waves.left.and.right.fill")
+                .font(.headline)
                 .foregroundStyle(.blue)
-            Text("This is your Test Alert")
-                .font(.title2.bold())
-            Text("A real Strong Alert will show the commitment and its next action here.")
+            Text(title)
+                .font(.system(size: 28, weight: .bold, design: .rounded))
+            Text(timing)
+                .font(.title3.weight(.semibold))
+            Text(detail)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
-            Button("Done") {
-                flow.dismissTestAlert()
-            }
-            .keyboardShortcut(.defaultAction)
-            .buttonStyle(.borderedProminent)
+            Button(primaryActionTitle, action: primaryAction)
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .accessibilityLabel(primaryActionTitle)
         }
         .padding(32)
-        .frame(width: 420, height: 280)
+        .frame(width: 460, height: 320)
     }
 }
 
