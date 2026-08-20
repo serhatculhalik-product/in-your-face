@@ -36,7 +36,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         flow.setCalendarSelected(true, calendarID: calendar.id)
 
         XCTAssertEqual(flow.status, .active)
-        XCTAssertEqual(flow.menuBarTitle, "Protected: Work")
+        XCTAssertEqual(flow.menuBarTitle, "Active Protection")
     }
 
     func testSelectedCalendarProtectionRestoresAfterRelaunch() async {

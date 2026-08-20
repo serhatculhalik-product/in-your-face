@@ -109,16 +109,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
         case .noCoverage:
             return "No Coverage"
         case .active:
-            let selectedNames = availableCalendars
-                .filter {
-                    $0.accountID == connectedAccount?.id && selectedCalendarIDs.contains($0.id)
-                }
-                .map(\.name)
-
-            guard selectedNames.count == 1, let calendarName = selectedNames.first else {
-                return "Active Protection"
-            }
-            return "Protected: \(calendarName)"
+            return "Active Protection"
         case .needsAttention:
             return "Start at Login Needs Attention"
         }

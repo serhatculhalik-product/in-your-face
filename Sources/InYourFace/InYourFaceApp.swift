@@ -271,7 +271,7 @@ private struct StrongAlertView: View {
                 .font(.headline)
                 .foregroundStyle(.blue)
             Text(title)
-                .font(.system(size: 28, weight: .bold, design: .rounded))
+                .font(.largeTitle.bold())
             Text(timing)
                 .font(.title3.weight(.semibold))
             Text(detail)
@@ -283,7 +283,7 @@ private struct StrongAlertView: View {
                 .accessibilityLabel(primaryActionTitle)
         }
         .padding(32)
-        .frame(width: 460, height: 320)
+        .frame(minWidth: 460)
     }
 }
 
