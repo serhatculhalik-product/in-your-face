@@ -127,14 +127,14 @@ private struct SetupView: View {
         .onChange(of: flow.earlyReminderCommitment) { _, commitment in
             if commitment != nil {
                 openWindow(id: "early-reminder")
-            } else {
+            } else if flow.lastActionMessage == nil {
                 EarlyReminderWindowController.shared.close()
             }
         }
         .onChange(of: flow.isStrongAlertPresented) { _, isPresented in
             if isPresented {
                 openWindow(id: "strong-alert")
-            } else {
+            } else if flow.lastActionMessage == nil {
                 StrongAlertWindowController.shared.close()
             }
         }
@@ -438,6 +438,9 @@ private struct EarlyReminderView: View {
                     .font(.title3.weight(.semibold))
                 Text(flow.countdownText(for: commitment, at: Date()))
                     .foregroundStyle(.secondary)
+                if let actionResultMessage = flow.actionResultMessage(for: commitment) {
+                    ActionResultView(message: actionResultMessage)
+                }
                 if windowController.isGlobalInteractionBarrierAvailable {
                     Text("Protection stays active if you clear this reminder.")
                         .multilineTextAlignment(.center)
@@ -456,19 +459,63 @@ private struct EarlyReminderView: View {
                         windowController.retryBlocking()
                     }
                 }
+                HStack(spacing: 10) {
+                    Button("Snooze 5 minutes") {
+                        if flow.snoozeEarlyReminder(minutes: 5) {
+                            announceActionResult(flow.lastActionMessage)
+                        }
+                    }
+                    .keyboardShortcut("5")
+                    .disabled(!flow.canSnoozeEarlyReminder)
+
+                    Button("Snooze 10 minutes") {
+                        if flow.snoozeEarlyReminder(minutes: 10) {
+                            announceActionResult(flow.lastActionMessage)
+                        }
+                    }
+                    .keyboardShortcut("0")
+                    .disabled(!flow.canSnoozeEarlyReminder)
+                }
+
+                HStack(spacing: 10) {
+                    Button("Handled") {
+                        if flow.handleCommitment(for: commitment) {
+                            announceActionResult(flow.lastActionMessage)
+                        }
+                    }
+                    .keyboardShortcut("h")
+                    .buttonStyle(.bordered)
+                    .accessibilityHint("Stop protection for this occurrence because you handled it elsewhere.")
+
+                    Button("Dismiss Commitment") {
+                        if flow.dismissCommitment(for: commitment) {
+                            announceActionResult(flow.lastActionMessage)
+                        }
+                    }
+                    .keyboardShortcut("d")
+                    .buttonStyle(.bordered)
+                    .accessibilityHint("Stop protection for this occurrence without changing Google Calendar.")
+                }
                 Button("Clear Early Reminder") {
                     flow.clearEarlyReminder()
+                    announceActionResult(flow.lastActionMessage)
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .accessibilityHint("Clear this surface while leaving protection active.")
+            } else {
+                if let actionResultMessage = flow.lastActionMessage {
+                    ActionResultView(message: actionResultMessage)
+                } else {
+                    Text("No upcoming commitment needs an early reminder.")
+                        .foregroundStyle(.secondary)
+                }
+                Button("Close") {
                     EarlyReminderWindowController.shared.close()
                 }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
-            } else {
-                Text("No upcoming commitment needs an early reminder.")
-                    .foregroundStyle(.secondary)
-                Button("Close") {
-                    EarlyReminderWindowController.shared.close()
-                }
-                    .keyboardShortcut(.cancelAction)
+                .accessibilityLabel("Close action result")
             }
         }
         .padding(28)
@@ -492,7 +539,23 @@ private struct EarlyReminderView: View {
                 },
                 clear: {
                     flow.clearEarlyReminder()
-                    EarlyReminderWindowController.shared.close()
+                    announceActionResult(flow.lastActionMessage)
+                },
+                canSnooze: flow.canSnoozeEarlyReminder,
+                snooze: { minutes in
+                    if flow.snoozeEarlyReminder(minutes: minutes) {
+                        announceActionResult(flow.lastActionMessage)
+                    }
+                },
+                handle: {
+                    if flow.handleCommitment(for: commitment) {
+                        announceActionResult(flow.lastActionMessage)
+                    }
+                },
+                dismiss: {
+                    if flow.dismissCommitment(for: commitment) {
+                        announceActionResult(flow.lastActionMessage)
+                    }
                 }
             )
         }
@@ -512,6 +575,26 @@ private struct EarlyReminderView: View {
                     },
                     clear: {
                         flow.clearEarlyReminder()
+                        announceActionResult(flow.lastActionMessage)
+                        EarlyReminderWindowController.shared.close()
+                    },
+                    canSnooze: flow.canSnoozeEarlyReminder,
+                    snooze: { minutes in
+                        if flow.snoozeEarlyReminder(minutes: minutes) {
+                            announceActionResult(flow.lastActionMessage)
+                        }
+                        EarlyReminderWindowController.shared.close()
+                    },
+                    handle: {
+                        if flow.handleCommitment(for: commitment) {
+                            announceActionResult(flow.lastActionMessage)
+                        }
+                        EarlyReminderWindowController.shared.close()
+                    },
+                    dismiss: {
+                        if flow.dismissCommitment(for: commitment) {
+                            announceActionResult(flow.lastActionMessage)
+                        }
                         EarlyReminderWindowController.shared.close()
                     }
                 )
@@ -520,7 +603,11 @@ private struct EarlyReminderView: View {
         .onChange(of: flow.earlyReminderCommitment) { _, commitment in
             if commitment == nil {
                 flow.setBlockingAvailability(true)
-                EarlyReminderWindowController.shared.close()
+                if flow.lastActionMessage == nil {
+                    EarlyReminderWindowController.shared.close()
+                } else {
+                    EarlyReminderWindowController.shared.stop()
+                }
             }
         }
         .onChange(of: windowController.isGlobalInteractionBarrierAvailable) { _, isAvailable in
@@ -547,7 +634,7 @@ private struct StrongAlertWindowView: View {
             .onChange(of: flow.isStrongAlertPresented) { _, isPresented in
                 if isPresented {
                     presentStrongAlertSurface()
-                } else {
+                } else if flow.lastActionMessage == nil {
                     StrongAlertWindowController.shared.close()
                 }
             }
@@ -558,6 +645,7 @@ private struct StrongAlertWindowView: View {
             content: AnyView(StrongAlertContentView(flow: flow)),
             surfaceDidClose: {
                 flow.closeStrongAlertSurface()
+                announceActionResult(flow.lastActionMessage)
             }
         )
     }
@@ -574,6 +662,7 @@ private struct StrongAlertContentView: View {
                         title: commitment.title,
                         timing: flow.strongAlertTimingText(for: commitment, at: context.date),
                         detail: flow.strongAlertContextText(for: commitment),
+                        actionResultMessage: flow.actionResultMessage(for: commitment),
                         primaryActionTitle: commitment.recognizedMeetingLink == nil ? "Handled" : "Join",
                         primaryAction: {
                             if commitment.recognizedMeetingLink == nil {
@@ -581,15 +670,39 @@ private struct StrongAlertContentView: View {
                             } else if let meetingLink = flow.joinStrongAlert() {
                                 NSWorkspace.shared.open(meetingLink)
                             }
-                            StrongAlertWindowController.shared.close()
+                            announceActionResult(flow.lastActionMessage)
                         },
-                        secondaryActionTitle: commitment.recognizedMeetingLink == nil ? nil : "Handled",
+                        secondaryActionTitle: commitment.recognizedMeetingLink == nil ? "Dismiss Commitment" : "Handled",
                         secondaryAction: {
-                            flow.handleStrongAlert()
-                            StrongAlertWindowController.shared.close()
+                            if commitment.recognizedMeetingLink == nil {
+                                flow.dismissCommitment()
+                            } else {
+                                flow.handleStrongAlert()
+                            }
+                            announceActionResult(flow.lastActionMessage)
+                        },
+                        secondaryActionKeyboardShortcut: commitment.recognizedMeetingLink == nil ? "d" : "h",
+                        tertiaryActionTitle: commitment.recognizedMeetingLink == nil ? nil : "Dismiss Commitment",
+                        tertiaryAction: {
+                            if flow.dismissCommitment() {
+                                announceActionResult(flow.lastActionMessage)
+                            }
                         }
                     )
                 }
+            } else if let actionResultMessage = flow.lastActionMessage {
+                VStack(spacing: 20) {
+                    Label("Action complete", systemImage: "checkmark.circle.fill")
+                        .font(.headline)
+                    ActionResultView(message: actionResultMessage)
+                    Button("Close") {
+                        StrongAlertWindowController.shared.close()
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityLabel("Close action result")
+                }
+                .padding(32)
             } else {
                 Text("No commitment needs attention.")
                     .foregroundStyle(.secondary)
@@ -608,7 +721,11 @@ private struct EarlyReminderFallbackContent {
 private struct EarlyReminderFallbackView: View {
     let content: EarlyReminderFallbackContent
     let isBlockingAvailable: Bool
+    let canSnooze: Bool
     let clear: () -> Void
+    let snooze: (Int) -> Void
+    let handle: () -> Void
+    let dismiss: () -> Void
     let openAccessibilitySettings: () -> Void
     let openInputMonitoringSettings: () -> Void
     let retryBlocking: () -> Void
@@ -636,9 +753,28 @@ private struct EarlyReminderFallbackView: View {
                 Button("Open Input Monitoring Settings", action: openInputMonitoringSettings)
                 Button("Enable Blocking Mode", action: retryBlocking)
             }
+            HStack(spacing: 10) {
+                Button("Snooze 5 minutes") { snooze(5) }
+                    .keyboardShortcut("5")
+                    .disabled(!canSnooze)
+                Button("Snooze 10 minutes") { snooze(10) }
+                    .keyboardShortcut("0")
+                    .disabled(!canSnooze)
+            }
+            HStack(spacing: 10) {
+                Button("Handled", action: handle)
+                    .keyboardShortcut("h")
+                    .buttonStyle(.bordered)
+                    .accessibilityHint("Stop protection for this occurrence because you handled it elsewhere.")
+                Button("Dismiss Commitment", action: dismiss)
+                    .keyboardShortcut("d")
+                    .buttonStyle(.bordered)
+                    .accessibilityHint("Stop protection for this occurrence without changing Google Calendar.")
+            }
             Button("Clear Early Reminder", action: clear)
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
+                .accessibilityHint("Clear this surface while leaving protection active.")
         }
         .padding(28)
         .frame(minWidth: 380)
@@ -811,6 +947,10 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
     private var surfaceRecoveryTimer: Timer?
     private var reopenSurface: (@MainActor () -> Void)?
     private var clearEarlyReminder: (@MainActor () -> Void)?
+    private var snoozeEarlyReminder: ((Int) -> Void)?
+    private var handleCommitment: (() -> Void)?
+    private var dismissCommitment: (() -> Void)?
+    private var canSnoozeEarlyReminder = false
     private var fallbackContent: EarlyReminderFallbackContent?
     private var fallbackPanel: NSPanel?
     private var surfaceRecoveryAttempts = 0
@@ -823,10 +963,18 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
     func present(
         content: EarlyReminderFallbackContent,
         reopen: @escaping @MainActor () -> Void,
-        clear: @escaping @MainActor () -> Void
+        clear: @escaping @MainActor () -> Void,
+        canSnooze: Bool,
+        snooze: @escaping (Int) -> Void,
+        handle: @escaping () -> Void,
+        dismiss: @escaping () -> Void
     ) {
         reopenSurface = reopen
         clearEarlyReminder = clear
+        canSnoozeEarlyReminder = canSnooze
+        snoozeEarlyReminder = snooze
+        handleCommitment = handle
+        dismissCommitment = dismiss
         fallbackContent = content
         if isPresented,
            let fallbackPanel,
@@ -851,7 +999,15 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
             $0 !== fallbackPanel && $0.title == "Early Reminder"
         }) else {
             DispatchQueue.main.async { [weak self] in
-                self?.present(content: content, reopen: reopen, clear: clear)
+                self?.present(
+                    content: content,
+                    reopen: reopen,
+                    clear: clear,
+                    canSnooze: canSnooze,
+                    snooze: snooze,
+                    handle: handle,
+                    dismiss: dismiss
+                )
             }
             return
         }
@@ -902,6 +1058,10 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         self.window = nil
         self.fallbackContent = nil
         self.clearEarlyReminder = nil
+        self.snoozeEarlyReminder = nil
+        self.handleCommitment = nil
+        self.dismissCommitment = nil
+        self.canSnoozeEarlyReminder = false
         allowsWindowClose = false
     }
 
@@ -928,10 +1088,18 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
     func surfaceDidDisappear(
         content: EarlyReminderFallbackContent,
         reopen: @escaping @MainActor () -> Void,
-        clear: @escaping @MainActor () -> Void
+        clear: @escaping @MainActor () -> Void,
+        canSnooze: Bool,
+        snooze: @escaping (Int) -> Void,
+        handle: @escaping () -> Void,
+        dismiss: @escaping () -> Void
     ) {
         reopenSurface = reopen
         clearEarlyReminder = clear
+        canSnoozeEarlyReminder = canSnooze
+        snoozeEarlyReminder = snooze
+        handleCommitment = handle
+        dismissCommitment = dismiss
         fallbackContent = content
         guard isPresented else {
             startSurfaceRecoveryMonitoring()
@@ -969,7 +1137,10 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
     private func showFallbackSurface() {
         guard !isPresented,
               let content = fallbackContent,
-              let clearEarlyReminder else { return }
+              let clearEarlyReminder,
+              let snoozeEarlyReminder,
+              let handleCommitment,
+              let dismissCommitment else { return }
 
         let reopenSurface = self.reopenSurface
         stopSurfaceRecoveryMonitoring()
@@ -993,7 +1164,11 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
             rootView: EarlyReminderFallbackView(
                 content: content,
                 isBlockingAvailable: isGlobalInteractionBarrierAvailable,
+                canSnooze: canSnoozeEarlyReminder,
                 clear: clearEarlyReminder,
+                snooze: snoozeEarlyReminder,
+                handle: handleCommitment,
+                dismiss: dismissCommitment,
                 openAccessibilitySettings: { [weak self] in
                     self?.openAccessibilitySettings()
                 },
@@ -1164,12 +1339,19 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
     private func refreshFallbackPanelContent() {
         guard let panel = fallbackPanel,
               let content = fallbackContent,
-              let clearEarlyReminder else { return }
+              let clearEarlyReminder,
+              let snoozeEarlyReminder,
+              let handleCommitment,
+              let dismissCommitment else { return }
         panel.contentView = NSHostingView(
             rootView: EarlyReminderFallbackView(
                 content: content,
                 isBlockingAvailable: isGlobalInteractionBarrierAvailable,
+                canSnooze: canSnoozeEarlyReminder,
                 clear: clearEarlyReminder,
+                snooze: snoozeEarlyReminder,
+                handle: handleCommitment,
+                dismiss: dismissCommitment,
                 openAccessibilitySettings: { [weak self] in
                     self?.openAccessibilitySettings()
                 },
@@ -1323,10 +1505,14 @@ private struct StrongAlertView: View {
     let title: String
     let timing: String
     let detail: String
+    var actionResultMessage: String? = nil
     let primaryActionTitle: String
     let primaryAction: () -> Void
     var secondaryActionTitle: String? = nil
     var secondaryAction: (() -> Void)? = nil
+    var secondaryActionKeyboardShortcut: KeyEquivalent = "h"
+    var tertiaryActionTitle: String? = nil
+    var tertiaryAction: (() -> Void)? = nil
 
     var body: some View {
         VStack(spacing: 20) {
@@ -1340,15 +1526,29 @@ private struct StrongAlertView: View {
             Text(detail)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
+            if let actionResultMessage {
+                ActionResultView(message: actionResultMessage)
+            }
             Button(primaryActionTitle, action: primaryAction)
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
                 .accessibilityLabel(primaryActionTitle)
+                .accessibilityHint("Take the primary action for this commitment.")
             if let secondaryActionTitle, let secondaryAction {
                 Button(secondaryActionTitle, action: secondaryAction)
-                    .keyboardShortcut("h")
+                    .keyboardShortcut(secondaryActionKeyboardShortcut)
                     .buttonStyle(.bordered)
                     .accessibilityLabel(secondaryActionTitle)
+                    .accessibilityHint(secondaryActionTitle == "Handled"
+                        ? "Stop protection because you handled this commitment elsewhere."
+                        : "Stop protection for this occurrence without changing Google Calendar.")
+            }
+            if let tertiaryActionTitle, let tertiaryAction {
+                Button(tertiaryActionTitle, action: tertiaryAction)
+                    .keyboardShortcut("d")
+                    .buttonStyle(.bordered)
+                    .accessibilityLabel(tertiaryActionTitle)
+                    .accessibilityHint("Stop protection for this occurrence without changing Google Calendar.")
             }
         }
         .padding(32)
@@ -1357,9 +1557,52 @@ private struct StrongAlertView: View {
     }
 }
 
+private struct ActionResultView: View {
+    let message: String
+
+    var body: some View {
+        VStack(spacing: 4) {
+            Label("Action result", systemImage: "checkmark.circle.fill")
+                .font(.callout.weight(.semibold))
+            Text(message)
+                .font(.callout)
+                .multilineTextAlignment(.center)
+        }
+        .foregroundStyle(.secondary)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Action result")
+        .accessibilityValue(message)
+    }
+}
+
+@MainActor
+private func announceActionResult(_ message: String?) {
+    guard let message else { return }
+    NSAccessibility.post(
+        element: NSApplication.shared,
+        notification: .announcementRequested,
+        userInfo: [.announcement: message]
+    )
+}
+
 private struct MenuBarContent: View {
     @EnvironmentObject private var flow: CommitmentProtectionFlow
     @Environment(\.openWindow) private var openWindow
+
+    private var displayedActionResultMessage: String? {
+        if let decisionCommitment = flow.decisionCommitment,
+           let message = flow.actionResultMessage(for: decisionCommitment) {
+            return message
+        }
+        if let strongAlertCommitment = flow.strongAlertCommitment,
+           let message = flow.actionResultMessage(for: strongAlertCommitment) {
+            return message
+        }
+        if let upcomingCommitment = flow.upcomingCommitment {
+            return flow.actionResultMessage(for: upcomingCommitment)
+        }
+        return nil
+    }
 
     var body: some View {
         TimelineView(.periodic(from: Date(), by: 1)) { context in
@@ -1383,6 +1626,42 @@ private struct MenuBarContent: View {
                         .keyboardShortcut("r")
                     }
 
+                    Divider()
+                }
+
+                if let decisionCommitment = flow.decisionCommitment,
+                   let decision = flow.currentCommitmentDecision,
+                   decision.isRestorable {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label(
+                            decision == .dismissed ? "Protection dismissed" : "Commitment handled",
+                            systemImage: "pause.circle"
+                        )
+                        .font(.headline)
+                        Text(decisionCommitment.title)
+                            .lineLimit(2)
+                        if flow.canRestoreProtection {
+                            Button("Restore Protection") {
+                                if flow.restoreProtection() {
+                                    announceActionResult(flow.lastActionMessage)
+                                }
+                            }
+                            .keyboardShortcut("u")
+                            .buttonStyle(.borderedProminent)
+                            .accessibilityHint("Resume protection for this occurrence until it ends.")
+                        } else {
+                            Text("Protection cannot be restored after the commitment ends.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .accessibilityElement(children: .contain)
+
+                    Divider()
+                }
+
+                if let actionResultMessage = displayedActionResultMessage {
+                    ActionResultView(message: actionResultMessage)
                     Divider()
                 }
 
@@ -1444,14 +1723,14 @@ private struct MenuBarLabel: View {
         .onChange(of: flow.earlyReminderCommitment) { _, commitment in
             if commitment != nil {
                 openWindow(id: "early-reminder")
-            } else {
+            } else if flow.lastActionMessage == nil {
                 EarlyReminderWindowController.shared.close()
             }
         }
         .onChange(of: flow.isStrongAlertPresented) { _, isPresented in
             if isPresented {
                 openWindow(id: "strong-alert")
-            } else {
+            } else if flow.lastActionMessage == nil {
                 StrongAlertWindowController.shared.close()
             }
         }

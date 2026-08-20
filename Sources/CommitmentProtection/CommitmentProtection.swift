@@ -107,6 +107,16 @@ public enum ConnectionState: Equatable, Sendable {
     case failed(String)
 }
 
+public enum CommitmentProtectionDecision: String, Codable, Equatable, Sendable {
+    case handled
+    case dismissed
+    case joined
+
+    public var isRestorable: Bool {
+        self == .handled || self == .dismissed
+    }
+}
+
 public struct EarlyReminderBlockingMode: Equatable, Sendable {
     public private(set) var shouldAttemptBlocking = false
 
@@ -136,6 +146,9 @@ public final class CommitmentProtectionFlow: ObservableObject {
     @Published public private(set) var upcomingCommitment: CalendarEvent?
     @Published public private(set) var earlyReminderCommitment: CalendarEvent?
     @Published public private(set) var strongAlertCommitment: CalendarEvent?
+    @Published public private(set) var currentCommitmentDecision: CommitmentProtectionDecision?
+    @Published public private(set) var decisionCommitment: CalendarEvent?
+    @Published public private(set) var lastActionMessage: String?
     @Published public private(set) var earlyReminderLeadTimeMinutes: Int
     @Published public private(set) var strongAlertRepeatIntervalMinutes: Int
 
@@ -148,29 +161,80 @@ public final class CommitmentProtectionFlow: ObservableObject {
     private static let strongAlertRepeatIntervalKey = "commitment-protection.strong-alert-repeat-interval"
     private var clearedEarlyReminderEventID: String?
     private var clearedEarlyReminderEventStartDate: Date?
+    private struct OccurrenceIdentity: Equatable, Sendable {
+        let eventID: String
+        let startDate: Date?
+
+        init(_ commitment: CalendarEvent) {
+            eventID = commitment.id
+            startDate = commitment.startDate
+        }
+
+        init(eventID: String, startDate: Date?) {
+            self.eventID = eventID
+            self.startDate = startDate
+        }
+    }
+
+    private var snoozedOccurrence: OccurrenceIdentity?
+    private var snoozedUntil: Date?
+    private var decisionOccurrence: OccurrenceIdentity?
+    private var lastActionOccurrence: OccurrenceIdentity?
     private var strongAlertEventID: String?
     private var strongAlertEventStartDate: Date?
     private var strongAlertNextPresentationDate: Date?
-    private var handledStrongAlertEventID: String?
-    private var handledStrongAlertEventStartDate: Date?
     private var monitoringTask: Task<Void, Never>?
     private var refreshGeneration = 0
+
+    private struct SavedOccurrence: Codable {
+        let eventID: String
+        let startDate: Date?
+
+        init(_ occurrence: OccurrenceIdentity) {
+            eventID = occurrence.eventID
+            startDate = occurrence.startDate
+        }
+
+        var identity: OccurrenceIdentity {
+            OccurrenceIdentity(eventID: eventID, startDate: startDate)
+        }
+    }
 
     private struct SavedConfiguration: Codable {
         let accountID: String
         let selectedCalendarIDs: [String]
         let isProtectionConfirmed: Bool
+        let decisionOccurrence: SavedOccurrence?
+        let currentCommitmentDecision: CommitmentProtectionDecision?
+        let snoozedOccurrence: SavedOccurrence?
+        let snoozedUntil: Date?
 
         private enum CodingKeys: String, CodingKey {
             case accountID
             case selectedCalendarIDs
             case isProtectionConfirmed
+            case decisionOccurrence
+            case currentCommitmentDecision
+            case snoozedOccurrence
+            case snoozedUntil
         }
 
-        init(accountID: String, selectedCalendarIDs: [String], isProtectionConfirmed: Bool) {
+        init(
+            accountID: String,
+            selectedCalendarIDs: [String],
+            isProtectionConfirmed: Bool,
+            decisionOccurrence: SavedOccurrence?,
+            currentCommitmentDecision: CommitmentProtectionDecision?,
+            snoozedOccurrence: SavedOccurrence?,
+            snoozedUntil: Date?
+        ) {
             self.accountID = accountID
             self.selectedCalendarIDs = selectedCalendarIDs
             self.isProtectionConfirmed = isProtectionConfirmed
+            self.decisionOccurrence = decisionOccurrence
+            self.currentCommitmentDecision = currentCommitmentDecision
+            self.snoozedOccurrence = snoozedOccurrence
+            self.snoozedUntil = snoozedUntil
         }
 
         init(from decoder: Decoder) throws {
@@ -178,6 +242,13 @@ public final class CommitmentProtectionFlow: ObservableObject {
             accountID = try container.decode(String.self, forKey: .accountID)
             selectedCalendarIDs = try container.decode([String].self, forKey: .selectedCalendarIDs)
             isProtectionConfirmed = try container.decodeIfPresent(Bool.self, forKey: .isProtectionConfirmed) ?? false
+            decisionOccurrence = try container.decodeIfPresent(SavedOccurrence.self, forKey: .decisionOccurrence)
+            currentCommitmentDecision = try container.decodeIfPresent(
+                CommitmentProtectionDecision.self,
+                forKey: .currentCommitmentDecision
+            )
+            snoozedOccurrence = try container.decodeIfPresent(SavedOccurrence.self, forKey: .snoozedOccurrence)
+            snoozedUntil = try container.decodeIfPresent(Date.self, forKey: .snoozedUntil)
         }
     }
 
@@ -240,6 +311,32 @@ public final class CommitmentProtectionFlow: ObservableObject {
         }
     }
 
+    public var snoozeOptionsMinutes: [Int] {
+        [5, 10]
+    }
+
+    public var canSnoozeEarlyReminder: Bool {
+        guard let commitment = earlyReminderCommitment,
+              let startDate = commitment.startDate else {
+            return false
+        }
+        let occurrence = OccurrenceIdentity(commitment)
+        return startDate > now() && snoozedOccurrence != occurrence
+    }
+
+    public var canRestoreProtection: Bool {
+        guard currentCommitmentDecision?.isRestorable == true,
+              let endDate = decisionCommitment?.endDate else {
+            return false
+        }
+        return endDate > now()
+    }
+
+    public func actionResultMessage(for commitment: CalendarEvent) -> String? {
+        guard lastActionOccurrence == OccurrenceIdentity(commitment) else { return nil }
+        return lastActionMessage
+    }
+
     public func connectGoogleAccount() async {
         invalidateRefreshes()
         clearProtectionState()
@@ -286,8 +383,10 @@ public final class CommitmentProtectionFlow: ObservableObject {
         clearStrongAlertState()
         clearedEarlyReminderEventID = nil
         clearedEarlyReminderEventStartDate = nil
-        handledStrongAlertEventID = nil
-        handledStrongAlertEventStartDate = nil
+        snoozedOccurrence = nil
+        snoozedUntil = nil
+        clearLocalDecision()
+        lastActionMessage = nil
         connectionState = .notConnected
         stateStore.removeObject(forKey: Self.stateKey)
         return true
@@ -314,6 +413,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
             selectedCalendarIDs = Set(savedConfiguration.selectedCalendarIDs)
                 .intersection(Set(connection.calendars.map(\.id)))
             isProtectionConfirmed = savedConfiguration.isProtectionConfirmed
+            restoreLocalState(from: savedConfiguration)
             connectionState = .connected
             saveConfiguration()
             await refreshCommitmentProtection()
@@ -446,6 +546,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
                     }
                     return leftStart == rightStart ? left.id < right.id : leftStart < rightStart
                 }
+            updateLocalState(for: eligibleEvents, at: currentDate)
             let nextCommitment = eligibleEvents.first(where: { event in
                 guard let startDate = event.startDate else { return false }
                 return startDate > currentDate
@@ -472,7 +573,9 @@ public final class CommitmentProtectionFlow: ObservableObject {
                   let startDate = nextCommitment.startDate,
                   currentDate >= startDate.addingTimeInterval(-Double(earlyReminderLeadTimeMinutes) * 60),
                   !(clearedEarlyReminderEventID == nextCommitment.id &&
-                    clearedEarlyReminderEventStartDate == startDate) else {
+                    clearedEarlyReminderEventStartDate == startDate),
+                  !isDecisionActive(nextCommitment),
+                  !isSnoozed(nextCommitment, at: currentDate) else {
                 earlyReminderCommitment = nil
                 return
             }
@@ -500,23 +603,114 @@ public final class CommitmentProtectionFlow: ObservableObject {
     @discardableResult
     public func joinStrongAlert() -> URL? {
         guard let meetingLink = strongAlertCommitment?.recognizedMeetingLink else { return nil }
-        handleStrongAlert()
+        guard let commitment = strongAlertCommitment else { return nil }
+        recordDecision(
+            .joined,
+            for: commitment,
+            message: "Joined. Protection ended for this occurrence."
+        )
         return meetingLink
     }
 
     public func handleStrongAlert() {
         guard let commitment = strongAlertCommitment else { return }
-        handledStrongAlertEventID = commitment.id
-        handledStrongAlertEventStartDate = commitment.startDate
-        clearStrongAlertState()
+        _ = handle(commitment, at: now())
+    }
+
+    @discardableResult
+    public func handleCommitment(at date: Date? = nil) -> Bool {
+        guard let commitment = strongAlertCommitment ?? earlyReminderCommitment ?? upcomingCommitment else {
+            return false
+        }
+        return handleCommitment(for: commitment, at: date)
+    }
+
+    @discardableResult
+    public func handleCommitment(for commitment: CalendarEvent, at date: Date? = nil) -> Bool {
+        guard isActionable(commitment) else { return false }
+        return handle(commitment, at: date ?? now())
+    }
+
+    @discardableResult
+    public func dismissCommitment(at date: Date? = nil) -> Bool {
+        guard let commitment = strongAlertCommitment ?? earlyReminderCommitment ?? upcomingCommitment else {
+            return false
+        }
+        return dismissCommitment(for: commitment, at: date)
+    }
+
+    @discardableResult
+    public func dismissCommitment(for commitment: CalendarEvent, at date: Date? = nil) -> Bool {
+        guard isActionable(commitment),
+              let endDate = commitment.endDate,
+              endDate > (date ?? now()) else {
+            return false
+        }
+        recordDecision(
+            .dismissed,
+            for: commitment,
+            message: "Dismissed for this occurrence. Protection is off until it ends."
+        )
+        return true
+    }
+
+    @discardableResult
+    public func restoreProtection(at date: Date? = nil) -> Bool {
+        let currentDate = date ?? now()
+        guard currentCommitmentDecision?.isRestorable == true,
+              let commitment = decisionCommitment,
+              let endDate = commitment.endDate,
+              endDate > currentDate else {
+            return false
+        }
+
+        clearLocalDecision()
+        lastActionMessage = "Protection restored for this occurrence."
+        lastActionOccurrence = OccurrenceIdentity(commitment)
+        saveConfiguration()
+        restoreDisplayedProtection(for: commitment, at: currentDate)
+        return true
+    }
+
+    @discardableResult
+    public func snoozeEarlyReminder(minutes: Int, at date: Date? = nil) -> Bool {
+        let currentDate = date ?? now()
+        guard snoozeOptionsMinutes.contains(minutes),
+              let commitment = earlyReminderCommitment,
+              let startDate = commitment.startDate,
+              startDate > currentDate else {
+            return false
+        }
+
+        let occurrence = OccurrenceIdentity(commitment)
+        guard snoozedOccurrence != occurrence else { return false }
+
+        snoozedOccurrence = occurrence
+        snoozedUntil = min(
+            startDate,
+            currentDate.addingTimeInterval(Double(minutes) * 60)
+        )
+        earlyReminderCommitment = nil
+        lastActionMessage = snoozedUntil == startDate && currentDate.addingTimeInterval(Double(minutes) * 60) > startDate
+            ? "Snoozed until the commitment starts. Protection remains active."
+            : "Snoozed for \(minutes) minutes. Protection remains active."
+        lastActionOccurrence = occurrence
+        saveConfiguration()
+        return true
     }
 
     public func closeStrongAlertSurface(at date: Date = Date()) {
-        guard isStrongAlertPresented, strongAlertCommitment != nil else { return }
+        guard isStrongAlertPresented,
+              let commitment = strongAlertCommitment else { return }
         isStrongAlertPresented = false
         strongAlertNextPresentationDate = date.addingTimeInterval(
             Double(strongAlertRepeatIntervalMinutes) * 60
         )
+        let interval = strongAlertRepeatIntervalMinutes == 1
+            ? "1 minute"
+            : "\(strongAlertRepeatIntervalMinutes) minutes"
+        lastActionMessage = "Strong Alert closed. Protection remains active and will repeat in \(interval)."
+        lastActionOccurrence = OccurrenceIdentity(commitment)
     }
 
     public func strongAlertTimingText(for commitment: CalendarEvent, at date: Date) -> String {
@@ -552,6 +746,8 @@ public final class CommitmentProtectionFlow: ObservableObject {
         clearedEarlyReminderEventID = earlyReminderCommitment.id
         clearedEarlyReminderEventStartDate = earlyReminderCommitment.startDate
         self.earlyReminderCommitment = nil
+        lastActionMessage = "Early Reminder cleared. Protection remains active."
+        lastActionOccurrence = OccurrenceIdentity(earlyReminderCommitment)
     }
 
     public func localStartTimeText(for commitment: CalendarEvent) -> String {
@@ -601,9 +797,117 @@ public final class CommitmentProtectionFlow: ObservableObject {
         min(max(minutes, 1), 5)
     }
 
+    private func handle(_ commitment: CalendarEvent, at date: Date) -> Bool {
+        guard let endDate = commitment.endDate, endDate > date else { return false }
+        recordDecision(
+            .handled,
+            for: commitment,
+            message: "Handled for this occurrence. Protection is off until it ends."
+        )
+        return true
+    }
+
+    private func isActionable(_ commitment: CalendarEvent) -> Bool {
+        let occurrence = OccurrenceIdentity(commitment)
+        return [strongAlertCommitment, earlyReminderCommitment, upcomingCommitment]
+            .compactMap { $0 }
+            .contains { OccurrenceIdentity($0) == occurrence }
+    }
+
+    private func recordDecision(
+        _ decision: CommitmentProtectionDecision,
+        for commitment: CalendarEvent,
+        message: String
+    ) {
+        decisionOccurrence = OccurrenceIdentity(commitment)
+        currentCommitmentDecision = decision
+        decisionCommitment = commitment
+        if let earlyReminderCommitment,
+           OccurrenceIdentity(earlyReminderCommitment) == decisionOccurrence {
+            self.earlyReminderCommitment = nil
+        }
+        if let strongAlertCommitment,
+           OccurrenceIdentity(strongAlertCommitment) == decisionOccurrence {
+            clearStrongAlertState()
+        }
+        lastActionMessage = message
+        lastActionOccurrence = OccurrenceIdentity(commitment)
+        saveConfiguration()
+    }
+
+    private func updateLocalState(for eligibleEvents: [CalendarEvent], at date: Date) {
+        if let lastActionOccurrence,
+           !eligibleEvents.contains(where: { OccurrenceIdentity($0) == lastActionOccurrence }) {
+            clearLastActionMessage()
+        }
+
+        if let decisionOccurrence {
+            if let matchingCommitment = eligibleEvents.first(where: {
+                OccurrenceIdentity($0) == decisionOccurrence
+            }) {
+                decisionCommitment = matchingCommitment
+                if matchingCommitment.endDate ?? .distantPast <= date {
+                    clearLocalDecision()
+                    saveConfiguration()
+                }
+            } else {
+                clearLocalDecision()
+                saveConfiguration()
+            }
+        }
+
+        if let snoozedOccurrence,
+           !eligibleEvents.contains(where: { OccurrenceIdentity($0) == snoozedOccurrence }) {
+            self.snoozedOccurrence = nil
+            snoozedUntil = nil
+            saveConfiguration()
+        }
+    }
+
+    private func isSnoozed(_ commitment: CalendarEvent, at date: Date) -> Bool {
+        guard snoozedOccurrence == OccurrenceIdentity(commitment),
+              let snoozedUntil else {
+            return false
+        }
+        return date < snoozedUntil
+    }
+
+    private func isDecisionActive(_ commitment: CalendarEvent) -> Bool {
+        decisionOccurrence == OccurrenceIdentity(commitment) && currentCommitmentDecision != nil
+    }
+
+    private func restoreDisplayedProtection(for commitment: CalendarEvent, at date: Date) {
+        guard let startDate = commitment.startDate,
+              let endDate = commitment.endDate,
+              endDate > date else {
+            return
+        }
+
+        if startDate > date {
+            guard date >= startDate.addingTimeInterval(-Double(earlyReminderLeadTimeMinutes) * 60),
+                  !(clearedEarlyReminderEventID == commitment.id &&
+                    clearedEarlyReminderEventStartDate == startDate),
+                  !isSnoozed(commitment, at: date) else {
+                return
+            }
+            upcomingCommitment = commitment
+            earlyReminderCommitment = commitment
+            return
+        }
+
+        strongAlertEventID = commitment.id
+        strongAlertEventStartDate = startDate
+        strongAlertNextPresentationDate = date
+        strongAlertCommitment = commitment
+        isStrongAlertPresented = true
+        strongAlertNextPresentationDate = date.addingTimeInterval(
+            Double(strongAlertRepeatIntervalMinutes) * 60
+        )
+    }
+
     private func updateStrongAlert(for commitment: CalendarEvent, at date: Date) {
-        if handledStrongAlertEventID == commitment.id,
-           handledStrongAlertEventStartDate == commitment.startDate {
+        if decisionOccurrence == OccurrenceIdentity(commitment),
+           currentCommitmentDecision != nil {
             clearStrongAlertState()
             return
         }
@@ -622,6 +926,9 @@ public final class CommitmentProtectionFlow: ObservableObject {
             return
         }
 
+        if !isStrongAlertPresented {
+            clearLastActionMessage()
+        }
         isStrongAlertPresented = true
         strongAlertNextPresentationDate = date.addingTimeInterval(
             Double(strongAlertRepeatIntervalMinutes) * 60
@@ -647,13 +954,24 @@ public final class CommitmentProtectionFlow: ObservableObject {
         return try? JSONDecoder().decode(SavedConfiguration.self, from: data)
     }
 
+    private func restoreLocalState(from configuration: SavedConfiguration) {
+        decisionOccurrence = configuration.decisionOccurrence?.identity
+        currentCommitmentDecision = configuration.currentCommitmentDecision
+        snoozedOccurrence = configuration.snoozedOccurrence?.identity
+        snoozedUntil = configuration.snoozedUntil
+    }
+
     private func saveConfiguration() {
         guard let connectedAccount else { return }
 
         let configuration = SavedConfiguration(
             accountID: connectedAccount.id,
             selectedCalendarIDs: selectedCalendarIDs.sorted(),
-            isProtectionConfirmed: isProtectionConfirmed
+            isProtectionConfirmed: isProtectionConfirmed,
+            decisionOccurrence: decisionOccurrence.map(SavedOccurrence.init),
+            currentCommitmentDecision: currentCommitmentDecision,
+            snoozedOccurrence: snoozedOccurrence.map(SavedOccurrence.init),
+            snoozedUntil: snoozedUntil
         )
         guard let data = try? JSONEncoder().encode(configuration) else { return }
         stateStore.set(data, forKey: Self.stateKey)
@@ -672,8 +990,10 @@ public final class CommitmentProtectionFlow: ObservableObject {
         clearDisplayedProtectionState()
         clearedEarlyReminderEventID = nil
         clearedEarlyReminderEventStartDate = nil
-        handledStrongAlertEventID = nil
-        handledStrongAlertEventStartDate = nil
+        snoozedOccurrence = nil
+        snoozedUntil = nil
+        clearLocalDecision()
+        clearLastActionMessage()
     }
 
     private func clearDisplayedProtectionState() {
@@ -688,6 +1008,17 @@ public final class CommitmentProtectionFlow: ObservableObject {
         strongAlertEventID = nil
         strongAlertEventStartDate = nil
         strongAlertNextPresentationDate = nil
+    }
+
+    private func clearLocalDecision() {
+        currentCommitmentDecision = nil
+        decisionCommitment = nil
+        decisionOccurrence = nil
+    }
+
+    private func clearLastActionMessage() {
+        lastActionMessage = nil
+        lastActionOccurrence = nil
     }
 }
 

@@ -617,6 +617,337 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertNil(flow.earlyReminderCommitment)
     }
 
+    func testSnoozeOffersFiveAndTenMinutesAndCapsAtCommitmentStart() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(8 * 60),
+            endDate: now.addingTimeInterval(68 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [commitment],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertEqual(flow.snoozeOptionsMinutes, [5, 10])
+        XCTAssertTrue(flow.canSnoozeEarlyReminder)
+        XCTAssertTrue(flow.snoozeEarlyReminder(minutes: 10, at: now))
+        XCTAssertEqual(flow.lastActionMessage, "Snoozed until the commitment starts. Protection remains active.")
+        XCTAssertNil(flow.earlyReminderCommitment)
+
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(8 * 60))
+
+        XCTAssertTrue(flow.isStrongAlertPresented)
+        XCTAssertFalse(flow.canSnoozeEarlyReminder)
+        XCTAssertFalse(flow.snoozeEarlyReminder(minutes: 5, at: now.addingTimeInterval(8 * 60)))
+    }
+
+    func testSnoozeReturnsOnceButCannotBeUsedAgain() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(10 * 60),
+            endDate: now.addingTimeInterval(70 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [commitment],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+        XCTAssertTrue(flow.snoozeEarlyReminder(minutes: 5, at: now))
+
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(5 * 60))
+
+        XCTAssertEqual(flow.earlyReminderCommitment, commitment)
+        XCTAssertFalse(flow.canSnoozeEarlyReminder)
+        XCTAssertFalse(flow.snoozeEarlyReminder(minutes: 10, at: now.addingTimeInterval(5 * 60)))
+    }
+
+    func testDismissStopsTheOccurrenceAndRestoreProtectionReactivatesIt() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(10 * 60),
+            endDate: now.addingTimeInterval(70 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [commitment],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+        XCTAssertTrue(flow.dismissCommitment(at: now))
+
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertNil(flow.earlyReminderCommitment)
+        XCTAssertEqual(flow.upcomingCommitment, commitment)
+        XCTAssertEqual(flow.currentCommitmentDecision, .dismissed)
+        XCTAssertTrue(flow.canRestoreProtection)
+        XCTAssertEqual(flow.lastActionMessage, "Dismissed for this occurrence. Protection is off until it ends.")
+        XCTAssertTrue(flow.restoreProtection(at: now))
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertNil(flow.currentCommitmentDecision)
+        XCTAssertFalse(flow.canRestoreProtection)
+        XCTAssertEqual(flow.earlyReminderCommitment, commitment)
+        XCTAssertEqual(flow.lastActionMessage, "Protection restored for this occurrence.")
+    }
+
+    func testHandledDecisionCanBeRestoredAfterStrongAlertIsCleared() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "On-site review",
+            startDate: now,
+            endDate: now.addingTimeInterval(60 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [commitment],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+        flow.handleStrongAlert()
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertFalse(flow.isStrongAlertPresented)
+        XCTAssertEqual(flow.currentCommitmentDecision, .handled)
+        XCTAssertTrue(flow.canRestoreProtection)
+        XCTAssertEqual(flow.lastActionMessage, "Handled for this occurrence. Protection is off until it ends.")
+        XCTAssertTrue(flow.restoreProtection(at: now))
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertTrue(flow.isStrongAlertPresented)
+        XCTAssertNil(flow.currentCommitmentDecision)
+    }
+
+    func testDismissedDecisionSurvivesRelaunchForTheCurrentOccurrence() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(10 * 60),
+            endDate: now.addingTimeInterval(70 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let connection = GoogleCalendarConnection(account: account, calendars: [calendar])
+        let suiteName = "CommitmentProtectionFlowTests.decisionPersistence.\(UUID().uuidString)"
+        let stateStore = UserDefaults(suiteName: suiteName)!
+        defer { stateStore.removePersistentDomain(forName: suiteName) }
+
+        let firstLaunch = CommitmentProtectionFlow(
+            calendarConnector: TestGoogleCalendarConnector(connection: connection, events: [commitment]),
+            launchAtLogin: TestLaunchAtLoginController(),
+            stateStore: stateStore,
+            now: { now }
+        )
+        await activateProtection(for: firstLaunch, calendarID: calendar.id)
+        await firstLaunch.refreshCommitmentProtection(at: now)
+        XCTAssertTrue(firstLaunch.dismissCommitment(at: now))
+
+        let relaunch = CommitmentProtectionFlow(
+            calendarConnector: TestGoogleCalendarConnector(connection: connection, events: [commitment]),
+            launchAtLogin: TestLaunchAtLoginController(),
+            stateStore: stateStore,
+            now: { now }
+        )
+        await relaunch.restoreSavedConnection()
+
+        XCTAssertEqual(relaunch.currentCommitmentDecision, .dismissed)
+        XCTAssertEqual(relaunch.decisionCommitment, commitment)
+        XCTAssertNil(relaunch.earlyReminderCommitment)
+        XCTAssertTrue(relaunch.canRestoreProtection)
+    }
+
+    func testSnoozeUsageSurvivesRelaunchForTheCurrentOccurrence() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(10 * 60),
+            endDate: now.addingTimeInterval(70 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let connection = GoogleCalendarConnection(account: account, calendars: [calendar])
+        let suiteName = "CommitmentProtectionFlowTests.snoozePersistence.\(UUID().uuidString)"
+        let stateStore = UserDefaults(suiteName: suiteName)!
+        defer { stateStore.removePersistentDomain(forName: suiteName) }
+
+        let firstLaunch = CommitmentProtectionFlow(
+            calendarConnector: TestGoogleCalendarConnector(connection: connection, events: [commitment]),
+            launchAtLogin: TestLaunchAtLoginController(),
+            stateStore: stateStore,
+            now: { now }
+        )
+        await activateProtection(for: firstLaunch, calendarID: calendar.id)
+        await firstLaunch.refreshCommitmentProtection(at: now)
+        XCTAssertTrue(firstLaunch.snoozeEarlyReminder(minutes: 5, at: now))
+
+        let relaunch = CommitmentProtectionFlow(
+            calendarConnector: TestGoogleCalendarConnector(connection: connection, events: [commitment]),
+            launchAtLogin: TestLaunchAtLoginController(),
+            stateStore: stateStore,
+            now: { now }
+        )
+        await relaunch.restoreSavedConnection()
+
+        XCTAssertNil(relaunch.earlyReminderCommitment)
+        XCTAssertFalse(relaunch.canSnoozeEarlyReminder)
+
+        await relaunch.refreshCommitmentProtection(at: now.addingTimeInterval(5 * 60))
+
+        XCTAssertEqual(relaunch.earlyReminderCommitment, commitment)
+        XCTAssertFalse(relaunch.canSnoozeEarlyReminder)
+    }
+
+    func testEarlyActionTargetsItsOccurrenceWhenAnotherCommitmentIsActive() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let activeCommitment = CalendarEvent(
+            id: "active-event",
+            title: "Current review",
+            startDate: now.addingTimeInterval(-2 * 60),
+            endDate: now.addingTimeInterval(30 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let upcomingCommitment = CalendarEvent(
+            id: "upcoming-event",
+            title: "Next review",
+            startDate: now.addingTimeInterval(5 * 60),
+            endDate: now.addingTimeInterval(65 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [activeCommitment, upcomingCommitment],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertEqual(flow.strongAlertCommitment, activeCommitment)
+        XCTAssertEqual(flow.earlyReminderCommitment, upcomingCommitment)
+        XCTAssertTrue(flow.dismissCommitment(for: upcomingCommitment, at: now))
+
+        XCTAssertEqual(flow.currentCommitmentDecision, .dismissed)
+        XCTAssertEqual(flow.decisionCommitment, upcomingCommitment)
+        XCTAssertNil(flow.earlyReminderCommitment)
+        XCTAssertEqual(flow.strongAlertCommitment, activeCommitment)
+        XCTAssertTrue(flow.isStrongAlertPresented)
+    }
+
+    func testDismissedOccurrenceDoesNotSuppressItsRescheduledSuccessor() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let originalCommitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(10 * 60),
+            endDate: now.addingTimeInterval(70 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let rescheduledCommitment = CalendarEvent(
+            id: originalCommitment.id,
+            title: originalCommitment.title,
+            startDate: now.addingTimeInterval(30 * 60),
+            endDate: now.addingTimeInterval(90 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let connector = MutableTestGoogleCalendarConnector(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [originalCommitment]
+        )
+        let flow = CommitmentProtectionFlow(
+            calendarConnector: connector,
+            launchAtLogin: TestLaunchAtLoginController(),
+            now: { now }
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+        XCTAssertTrue(flow.dismissCommitment(at: now))
+
+        connector.events = [rescheduledCommitment]
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(20 * 60))
+
+        XCTAssertNil(flow.currentCommitmentDecision)
+        XCTAssertEqual(flow.earlyReminderCommitment, rescheduledCommitment)
+    }
+
     func testRescheduledEventGetsANewEarlyReminder() async {
         let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
         let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
