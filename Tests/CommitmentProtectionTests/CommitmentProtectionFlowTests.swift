@@ -71,7 +71,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertEqual(relaunch.status, .active)
     }
 
-    func testSelectedCalendarDoesNotClaimActiveProtectionWhenLoginNeedsAttention() async {
+    func testSelectedCalendarRemainsActiveWhileLoginNeedsAttention() async {
         let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
         let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
         let flow = CommitmentProtectionFlow(
@@ -84,8 +84,8 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         await flow.connectGoogleAccount()
         flow.setCalendarSelected(true, calendarID: calendar.id)
 
-        XCTAssertEqual(flow.status, .needsAttention)
-        XCTAssertEqual(flow.menuBarTitle, "Start at Login Needs Attention")
+        XCTAssertEqual(flow.status, .active)
+        XCTAssertEqual(flow.menuBarTitle, "Active Protection · Login Needs Attention")
     }
 
     func testTestAlertCanBePresentedAndDismissedWithoutACommitment() async {

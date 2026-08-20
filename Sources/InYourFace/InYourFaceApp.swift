@@ -123,10 +123,10 @@ private struct ProtectionStatusCard: View {
 
             Text(
                 flow.status == .active
-                    ? "Your selected calendars are protected."
-                    : flow.status == .needsAttention
-                        ? "Protection is configured, but start-at-login needs attention."
-                        : "Select a calendar before commitments can be protected."
+                    ? (flow.isLaunchAtLoginEnabled
+                        ? "Your selected calendars are protected."
+                        : "Protection is configured, but start-at-login needs attention.")
+                    : "Select a calendar before commitments can be protected."
             )
             .foregroundStyle(.secondary)
         }
@@ -141,8 +141,6 @@ private struct ProtectionStatusCard: View {
             return "No Coverage"
         case .active:
             return "Active Protection"
-        case .needsAttention:
-            return "Start at Login Needs Attention"
         }
     }
 
