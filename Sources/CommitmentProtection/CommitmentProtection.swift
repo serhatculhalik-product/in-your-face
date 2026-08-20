@@ -107,6 +107,20 @@ public enum ConnectionState: Equatable, Sendable {
     case failed(String)
 }
 
+public struct EarlyReminderBlockingMode: Equatable, Sendable {
+    public private(set) var shouldAttemptBlocking = false
+
+    public init() {}
+
+    public mutating func enableBlocking() {
+        shouldAttemptBlocking = true
+    }
+
+    public mutating func disableBlocking() {
+        shouldAttemptBlocking = false
+    }
+}
+
 @MainActor
 public final class CommitmentProtectionFlow: ObservableObject {
     @Published public private(set) var connectedAccount: GoogleAccount?

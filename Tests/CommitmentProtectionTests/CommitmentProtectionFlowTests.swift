@@ -4,6 +4,20 @@ import XCTest
 
 @MainActor
 final class CommitmentProtectionFlowTests: XCTestCase {
+    func testEarlyReminderStaysVisualUntilBlockingModeIsExplicitlyEnabled() {
+        var mode = EarlyReminderBlockingMode()
+
+        XCTAssertFalse(mode.shouldAttemptBlocking)
+
+        mode.enableBlocking()
+
+        XCTAssertTrue(mode.shouldAttemptBlocking)
+
+        mode.disableBlocking()
+
+        XCTAssertFalse(mode.shouldAttemptBlocking)
+    }
+
     func testStartsWithNoCoverageAndEnablesLaunchAtLogin() {
         let launchAtLogin = TestLaunchAtLoginController()
         let flow = CommitmentProtectionFlow(

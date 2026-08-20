@@ -293,7 +293,7 @@ private struct EarlyReminderSettingsCard: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Early Reminder")
                 .font(.headline)
-            Text("A blocking reminder before an accepted commitment starts.")
+            Text("A visual reminder before an accepted commitment starts. Optional blocking mode can keep it in front of other windows.")
                 .foregroundStyle(.secondary)
 
             Stepper(
@@ -452,7 +452,7 @@ private struct EarlyReminderView: View {
                     Button("Open Input Monitoring Settings") {
                         windowController.openInputMonitoringSettings()
                     }
-                    Button("Try Again") {
+                    Button("Enable Blocking Mode") {
                         windowController.retryBlocking()
                     }
                 }
@@ -634,7 +634,7 @@ private struct EarlyReminderFallbackView: View {
                     .foregroundStyle(.secondary)
                 Button("Open Accessibility Settings", action: openAccessibilitySettings)
                 Button("Open Input Monitoring Settings", action: openInputMonitoringSettings)
-                Button("Try Again", action: retryBlocking)
+                Button("Enable Blocking Mode", action: retryBlocking)
             }
             Button("Clear Early Reminder", action: clear)
                 .keyboardShortcut(.defaultAction)
@@ -817,6 +817,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
     private var allowsWindowClose = false
     private var isPresented = false
     private var isInteractionBarrierActive = false
+    private var blockingMode = EarlyReminderBlockingMode()
     @Published private(set) var isGlobalInteractionBarrierAvailable = false
 
     func present(
@@ -868,8 +869,13 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         window.standardWindowButton(.zoomButton)?.isEnabled = false
         window.isMovable = false
         isPresented = true
-        startBarrierRetryMonitoring()
-        let barrierAvailable = activateInteractionBarrier()
+        let barrierAvailable: Bool
+        if blockingMode.shouldAttemptBlocking {
+            startBarrierRetryMonitoring()
+            barrierAvailable = attemptBlockingMode()
+        } else {
+            barrierAvailable = false
+        }
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         if !barrierAvailable {
@@ -1003,8 +1009,13 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         fallbackPanel = panel
         window = panel
         isPresented = true
-        startBarrierRetryMonitoring()
-        let barrierAvailable = activateInteractionBarrier()
+        let barrierAvailable: Bool
+        if blockingMode.shouldAttemptBlocking {
+            startBarrierRetryMonitoring()
+            barrierAvailable = attemptBlockingMode()
+        } else {
+            barrierAvailable = false
+        }
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
         if !barrierAvailable {
@@ -1028,6 +1039,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
 
     func retryBlocking() {
         guard isPresented else { return }
+        blockingMode.enableBlocking()
         stopBarrierRetryMonitoring()
         deactivateInteractionBarrier()
         startBarrierRetryMonitoring()
@@ -1208,7 +1220,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
     }
 
     private func startBarrierRetryMonitoring() {
-        guard barrierRetryTimer == nil else { return }
+        guard blockingMode.shouldAttemptBlocking, barrierRetryTimer == nil else { return }
         barrierRetryTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.retryInteractionBarrierIfNeeded()
@@ -1222,7 +1234,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
     }
 
     private func retryInteractionBarrierIfNeeded() {
-        guard isPresented else { return }
+        guard isPresented, blockingMode.shouldAttemptBlocking else { return }
         if isInteractionBarrierActive {
             if interactionGate.userDisabledEventTap() {
                 stopBarrierRetryMonitoring()
@@ -1235,8 +1247,19 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
             }
             return
         }
-        guard activateInteractionBarrier() else { return }
+        guard attemptBlockingMode() else { return }
         bringReminderToFront()
+    }
+
+    @discardableResult
+    private func attemptBlockingMode() -> Bool {
+        guard blockingMode.shouldAttemptBlocking else { return false }
+        guard activateInteractionBarrier() else {
+            blockingMode.disableBlocking()
+            stopBarrierRetryMonitoring()
+            return false
+        }
+        return true
     }
 
     private func blockVisibleWindows() {
