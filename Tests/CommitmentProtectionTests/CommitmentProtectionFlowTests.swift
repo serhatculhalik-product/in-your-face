@@ -1788,6 +1788,233 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertFalse(events[2].isAccepted)
     }
 
+    func testPauseForOneHourSuppressesCurrentAndFutureProtectionAndShowsExpiration() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(5 * 60),
+            endDate: now.addingTimeInterval(65 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [commitment],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertEqual(flow.earlyReminderCommitment, commitment)
+        XCTAssertTrue(flow.pause(for: .oneHour, at: now))
+        XCTAssertEqual(flow.pauseUntil, now.addingTimeInterval(60 * 60))
+        XCTAssertTrue(flow.isPaused(at: now))
+        XCTAssertTrue(flow.pauseExpirationText(at: now).contains("1 hour"))
+        XCTAssertNil(flow.earlyReminderCommitment)
+
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(5 * 60))
+
+        XCTAssertFalse(flow.isStrongAlertPresented)
+        XCTAssertNil(flow.strongAlertCommitment)
+    }
+
+    func testPauseSupportsEndOfDayAndCustomExpirationChoices() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+
+        let expectedEndOfDay = Calendar.current.date(
+            byAdding: .day,
+            value: 1,
+            to: Calendar.current.startOfDay(for: now)
+        )!
+        XCTAssertTrue(flow.pause(for: .endOfDay, at: now))
+        XCTAssertEqual(flow.pauseUntil, expectedEndOfDay)
+
+        let customExpiration = now.addingTimeInterval(90 * 60)
+        XCTAssertTrue(flow.pause(for: .custom(customExpiration), at: now))
+        XCTAssertEqual(flow.pauseUntil, customExpiration)
+        XCTAssertFalse(flow.pause(for: .custom(now), at: now))
+    }
+
+    func testPauseExpiryResumesStrongAlertForAnOngoingCommitment() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(-5 * 60),
+            endDate: now.addingTimeInterval(2 * 60 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [commitment],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+        XCTAssertTrue(flow.isStrongAlertPresented)
+
+        XCTAssertTrue(flow.pause(for: .oneHour, at: now))
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(60 * 60))
+
+        XCTAssertFalse(flow.isPaused(at: now.addingTimeInterval(60 * 60)))
+        XCTAssertTrue(flow.isStrongAlertPresented)
+        XCTAssertEqual(flow.strongAlertCommitment, commitment)
+    }
+
+    func testCommitmentEndingWithoutAnExplicitDecisionBecomesMissed() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(-5 * 60),
+            endDate: now.addingTimeInterval(5 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [commitment],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+        XCTAssertTrue(flow.isStrongAlertPresented)
+
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(5 * 60 + 1))
+
+        XCTAssertFalse(flow.isStrongAlertPresented)
+        XCTAssertNil(flow.strongAlertCommitment)
+        XCTAssertEqual(flow.missedCommitment, commitment)
+    }
+
+    func testPauseExpiryAfterCommitmentEndsShowsPassiveMissedStatus() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(-5 * 60),
+            endDate: now.addingTimeInterval(5 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [commitment],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+        XCTAssertTrue(flow.pause(for: .oneHour, at: now))
+
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(60 * 60))
+
+        XCTAssertFalse(flow.isStrongAlertPresented)
+        XCTAssertEqual(flow.missedCommitment, commitment)
+        XCTAssertFalse(flow.isPaused(at: now.addingTimeInterval(60 * 60)))
+    }
+
+    func testMissedCommitmentRemainsUntilAcknowledgeAndAcknowledgeDoesNotChangeCalendar() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(-5 * 60),
+            endDate: now.addingTimeInterval(5 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let connector = MutableTestGoogleCalendarConnector(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [commitment]
+        )
+        let flow = makeMutableFlow(connector: connector, now: now)
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(5 * 60 + 1))
+        XCTAssertEqual(flow.missedCommitment, commitment)
+
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(10 * 60))
+        XCTAssertEqual(flow.missedCommitment, commitment)
+        XCTAssertTrue(flow.acknowledgeMissedCommitment())
+        XCTAssertNil(flow.missedCommitment)
+        XCTAssertTrue(connector.events.contains(commitment))
+    }
+
+    func testMissedCommitmentExpiresAtTheEndOfTheUsersLocalDay() async {
+        var calendar = Calendar.current
+        calendar.timeZone = .current
+        let day = calendar.startOfDay(for: Date(timeIntervalSince1970: 1_000_000))
+        let now = calendar.date(byAdding: .minute, value: 23 * 60 + 50, to: day)!
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let monitoredCalendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(-5 * 60),
+            endDate: now.addingTimeInterval(5 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: monitoredCalendar.id,
+            accountID: account.id
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [monitoredCalendar]),
+            events: [commitment],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: monitoredCalendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(5 * 60 + 1))
+        XCTAssertEqual(flow.missedCommitment, commitment)
+
+        let nextLocalDay = calendar.date(byAdding: .day, value: 1, to: day)!
+        await flow.refreshCommitmentProtection(at: nextLocalDay)
+
+        XCTAssertNil(flow.missedCommitment)
+    }
+
     private func makeFlow(
         connection: GoogleCalendarConnection = GoogleCalendarConnection(
             account: GoogleAccount(id: "default-account", email: "user@example.com", displayName: "User"),

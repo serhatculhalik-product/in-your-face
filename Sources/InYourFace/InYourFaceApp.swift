@@ -114,6 +114,8 @@ private struct SetupView: View {
                     EarlyReminderSettingsCard()
                     BlockingModeSettingsCard()
                     StrongAlertSettingsCard()
+                    PauseProtectionCard()
+                    MissedCommitmentCard()
                     TestAlertCard()
                 }
 
@@ -182,6 +184,9 @@ private struct ProtectionStatusCard: View {
     }
 
     private var statusTitle: String {
+        if flow.isPaused() {
+            return "Protection Paused"
+        }
         switch flow.status {
         case .noCoverage:
             return "No Coverage"
@@ -193,6 +198,9 @@ private struct ProtectionStatusCard: View {
     }
 
     private var statusDetail: String {
+        if flow.isPaused() {
+            return flow.pauseExpirationText()
+        }
         switch flow.status {
         case .noCoverage:
             return "Select and confirm a calendar before commitments can be protected."
@@ -408,6 +416,96 @@ private struct StrongAlertSettingsCard: View {
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 16))
+    }
+}
+
+private struct PauseProtectionCard: View {
+    @EnvironmentObject private var flow: CommitmentProtectionFlow
+    @State private var customExpiration = Date().addingTimeInterval(60 * 60)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Pause Protection")
+                .font(.headline)
+
+            if flow.isPaused() {
+                Label("Protection Paused", systemImage: "pause.circle.fill")
+                    .font(.headline)
+                Text(flow.pauseExpirationText())
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Temporarily suppress Early Reminder and Strong Alert while you handle an interruption.")
+                    .foregroundStyle(.secondary)
+
+                HStack(spacing: 10) {
+                    Button("1 hour") {
+                        pause(.oneHour)
+                    }
+                    .keyboardShortcut("1")
+
+                    Button("End of day") {
+                        pause(.endOfDay)
+                    }
+                    .keyboardShortcut("e")
+                }
+
+                DatePicker(
+                    "Custom expiration",
+                    selection: $customExpiration,
+                    in: Date()...
+                )
+                .datePickerStyle(.field)
+
+                Button("Pause until selected time") {
+                    pause(.custom(customExpiration))
+                }
+                .keyboardShortcut("c")
+                .buttonStyle(.borderedProminent)
+                .accessibilityHint("Suppress reminders until the selected local date and time.")
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 16))
+        .accessibilityElement(children: .contain)
+    }
+
+    private func pause(_ duration: PauseDuration) {
+        if flow.pause(for: duration) {
+            announceActionResult(flow.lastActionMessage)
+        }
+    }
+}
+
+private struct MissedCommitmentCard: View {
+    @EnvironmentObject private var flow: CommitmentProtectionFlow
+
+    var body: some View {
+        if let commitment = flow.missedCommitment {
+            VStack(alignment: .leading, spacing: 12) {
+                Label("Missed Commitment", systemImage: "calendar.badge.exclamationmark")
+                    .font(.headline)
+                Text(commitment.title)
+                    .font(.title3.weight(.semibold))
+                Text(flow.localStartTimeText(for: commitment))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Text("This passive status does not change Google Calendar.")
+                    .foregroundStyle(.secondary)
+                Button("Acknowledge") {
+                    if flow.acknowledgeMissedCommitment() {
+                        announceActionResult(flow.lastActionMessage)
+                    }
+                }
+                .keyboardShortcut("a")
+                .buttonStyle(.borderedProminent)
+                .accessibilityHint("Clear the missed status without changing the Google Calendar event.")
+            }
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 16))
+            .accessibilityElement(children: .contain)
+        }
     }
 }
 
@@ -1614,6 +1712,7 @@ private func announceActionResult(_ message: String?) {
 private struct MenuBarContent: View {
     @EnvironmentObject private var flow: CommitmentProtectionFlow
     @Environment(\.openWindow) private var openWindow
+    @State private var customPauseExpiration = Date().addingTimeInterval(60 * 60)
 
     var body: some View {
         TimelineView(.periodic(from: Date(), by: 1)) { context in
@@ -1636,6 +1735,68 @@ private struct MenuBarContent: View {
                         }
                         .keyboardShortcut("r")
                     }
+
+                    Divider()
+                }
+
+                if flow.isPaused(at: context.date) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("Protection Paused", systemImage: "pause.circle.fill")
+                            .font(.headline)
+                        Text(flow.pauseExpirationText(at: context.date))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .accessibilityElement(children: .combine)
+
+                    Divider()
+                } else if flow.status == .active {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Pause Protection", systemImage: "pause.circle")
+                            .font(.headline)
+                        Button("Pause for 1 hour") {
+                            pause(.oneHour)
+                        }
+                        .keyboardShortcut("1")
+                        Button("Pause until end of day") {
+                            pause(.endOfDay)
+                        }
+                        .keyboardShortcut("e")
+                        DatePicker(
+                            "Custom expiration",
+                            selection: $customPauseExpiration,
+                            in: context.date...
+                        )
+                        .datePickerStyle(.field)
+                        Button("Pause until selected time") {
+                            pause(.custom(customPauseExpiration))
+                        }
+                        .keyboardShortcut("c")
+                        .accessibilityHint("Suppress reminders until the selected local date and time.")
+                    }
+
+                    Divider()
+                }
+
+                if let missedCommitment = flow.missedCommitment {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("Missed Commitment", systemImage: "calendar.badge.exclamationmark")
+                            .font(.headline)
+                        Text(missedCommitment.title)
+                            .lineLimit(2)
+                        Text(flow.localStartTimeText(for: missedCommitment))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button("Acknowledge") {
+                            if flow.acknowledgeMissedCommitment() {
+                                announceActionResult(flow.lastActionMessage)
+                            }
+                        }
+                        .keyboardShortcut("a")
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityHint("Clear the missed status without changing the Google Calendar event.")
+                    }
+                    .accessibilityElement(children: .contain)
 
                     Divider()
                 }
@@ -1707,6 +1868,12 @@ private struct MenuBarContent: View {
         .frame(width: 260)
         .onAppear {
             flow.refreshLaunchAtLoginStatus()
+        }
+    }
+
+    private func pause(_ duration: PauseDuration) {
+        if flow.pause(for: duration) {
+            announceActionResult(flow.lastActionMessage)
         }
     }
 
