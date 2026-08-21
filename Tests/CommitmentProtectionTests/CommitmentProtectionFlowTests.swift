@@ -2308,6 +2308,177 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertFalse(personalActivities.contains { $0.calendarID == workCalendar.id })
     }
 
+    func testLegacyCalendarSelectionActivityIsAttributedAfterRelaunch() async throws {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let suiteName = "CommitmentProtectionFlowTests.legacyCalendarActivity.\(UUID().uuidString)"
+        let stateStore = UserDefaults(suiteName: suiteName)!
+        defer { stateStore.removePersistentDomain(forName: suiteName) }
+        let connection = GoogleCalendarConnection(account: account, calendars: [calendar])
+
+        let firstLaunch = makeFlow(
+            connection: connection,
+            now: now,
+            stateStore: stateStore
+        )
+        await firstLaunch.connectGoogleAccount()
+        firstLaunch.setCalendarSelected(true, calendarID: calendar.id)
+        XCTAssertTrue(firstLaunch.confirmProtection())
+        await settleScheduledRefreshes()
+
+        let legacyActivity = ProtectionActivity(
+            occurredAt: now,
+            actor: .user,
+            kind: .configurationChanged,
+            title: "Calendar selection changed",
+            detail: "Monitoring Work.",
+            accountID: account.id,
+            accountEmail: account.email
+        )
+        stateStore.set(
+            try JSONEncoder().encode([legacyActivity]),
+            forKey: "commitment-protection.activity-log"
+        )
+
+        let relaunch = makeFlow(
+            connection: connection,
+            now: now,
+            stateStore: stateStore
+        )
+        await relaunch.restoreSavedConnection()
+
+        XCTAssertTrue(
+            relaunch.activities(forCalendarID: calendar.id, accountID: account.id)
+                .contains { $0.kind == .configurationChanged && $0.calendarName == calendar.name }
+        )
+    }
+
+    func testLegacyCommitmentActivityIsAttributedAfterRelaunch() async throws {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(5 * 60),
+            endDate: now.addingTimeInterval(65 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let suiteName = "CommitmentProtectionFlowTests.legacyCommitmentActivity.\(UUID().uuidString)"
+        let stateStore = UserDefaults(suiteName: suiteName)!
+        defer { stateStore.removePersistentDomain(forName: suiteName) }
+        let connection = GoogleCalendarConnection(account: account, calendars: [calendar])
+
+        let firstLaunch = makeFlow(
+            connection: connection,
+            events: [commitment],
+            now: now,
+            stateStore: stateStore
+        )
+        await firstLaunch.connectGoogleAccount()
+        firstLaunch.setCalendarSelected(true, calendarID: calendar.id)
+        XCTAssertTrue(firstLaunch.confirmProtection())
+        await settleScheduledRefreshes()
+
+        let legacyActivity = ProtectionActivity(
+            occurredAt: now,
+            actor: .user,
+            kind: .dismissed,
+            title: "Reminders stopped",
+            detail: "Dismissed for this occurrence.",
+            commitmentTitle: commitment.title,
+            commitmentID: commitment.id,
+            commitmentStartDate: commitment.startDate,
+            accountID: account.id,
+            accountEmail: account.email
+        )
+        stateStore.set(
+            try JSONEncoder().encode([legacyActivity]),
+            forKey: "commitment-protection.activity-log"
+        )
+
+        let relaunch = makeFlow(
+            connection: connection,
+            events: [commitment],
+            now: now,
+            stateStore: stateStore
+        )
+        await relaunch.restoreSavedConnection()
+
+        XCTAssertTrue(
+            relaunch.activities(forCalendarID: calendar.id, accountID: account.id)
+                .contains { $0.id == legacyActivity.id && $0.calendarID == calendar.id }
+        )
+    }
+
+    func testLegacyCommitmentWithoutOccurrenceStartRemainsInAllActivity() async throws {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(5 * 60),
+            endDate: now.addingTimeInterval(65 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let suiteName = "CommitmentProtectionFlowTests.ambiguousLegacyCommitmentActivity.\(UUID().uuidString)"
+        let stateStore = UserDefaults(suiteName: suiteName)!
+        defer { stateStore.removePersistentDomain(forName: suiteName) }
+        let connection = GoogleCalendarConnection(account: account, calendars: [calendar])
+
+        let firstLaunch = makeFlow(
+            connection: connection,
+            events: [commitment],
+            now: now,
+            stateStore: stateStore
+        )
+        await firstLaunch.connectGoogleAccount()
+        firstLaunch.setCalendarSelected(true, calendarID: calendar.id)
+        XCTAssertTrue(firstLaunch.confirmProtection())
+        await settleScheduledRefreshes()
+
+        let legacyActivity = ProtectionActivity(
+            occurredAt: now,
+            actor: .user,
+            kind: .dismissed,
+            title: "Reminders stopped",
+            detail: "Dismissed for this occurrence.",
+            commitmentTitle: commitment.title,
+            commitmentID: commitment.id,
+            commitmentStartDate: nil,
+            accountID: account.id,
+            accountEmail: account.email
+        )
+        stateStore.set(
+            try JSONEncoder().encode([legacyActivity]),
+            forKey: "commitment-protection.activity-log"
+        )
+
+        let relaunch = makeFlow(
+            connection: connection,
+            events: [commitment],
+            now: now,
+            stateStore: stateStore
+        )
+        await relaunch.restoreSavedConnection()
+
+        XCTAssertTrue(relaunch.activityLog.contains { $0.id == legacyActivity.id && $0.calendarID == nil })
+        XCTAssertFalse(
+            relaunch.activities(forCalendarID: calendar.id, accountID: account.id)
+                .contains { $0.id == legacyActivity.id }
+        )
+    }
+
     func testProtectionActivitySeparatesSameCalendarIDAcrossAccounts() async {
         let firstAccount = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
         let secondAccount = GoogleAccount(id: "account-2", email: "sam@example.com", displayName: "Sam")

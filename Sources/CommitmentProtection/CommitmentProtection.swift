@@ -202,6 +202,26 @@ public struct ProtectionActivity: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+private extension ProtectionActivity {
+    func withCalendarContext(calendarID: String, calendarName: String?) -> ProtectionActivity {
+        ProtectionActivity(
+            id: id,
+            occurredAt: occurredAt,
+            actor: actor,
+            kind: kind,
+            title: title,
+            detail: detail,
+            commitmentTitle: commitmentTitle,
+            commitmentID: commitmentID,
+            commitmentStartDate: commitmentStartDate,
+            accountID: accountID,
+            accountEmail: accountEmail,
+            calendarID: calendarID,
+            calendarName: calendarName
+        )
+    }
+}
+
 public enum ConnectionState: Equatable, Sendable {
     case notConnected
     case connecting
@@ -1092,6 +1112,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
             saveActivityLog()
             saveConfiguration()
         }
+        migrateLegacyActivityCalendarContext(with: [])
         let generation = beginRefresh()
         let configuredAccountIDs = accountRecords.values
             .filter { !$0.selectedCalendars.isEmpty && $0.isProtectionConfirmed }
@@ -1168,6 +1189,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
         guard generation == refreshGeneration else { return }
         syncCoverageAndActiveAccountProjection()
+        migrateLegacyActivityCalendarContext(with: events)
         reconcileCalendarSnapshot(events, at: currentDate)
         syncCoverageAndActiveAccountProjection()
     }
@@ -2054,6 +2076,63 @@ public final class CommitmentProtectionFlow: ObservableObject {
         guard retainedActivities != activityLog else { return false }
         activityLog = retainedActivities
         return true
+    }
+
+    private func migrateLegacyActivityCalendarContext(with events: [CalendarEvent]) {
+        guard !activityLog.isEmpty else { return }
+
+        var didChange = false
+        let migratedActivities = activityLog.map { activity in
+            guard activity.calendarID == nil,
+                  let accountID = activity.accountID,
+                  let calendar = calendarForLegacyActivity(activity, accountID: accountID, events: events) else {
+                return activity
+            }
+            didChange = true
+            return activity.withCalendarContext(calendarID: calendar.id, calendarName: calendar.name)
+        }
+        guard didChange else { return }
+
+        activityLog = migratedActivities
+        saveActivityLog()
+    }
+
+    private func calendarForLegacyActivity(
+        _ activity: ProtectionActivity,
+        accountID: String,
+        events: [CalendarEvent]
+    ) -> CalendarOption? {
+        if let commitmentID = activity.commitmentID {
+            guard let commitmentStartDate = activity.commitmentStartDate else {
+                return nil
+            }
+            let matchingCommitments = events.filter { event in
+                event.id == commitmentID &&
+                    event.accountID == accountID &&
+                    event.startDate == commitmentStartDate
+            }
+            if matchingCommitments.count == 1,
+               let commitment = matchingCommitments.first {
+                let name = calendarName(for: commitment) ?? commitment.calendarID
+                return CalendarOption(id: commitment.calendarID, name: name, accountID: accountID)
+            }
+            return nil
+        }
+
+        guard activity.kind == .configurationChanged,
+              activity.title == "Calendar selection changed",
+              let record = accountRecords[accountID] else {
+            return nil
+        }
+
+        let prefixes = ["Monitoring ", "Stopped monitoring "]
+        guard let prefix = prefixes.first(where: { activity.detail.hasPrefix($0) }),
+              activity.detail.hasSuffix(".") else {
+            return nil
+        }
+        let calendarName = String(activity.detail.dropFirst(prefix.count).dropLast())
+        let matchingCalendars = record.connection.calendars.filter { $0.name == calendarName }
+        return matchingCalendars.count == 1 ? matchingCalendars.first : nil
     }
 
     private func recordActivity(
