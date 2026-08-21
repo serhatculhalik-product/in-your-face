@@ -21,8 +21,10 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
         self.content = content
         self.surfaceDidClose = surfaceDidClose
 
-        guard let window = NSApp.windows.first(where: {
-            $0.title == "Strong Alert" && $0 !== additionalWindows.first
+        let existingAdditionalWindows = additionalWindows
+        guard let window = NSApp.windows.first(where: { candidate in
+            candidate.title == "Strong Alert" &&
+                !existingAdditionalWindows.contains(where: { $0 === candidate })
         }) else {
             DispatchQueue.main.async { [weak self] in
                 self?.present(content: content, surfaceDidClose: surfaceDidClose)
@@ -32,6 +34,7 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
 
         stopScreenObservation()
         stopApplicationObservation()
+        closeAdditionalWindows()
         primaryWindow = window
         configure(window)
         window.center()
@@ -48,8 +51,7 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
         allowsWindowClose = true
         stopScreenObservation()
         stopApplicationObservation()
-        additionalWindows.forEach { $0.delegate = nil; $0.close() }
-        additionalWindows.removeAll()
+        closeAdditionalWindows()
         primaryWindow?.delegate = nil
         primaryWindow?.close()
         primaryWindow = nil
@@ -89,40 +91,70 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
 
     private func createAdditionalWindows(for primaryScreen: NSScreen?) {
         guard let content else { return }
-        additionalWindows = NSScreen.screens
-            .filter { screen in
-                guard let primaryScreen else { return true }
-                return screen.frame != primaryScreen.frame
-            }
-            .map { screen in
-                let panel = NSPanel(
-                    contentRect: NSRect(x: 0, y: 0, width: 520, height: 430),
-                    styleMask: [.titled, .utilityWindow],
-                    backing: .buffered,
-                    defer: false
-                )
-                panel.title = "Strong Alert"
-                panel.titleVisibility = .hidden
-                panel.titlebarAppearsTransparent = true
-                panel.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
-                panel.hidesOnDeactivate = false
-                panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
-                panel.sharingType = .readOnly
-                panel.standardWindowButton(.closeButton)?.isHidden = true
-                panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
-                panel.standardWindowButton(.zoomButton)?.isHidden = true
-                panel.isMovable = false
-                panel.isReleasedWhenClosed = false
-                panel.contentView = NSHostingView(rootView: content)
-                panel.center()
-                panel.setFrameOrigin(NSPoint(
-                    x: screen.frame.midX - panel.frame.width / 2,
-                    y: screen.frame.midY - panel.frame.height / 2
-                ))
-                panel.delegate = self
-                panel.orderFrontRegardless()
-                return panel
-            }
+        let screens = NSScreen.screens
+        guard let displayPlan = StrongAlertDisplayPlan(
+            displayCount: screens.count,
+            primaryIndex: primaryScreenIndex(in: screens, matching: primaryScreen)
+        ) else {
+            return
+        }
+
+        let resolvedPrimaryScreen = screens[displayPlan.primaryIndex]
+        if primaryScreenIndex(in: screens, matching: primaryScreen) != displayPlan.primaryIndex {
+            center(primaryWindow, on: resolvedPrimaryScreen)
+        }
+
+        additionalWindows = displayPlan.additionalIndices.map { index in
+            let screen = screens[index]
+            let panel = NSPanel(
+                contentRect: NSRect(x: 0, y: 0, width: 520, height: 430),
+                styleMask: [.titled, .utilityWindow],
+                backing: .buffered,
+                defer: false
+            )
+            panel.title = "Strong Alert"
+            panel.titleVisibility = .hidden
+            panel.titlebarAppearsTransparent = true
+            panel.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
+            panel.hidesOnDeactivate = false
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+            panel.sharingType = .readOnly
+            panel.standardWindowButton(.closeButton)?.isHidden = true
+            panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+            panel.standardWindowButton(.zoomButton)?.isHidden = true
+            panel.isMovable = false
+            panel.isReleasedWhenClosed = false
+            panel.contentView = NSHostingView(rootView: content)
+            center(panel, on: screen)
+            panel.delegate = self
+            panel.orderFrontRegardless()
+            return panel
+        }
+    }
+
+    private func center(_ window: NSWindow?, on screen: NSScreen) {
+        guard let window else { return }
+        window.setFrameOrigin(NSPoint(
+            x: screen.frame.midX - window.frame.width / 2,
+            y: screen.frame.midY - window.frame.height / 2
+        ))
+    }
+
+    private func closeAdditionalWindows() {
+        additionalWindows.forEach {
+            $0.delegate = nil
+            $0.close()
+        }
+        additionalWindows.removeAll()
+    }
+
+    private func primaryScreenIndex(
+        in screens: [NSScreen],
+        matching primaryScreen: NSScreen?
+    ) -> Int? {
+        guard let primaryScreen else { return nil }
+        return screens.firstIndex(where: { $0 === primaryScreen })
+            ?? screens.firstIndex(where: { $0.frame == primaryScreen.frame })
     }
 
     private func startScreenObservation() {
@@ -168,8 +200,7 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
 
     private func recreateAdditionalWindows() {
         guard isPresented else { return }
-        additionalWindows.forEach { $0.delegate = nil; $0.close() }
-        additionalWindows.removeAll()
+        closeAdditionalWindows()
         createAdditionalWindows(for: primaryWindow?.screen ?? NSScreen.main)
         bringAlertToFront()
     }

@@ -11,6 +11,7 @@ let package = Package(
     targets: [
         .target(name: "CommitmentProtection"),
         .executableTarget(name: "InYourFace", dependencies: ["CommitmentProtection"]),
-        .testTarget(name: "CommitmentProtectionTests", dependencies: ["CommitmentProtection"])
+        .testTarget(name: "CommitmentProtectionTests", dependencies: ["CommitmentProtection"]),
+        .testTarget(name: "InYourFaceTests", dependencies: ["InYourFace"])
     ]
 )
