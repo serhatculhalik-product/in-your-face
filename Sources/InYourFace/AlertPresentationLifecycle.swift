@@ -16,6 +16,7 @@ struct AlertPresentationLifecycle: Equatable, Sendable {
     private(set) var requiresSurfaceRecovery = false
     private(set) var requiresActivation = false
     private(set) var isInteractionBarrierAvailable = false
+    private(set) var hasDiscoveredSurface = false
 
     mutating func present(
         surface: AlertPresentationLifecycleSurface,
@@ -30,9 +31,10 @@ struct AlertPresentationLifecycle: Equatable, Sendable {
             displayCount: availableDisplayCount,
             primaryIndex: primaryIndex
         )
+        hasDiscoveredSurface = surfaceDiscovered
         requiresSurfaceCreation = !surfaceDiscovered
-        requiresSurfaceRecovery = !surfaceDiscovered
-        isPresented = surfaceDiscovered && displayPlan != nil
+        requiresSurfaceRecovery = !surfaceDiscovered || displayPlan == nil
+        isPresented = surfaceDiscovered
         requiresActivation = isPresented
         return isPresented ? displayPlan : nil
     }
@@ -48,14 +50,22 @@ struct AlertPresentationLifecycle: Equatable, Sendable {
             displayCount: availableDisplayCount,
             primaryIndex: primaryIndex
         )
-        requiresSurfaceCreation = isPresented && displayPlan == nil
-        requiresSurfaceRecovery = isPresented && displayPlan == nil
+        if displayPlan != nil, hasDiscoveredSurface {
+            isPresented = true
+            requiresSurfaceCreation = false
+            requiresSurfaceRecovery = false
+            requiresActivation = true
+        } else {
+            requiresSurfaceCreation = !hasDiscoveredSurface || displayPlan == nil
+            requiresSurfaceRecovery = !hasDiscoveredSurface || displayPlan == nil
+        }
         return displayPlan
     }
 
     mutating func surfaceDisappeared() {
         guard isPresented else { return }
         isPresented = false
+        hasDiscoveredSurface = false
         requiresSurfaceCreation = true
         requiresSurfaceRecovery = true
         requiresActivation = false
@@ -74,7 +84,7 @@ struct AlertPresentationLifecycle: Equatable, Sendable {
         )
     }
 
-    mutating func applicationBecameActive() {
+    mutating func applicationActivationChanged() {
         requiresActivation = isPresented
     }
 
@@ -89,6 +99,7 @@ struct AlertPresentationLifecycle: Equatable, Sendable {
     mutating func close() {
         surface = nil
         isPresented = false
+        hasDiscoveredSurface = false
         displayPlan = nil
         requiresSurfaceCreation = false
         requiresSurfaceRecovery = false

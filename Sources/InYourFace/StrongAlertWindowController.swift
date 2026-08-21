@@ -200,7 +200,7 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
                 queue: .main
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in
-                    self?.lifecycle.applicationBecameActive()
+                    self?.lifecycle.applicationActivationChanged()
                     self?.bringAlertToFront()
                 }
             }
@@ -213,7 +213,7 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
     }
 
     private func recreateAdditionalWindows() {
-        guard isPresented else { return }
+        guard isPresented || lifecycle.requiresSurfaceRecovery || lifecycle.requiresSurfaceCreation else { return }
         let screens = NSScreen.screens
         guard let displayPlan = lifecycle.displayTopologyChanged(
             displayCount: screens.count,
@@ -222,6 +222,7 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
             closeAdditionalWindows()
             return
         }
+        isPresented = lifecycle.isPresented
         closeAdditionalWindows()
         createAdditionalWindows(using: displayPlan)
         bringAlertToFront()

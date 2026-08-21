@@ -13,7 +13,8 @@ final class StrongAlertDisplayPlanTests: XCTestCase {
                 surfaceDiscovered: true
             )
         )
-        XCTAssertFalse(lifecycle.isPresented)
+        XCTAssertTrue(lifecycle.isPresented)
+        XCTAssertTrue(lifecycle.requiresSurfaceRecovery)
 
         XCTAssertNil(
             lifecycle.present(
@@ -36,7 +37,8 @@ final class StrongAlertDisplayPlanTests: XCTestCase {
             primaryIndex: 1,
             surfaceDiscovered: true
         )
-        XCTAssertEqual(initialPlan, StrongAlertDisplayPlan(displayCount: 2, primaryIndex: 1))
+        XCTAssertEqual(initialPlan?.primaryIndex, 1)
+        XCTAssertEqual(initialPlan?.additionalIndices, [0])
         XCTAssertEqual(lifecycle.availableDisplayCount, 2)
         XCTAssertEqual(lifecycle.primaryDisplayIndex, 1)
         XCTAssertTrue(lifecycle.isPresented)
@@ -45,11 +47,12 @@ final class StrongAlertDisplayPlanTests: XCTestCase {
         lifecycle.markActivated()
         XCTAssertFalse(lifecycle.requiresActivation)
 
-        lifecycle.applicationBecameActive()
+        lifecycle.applicationActivationChanged()
         XCTAssertTrue(lifecycle.requiresActivation)
 
         let changedPlan = lifecycle.displayTopologyChanged(displayCount: 3, primaryIndex: nil)
-        XCTAssertEqual(changedPlan, StrongAlertDisplayPlan(displayCount: 3, primaryIndex: nil))
+        XCTAssertEqual(changedPlan?.primaryIndex, 0)
+        XCTAssertEqual(Set(changedPlan?.allDisplayIndices ?? []), Set(0..<3))
         XCTAssertEqual(lifecycle.displayPlan?.allDisplayIndices, [0, 1, 2])
     }
 
@@ -90,7 +93,7 @@ final class StrongAlertDisplayPlanTests: XCTestCase {
         XCTAssertFalse(lifecycle.requiresActivation)
     }
 
-    func testStrongAlertLifecycleKeepsCoverageAcrossTopologyAndProgrammaticClose() {
+    func testStrongAlertLifecycleRecoversAfterTopologyChangeAndCleansUp() {
         var lifecycle = AlertPresentationLifecycle()
 
         _ = lifecycle.present(

@@ -1742,6 +1742,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
     private var fallbackContent: EarlyReminderFallbackContent?
     private var fallbackPanel: NSPanel?
     private var surfaceRecoveryAttempts = 0
+    private var screenObserver: NSObjectProtocol?
     private var allowsWindowClose = false
     private var isPresented = false
     private var isInteractionBarrierActive = false
@@ -1825,6 +1826,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
             surfaceDiscovered: true
         )
         isPresented = lifecycle.isPresented
+        startScreenObservation()
         let barrierAvailable: Bool
         if blockingMode.shouldAttemptBlocking {
             startBarrierRetryMonitoring()
@@ -1853,6 +1855,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         allowsWindowClose = true
         let window = self.window
         stop()
+        stopScreenObservation()
         window?.delegate = nil
         window?.close()
         fallbackPanel = nil
@@ -1921,7 +1924,9 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
     }
 
     private func startSurfaceRecoveryMonitoring() {
-        guard surfaceRecoveryTimer == nil, reopenSurface != nil else { return }
+        guard lifecycle.requiresSurfaceRecovery,
+              surfaceRecoveryTimer == nil,
+              reopenSurface != nil else { return }
         surfaceRecoveryAttempts = 0
         surfaceRecoveryTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
@@ -1940,6 +1945,37 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         surfaceRecoveryTimer = nil
         surfaceRecoveryAttempts = 0
         reopenSurface = nil
+    }
+
+    private func startScreenObservation() {
+        guard screenObserver == nil else { return }
+        screenObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.reconcilePresentationTopology()
+            }
+        }
+    }
+
+    private func stopScreenObservation() {
+        if let screenObserver {
+            NotificationCenter.default.removeObserver(screenObserver)
+            self.screenObserver = nil
+        }
+    }
+
+    private func reconcilePresentationTopology() {
+        guard isPresented || lifecycle.requiresSurfaceRecovery || lifecycle.requiresSurfaceCreation else { return }
+        _ = lifecycle.displayTopologyChanged(
+            displayCount: NSScreen.screens.count,
+            primaryIndex: NSScreen.screens.firstIndex(where: { $0 === window?.screen })
+        )
+        guard lifecycle.displayPlan != nil else { return }
+        isPresented = lifecycle.isPresented
+        bringReminderToFront()
     }
 
     private func showFallbackSurface() {
@@ -1986,6 +2022,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
             surfaceDiscovered: true
         )
         isPresented = lifecycle.isPresented
+        startScreenObservation()
         let barrierAvailable: Bool
         if blockingMode.shouldAttemptBlocking {
             startBarrierRetryMonitoring()
@@ -2222,7 +2259,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
 
     private func retryInteractionBarrierIfNeeded() {
         guard isPresented, blockingMode.shouldAttemptBlocking else { return }
-        if isInteractionBarrierActive {
+        if lifecycle.isInteractionBarrierAvailable && isInteractionBarrierActive {
             if interactionGate.userDisabledEventTap() {
                 stopBarrierRetryMonitoring()
                 deactivateInteractionBarrier()
