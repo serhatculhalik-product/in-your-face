@@ -39,13 +39,6 @@ struct InYourFaceApp: App {
                 .frame(minWidth: 520, minHeight: 560)
         }
 
-        Window("Test Alert", id: "test-alert") {
-            TestAlertView()
-                .environmentObject(flow)
-        }
-        .windowStyle(.hiddenTitleBar)
-        .windowResizability(.contentSize)
-
         Window("Early Reminder", id: "early-reminder") {
             EarlyReminderView()
                 .environmentObject(flow)
@@ -173,7 +166,6 @@ private struct SetupView: View {
                     BlockingModeSettingsCard()
                     StrongAlertSettingsCard()
                     PauseProtectionCard()
-                    TestAlertCard()
                 }
 
                 ProtectionActivityCard()
@@ -416,7 +408,7 @@ private struct CalendarSelectionCard: View {
             Text("Only selected calendars can create protection.")
                 .foregroundStyle(.secondary)
 
-            ForEach(coverage.calendars) { calendar in
+            ForEach(coverage.calendars.reversed()) { calendar in
                 Toggle(
                     isOn: Binding(
                         get: {
@@ -870,29 +862,6 @@ private struct ProtectionActivityCard: View {
     }
 }
 
-private struct TestAlertCard: View {
-    @EnvironmentObject private var flow: CommitmentProtectionFlow
-    @Environment(\.openWindow) private var openWindow
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Test the interruption")
-                .font(.headline)
-            Text("Make sure the alert is noticeable before trusting it with a real commitment.")
-                .foregroundStyle(.secondary)
-            Button("Show Test Alert") {
-                flow.presentTestAlert()
-                openWindow(id: "test-alert")
-            }
-            .buttonStyle(.bordered)
-            .keyboardShortcut("t")
-        }
-        .padding(20)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 16))
-    }
-}
-
 private struct LoginAvailabilityCard: View {
     @EnvironmentObject private var flow: CommitmentProtectionFlow
 
@@ -903,34 +872,6 @@ private struct LoginAvailabilityCard: View {
         )
         .foregroundStyle(.primary)
         .font(.callout)
-    }
-}
-
-private struct TestAlertView: View {
-    @EnvironmentObject private var flow: CommitmentProtectionFlow
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        StrongAlertView(
-            title: "Test Commitment",
-            timing: "Starting now",
-            detail: "This is the same strong-alert experience used for a real commitment. No calendar event will be changed.",
-            primaryActionTitle: "Handled",
-            primaryAction: {
-                flow.dismissTestAlert()
-                dismiss()
-            }
-        )
-        .accessibilityAddTraits(.isModal)
-        .transaction { transaction in
-            if reduceMotion {
-                transaction.animation = nil
-            }
-        }
-        .onDisappear {
-            flow.dismissTestAlert()
-        }
     }
 }
 
