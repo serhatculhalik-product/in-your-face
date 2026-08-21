@@ -606,7 +606,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
     private var newlySelectedCalendars: Set<CalendarSelectionIdentity> = []
     private var shouldSuppressUntrackedPastOccurrencesOnNextRefresh = false
     private var monitoringTask: Task<Void, Never>?
-    private var refreshGeneration = 0
+    private let refreshCoordinator = RefreshCoordinator()
 
     private struct SavedOccurrence: Codable {
         let eventID: String
@@ -1034,7 +1034,11 @@ public final class CommitmentProtectionFlow: ObservableObject {
                 title: "Google Calendar connected",
                 detail: "Connected \(connection.account.email)."
             )
-            await refreshCommitmentProtection()
+            if existingRecord?.isProtectionConfirmed == true {
+                await recoverProtection()
+            } else {
+                await refreshCommitmentProtection()
+            }
         } catch {
             lastConnectionError = error.localizedDescription
             connectionState = .failed(error.localizedDescription)
@@ -1170,7 +1174,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
         saveConfiguration()
         if !accountRecords.isEmpty {
             shouldSuppressUntrackedPastOccurrencesOnNextRefresh = true
-            await refreshCommitmentProtection()
+            await recoverProtection()
         }
     }
 
@@ -1372,21 +1376,38 @@ public final class CommitmentProtectionFlow: ObservableObject {
     }
 
     public func refreshCommitmentProtection() async {
-        await refreshCommitmentProtection(at: now())
+        await requestRefresh(at: now(), intent: .ordinary)
     }
 
     public func recoverProtection(at currentDate: Date? = nil) async {
-        await refreshCommitmentProtection(at: currentDate ?? now())
+        await requestRefresh(at: currentDate ?? now(), intent: .recovery)
     }
 
     public func refreshCommitmentProtection(at currentDate: Date) async {
+        await requestRefresh(at: currentDate, intent: .ordinary)
+    }
+
+    private func requestRefresh(
+        at currentDate: Date,
+        intent: RefreshCoordinator.Intent
+    ) async {
+        await refreshCoordinator.submit(at: currentDate, intent: intent) { [weak self] request in
+            guard let self else { return }
+            await self.performRefreshCommitmentProtection(request)
+        }
+    }
+
+    private func performRefreshCommitmentProtection(
+        _ request: RefreshCoordinator.Request
+    ) async {
+        guard refreshCoordinator.isCurrent(request) else { return }
+        let currentDate = request.date
         lastEvaluatedCoverageDate = currentDate
         if pruneActivityLog(at: currentDate) {
             saveActivityLog()
             saveConfiguration()
         }
         migrateLegacyActivityCalendarContext(with: [])
-        let generation = beginRefresh()
         let configuredAccountIDs = accountRecords.values
             .filter { !$0.selectedCalendars.isEmpty && $0.isProtectionConfirmed }
             .map { $0.connection.account.id }
@@ -1421,13 +1442,14 @@ public final class CommitmentProtectionFlow: ObservableObject {
                     )
                 }
 
-                guard generation == refreshGeneration else { return }
+                guard refreshCoordinator.isCurrent(request) else { return }
                 let protectionEvents = freshEvents.filter { event in
                     event.isEligibleForProtection &&
                         (event.endDate ?? .distantPast) > currentDate
                 }
                 let eventsToSuppress = protectionEvents.filter { event in
-                    shouldSuppressUntrackedPastOccurrencesOnNextRefresh ||
+                    request.intent == .recovery ||
+                        shouldSuppressUntrackedPastOccurrencesOnNextRefresh ||
                         selectedNewCalendars.contains(
                             CalendarSelectionIdentity(calendarID: event.calendarID, accountID: event.accountID)
                         )
@@ -1455,7 +1477,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
                     )
                 }
             } catch {
-                guard generation == refreshGeneration else { return }
+                guard refreshCoordinator.isCurrent(request) else { return }
                 didRefreshAllConfiguredAccounts = false
                 let wasAlreadyUnavailable = record.connectionState == .failed(error.localizedDescription) ||
                     unverifiedAccountIDs.contains(accountID)
@@ -1478,7 +1500,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
             }
         }
 
-        guard generation == refreshGeneration else { return }
+        guard refreshCoordinator.isCurrent(request) else { return }
         if didRefreshAllConfiguredAccounts {
             shouldSuppressUntrackedPastOccurrencesOnNextRefresh = false
         }
@@ -2841,12 +2863,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
     }
 
     private func invalidateRefreshes() {
-        refreshGeneration &+= 1
-    }
-
-    private func beginRefresh() -> Int {
-        invalidateRefreshes()
-        return refreshGeneration
+        refreshCoordinator.invalidate()
     }
 
     private func clearProtectionState() {

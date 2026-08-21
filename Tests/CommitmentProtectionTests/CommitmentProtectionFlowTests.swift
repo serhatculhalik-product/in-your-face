@@ -94,7 +94,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         await flow.refreshCommitmentProtection(at: now)
 
         await connector.setFailingAccountIDs([secondAccount.id])
-        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(16 * 60))
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(5 * 60))
 
         XCTAssertEqual(flow.accountCoverages.count, 2)
         XCTAssertEqual(flow.coverage(for: firstAccount.id), .fresh)
@@ -3889,6 +3889,34 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         await flow.refreshCommitmentProtection(at: now.addingTimeInterval(10 * 60))
 
         XCTAssertEqual(flow.upcomingCommitment, rescheduledCommitment)
+    }
+
+    func testRecoveryKeepsARecoveryOnlyPastOccurrenceQuiet() async {
+        let (account, calendar) = makeTestAccountAndCalendar()
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let lateDiscoveredCommitment = CalendarEvent(
+            id: "late-discovered-event",
+            title: "Late discovered review",
+            startDate: now.addingTimeInterval(-10 * 60),
+            endDate: now.addingTimeInterval(50 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let connector = MutableTestGoogleCalendarConnector(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: []
+        )
+        let flow = makeMutableFlow(connector: connector, now: now)
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        connector.events = [lateDiscoveredCommitment]
+        await flow.recoverProtection(at: now)
+
+        XCTAssertNil(flow.strongAlertCommitment)
+        XCTAssertFalse(flow.isStrongAlertPresented)
     }
 
     func testRecoveryAfterUnavailablePeriodShowsOverdueStrongAlertForAnOngoingCommitment() async {
