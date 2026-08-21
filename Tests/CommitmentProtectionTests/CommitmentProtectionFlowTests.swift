@@ -217,7 +217,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         await activateProtection(for: flow, calendarID: calendar.id)
         await flow.refreshCommitmentProtection(at: now)
 
-        XCTAssertEqual(flow.strongAlertPrimaryActionTitle, "Handled")
+        XCTAssertEqual(flow.strongAlertPrimaryActionTitle, "Handled elsewhere")
         flow.handleStrongAlert()
         XCTAssertNil(flow.strongAlertCommitment)
         XCTAssertFalse(flow.isStrongAlertPresented)
@@ -617,15 +617,15 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertNil(flow.earlyReminderCommitment)
     }
 
-    func testSnoozeOffersFiveAndTenMinutesAndCapsAtCommitmentStart() async {
+    func testSnoozeOffersFiveMinutesAndCapsAtCommitmentStart() async {
         let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
         let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
         let now = Date(timeIntervalSince1970: 1_000_000)
         let commitment = CalendarEvent(
             id: "event-1",
             title: "Customer review",
-            startDate: now.addingTimeInterval(8 * 60),
-            endDate: now.addingTimeInterval(68 * 60),
+            startDate: now.addingTimeInterval(4 * 60),
+            endDate: now.addingTimeInterval(64 * 60),
             timeZoneIdentifier: nil,
             isAllDay: false,
             isAccepted: true,
@@ -641,13 +641,14 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         await activateProtection(for: flow, calendarID: calendar.id)
         await flow.refreshCommitmentProtection(at: now)
 
-        XCTAssertEqual(flow.snoozeOptionsMinutes, [5, 10])
+        XCTAssertEqual(flow.snoozeOptionsMinutes, [5])
         XCTAssertTrue(flow.canSnoozeEarlyReminder)
-        XCTAssertTrue(flow.snoozeEarlyReminder(minutes: 10, at: now))
+        XCTAssertFalse(flow.snoozeEarlyReminder(minutes: 10, at: now))
+        XCTAssertTrue(flow.snoozeEarlyReminder(minutes: 5, at: now))
         XCTAssertEqual(flow.lastActionMessage, "Snoozed until the commitment starts. Protection remains active.")
         XCTAssertNil(flow.earlyReminderCommitment)
 
-        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(8 * 60))
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(4 * 60))
 
         XCTAssertTrue(flow.isStrongAlertPresented)
         XCTAssertFalse(flow.canSnoozeEarlyReminder)
@@ -931,9 +932,13 @@ final class CommitmentProtectionFlowTests: XCTestCase {
             connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
             events: [originalCommitment]
         )
+        let suiteName = "CommitmentProtectionFlowTests.isolated.\(UUID().uuidString)"
+        let stateStore = UserDefaults(suiteName: suiteName)!
+        defer { stateStore.removePersistentDomain(forName: suiteName) }
         let flow = CommitmentProtectionFlow(
             calendarConnector: connector,
             launchAtLogin: TestLaunchAtLoginController(),
+            stateStore: stateStore,
             now: { now }
         )
 
@@ -978,9 +983,13 @@ final class CommitmentProtectionFlowTests: XCTestCase {
             connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
             events: [originalCommitment]
         )
+        let suiteName = "CommitmentProtectionFlowTests.isolated.\(UUID().uuidString)"
+        let stateStore = UserDefaults(suiteName: suiteName)!
+        defer { stateStore.removePersistentDomain(forName: suiteName) }
         let flow = CommitmentProtectionFlow(
             calendarConnector: connector,
             launchAtLogin: TestLaunchAtLoginController(),
+            stateStore: stateStore,
             now: { now }
         )
 
@@ -1014,6 +1023,9 @@ final class CommitmentProtectionFlowTests: XCTestCase {
             accountID: account.id
         )
         let state = TestGoogleCalendarConnectorState()
+        let suiteName = "CommitmentProtectionFlowTests.isolated.\(UUID().uuidString)"
+        let stateStore = UserDefaults(suiteName: suiteName)!
+        defer { stateStore.removePersistentDomain(forName: suiteName) }
         let flow = CommitmentProtectionFlow(
             calendarConnector: TestGoogleCalendarConnector(
                 connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
@@ -1021,6 +1033,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
                 state: state
             ),
             launchAtLogin: TestLaunchAtLoginController(),
+            stateStore: stateStore,
             now: { now }
         )
 
@@ -1161,6 +1174,71 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertEqual(flow.earlyReminderLeadTimeMinutes, 30)
     }
 
+    func testEarlyReminderCanBeDisabledWithoutSuppressingStrongAlert() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(10 * 60),
+            endDate: now.addingTimeInterval(70 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let suiteName = "CommitmentProtectionFlowTests.earlyReminderToggle.\(UUID().uuidString)"
+        let stateStore = UserDefaults(suiteName: suiteName)!
+        defer { stateStore.removePersistentDomain(forName: suiteName) }
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [commitment],
+            now: now,
+            stateStore: stateStore
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+        XCTAssertEqual(flow.earlyReminderCommitment, commitment)
+
+        flow.setEarlyReminderEnabled(false)
+        await settleScheduledRefreshes()
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertEqual(flow.upcomingCommitment, commitment)
+        XCTAssertNil(flow.earlyReminderCommitment)
+
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(10 * 60))
+        XCTAssertTrue(flow.isStrongAlertPresented)
+    }
+
+    func testEarlyReminderAndBlockingSettingsPersistAcrossRelaunch() {
+        let suiteName = "CommitmentProtectionFlowTests.reminderSettings.\(UUID().uuidString)"
+        let stateStore = UserDefaults(suiteName: suiteName)!
+        defer { stateStore.removePersistentDomain(forName: suiteName) }
+
+        let flow = CommitmentProtectionFlow(
+            calendarConnector: TestGoogleCalendarConnector(),
+            launchAtLogin: TestLaunchAtLoginController(),
+            stateStore: stateStore
+        )
+        XCTAssertTrue(flow.isEarlyReminderEnabled)
+        XCTAssertFalse(flow.isBlockingModeEnabled)
+
+        flow.setEarlyReminderEnabled(false)
+        flow.setBlockingModeEnabled(true)
+
+        let relaunchedFlow = CommitmentProtectionFlow(
+            calendarConnector: TestGoogleCalendarConnector(),
+            launchAtLogin: TestLaunchAtLoginController(),
+            stateStore: stateStore
+        )
+        XCTAssertFalse(relaunchedFlow.isEarlyReminderEnabled)
+        XCTAssertTrue(relaunchedFlow.isBlockingModeEnabled)
+    }
+
     func testCountdownAndLocalTimeIncludeRelevantTimeZone() {
         let now = Date(timeIntervalSince1970: 1_000_000)
         let commitment = CalendarEvent(
@@ -1243,11 +1321,13 @@ final class CommitmentProtectionFlowTests: XCTestCase {
             calendars: []
         ),
         events: [CalendarEvent] = [],
-        now: Date = Date()
+        now: Date = Date(),
+        stateStore: UserDefaults? = nil
     ) -> CommitmentProtectionFlow {
         CommitmentProtectionFlow(
             calendarConnector: TestGoogleCalendarConnector(connection: connection, events: events),
             launchAtLogin: TestLaunchAtLoginController(),
+            stateStore: stateStore ?? UserDefaults(suiteName: "CommitmentProtectionFlowTests.\(UUID().uuidString)")!,
             now: { now }
         )
     }

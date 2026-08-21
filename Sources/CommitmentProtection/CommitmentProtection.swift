@@ -149,6 +149,8 @@ public final class CommitmentProtectionFlow: ObservableObject {
     @Published public private(set) var currentCommitmentDecision: CommitmentProtectionDecision?
     @Published public private(set) var decisionCommitment: CalendarEvent?
     @Published public private(set) var lastActionMessage: String?
+    @Published public private(set) var isEarlyReminderEnabled: Bool
+    @Published public private(set) var isBlockingModeEnabled: Bool
     @Published public private(set) var earlyReminderLeadTimeMinutes: Int
     @Published public private(set) var strongAlertRepeatIntervalMinutes: Int
 
@@ -157,6 +159,8 @@ public final class CommitmentProtectionFlow: ObservableObject {
     private let stateStore: UserDefaults
     private let now: () -> Date
     private static let stateKey = "commitment-protection.configuration"
+    private static let earlyReminderEnabledKey = "commitment-protection.early-reminder-enabled"
+    private static let blockingModeEnabledKey = "commitment-protection.blocking-mode-enabled"
     private static let earlyReminderLeadTimeKey = "commitment-protection.early-reminder-lead-time"
     private static let strongAlertRepeatIntervalKey = "commitment-protection.strong-alert-repeat-interval"
     private var clearedEarlyReminderEventID: String?
@@ -262,6 +266,8 @@ public final class CommitmentProtectionFlow: ObservableObject {
         self.launchAtLogin = launchAtLogin
         self.stateStore = stateStore
         self.now = now
+        isEarlyReminderEnabled = stateStore.object(forKey: Self.earlyReminderEnabledKey) as? Bool ?? true
+        isBlockingModeEnabled = stateStore.object(forKey: Self.blockingModeEnabledKey) as? Bool ?? false
         let savedLeadTime = stateStore.integer(forKey: Self.earlyReminderLeadTimeKey)
         earlyReminderLeadTimeMinutes = savedLeadTime == 0
             ? 10
@@ -312,7 +318,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
     }
 
     public var snoozeOptionsMinutes: [Int] {
-        [5, 10]
+        [5]
     }
 
     public var canSnoozeEarlyReminder: Bool {
@@ -454,6 +460,26 @@ public final class CommitmentProtectionFlow: ObservableObject {
         isBlockingAvailable = isAvailable
     }
 
+    public func setEarlyReminderEnabled(_ isEnabled: Bool) {
+        guard isEnabled != isEarlyReminderEnabled else { return }
+
+        isEarlyReminderEnabled = isEnabled
+        stateStore.set(isEnabled, forKey: Self.earlyReminderEnabledKey)
+        invalidateRefreshes()
+        if !isEnabled {
+            earlyReminderCommitment = nil
+        }
+        saveConfiguration()
+        Task { await refreshCommitmentProtection() }
+    }
+
+    public func setBlockingModeEnabled(_ isEnabled: Bool) {
+        guard isEnabled != isBlockingModeEnabled else { return }
+
+        isBlockingModeEnabled = isEnabled
+        stateStore.set(isEnabled, forKey: Self.blockingModeEnabledKey)
+    }
+
     public func setStrongAlertRepeatInterval(minutes: Int) {
         let clampedMinutes = Self.clampedStrongAlertRepeatInterval(minutes)
         guard clampedMinutes != strongAlertRepeatIntervalMinutes else { return }
@@ -569,6 +595,11 @@ public final class CommitmentProtectionFlow: ObservableObject {
                 clearStrongAlertState()
             }
 
+            guard isEarlyReminderEnabled else {
+                earlyReminderCommitment = nil
+                return
+            }
+
             guard let nextCommitment,
                   let startDate = nextCommitment.startDate,
                   currentDate >= startDate.addingTimeInterval(-Double(earlyReminderLeadTimeMinutes) * 60),
@@ -597,7 +628,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
     }
 
     public var strongAlertPrimaryActionTitle: String {
-        strongAlertCommitment?.recognizedMeetingLink == nil ? "Handled" : "Join"
+        strongAlertCommitment?.recognizedMeetingLink == nil ? "Handled elsewhere" : "Join"
     }
 
     @discardableResult
@@ -884,6 +915,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
         }
 
         if startDate > date {
+            guard isEarlyReminderEnabled else { return }
             guard date >= startDate.addingTimeInterval(-Double(earlyReminderLeadTimeMinutes) * 60),
                   !(clearedEarlyReminderEventID == commitment.id &&
                     clearedEarlyReminderEventStartDate == startDate),

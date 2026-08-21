@@ -10,7 +10,7 @@ The user does not need another calendar view. They need a reliable, context-awar
 
 Provide a personal macOS utility that protects accepted, timed Google Calendar events from user-selected calendars across multiple Connected Accounts.
 
-The product starts with a blocking Early Reminder, then presents a Strong Alert at the commitment’s start time. The Early Reminder stays in front of other app windows until the user clears it. The Strong Alert offers the most direct next action—Join when a Recognized Meeting Link exists, or Handled otherwise—and repeats at a configurable Repeat Interval until the user takes an explicit action or the commitment reaches its scheduled end.
+The product can start with a visual Early Reminder, then presents a Strong Alert at the commitment’s start time. Optional Blocking Mode can keep the Early Reminder in front of other app windows. The Strong Alert offers the most direct next action—Join when a Recognized Meeting Link exists, or Handled otherwise—and repeats at a configurable Repeat Interval until the user takes an explicit action or the commitment reaches its scheduled end.
 
 The experience is intentionally narrow: Google Calendar is the source of truth for calendar changes, the user chooses which calendars are protected, and the product never guesses which accepted event is important. Visual reminders remain visible during Full-Screen Sharing, window sharing, and app sharing so sharing cannot silently suppress the protection experience.
 
@@ -33,9 +33,9 @@ The experience is intentionally narrow: Google Calendar is the source of truth f
 15. As a user, I want the calendar’s designated conference link to be preferred when an event has several links, so that Join opens the intended meeting.
 16. As a user, I want several recognized links presented as choices when no primary link is designated, so that the app does not guess incorrectly.
 17. As a user, I want the Early Reminder to appear before a commitment, so that I have time to stop my current work.
-18. As a user, I want the Early Reminder lead time configurable from five to thirty minutes, with ten minutes as the default, so that the warning fits my transition needs without requiring complex schedules.
+18. As a user, I want the Early Reminder to be optional and its lead time configurable from five to thirty minutes, with ten minutes as the default when enabled, so that the warning fits my transition needs without requiring complex schedules.
 19. As a user, I want clearing the Early Reminder to leave protection active, so that dismissing a passive notification does not make me late.
-20. As a user, I want to Snooze the Early Reminder for five or ten minutes, so that I can briefly finish a safe stopping point.
+20. As a user, I want to Snooze the Early Reminder for five minutes, so that I can briefly finish a safe stopping point without adding another timing preference.
 21. As a user, I want Snooze capped at the commitment’s start time, so that it cannot defer protection past the point when lateness begins.
 22. As a user, I want Snooze available only once per Occurrence, so that repeated deferral does not undermine the safety net.
 23. As a user, I want the Strong Alert to take over every available display at the commitment’s start time, so that ordinary notification blindness or screen sharing cannot make me late.
@@ -98,13 +98,13 @@ The experience is intentionally narrow: Google Calendar is the source of truth f
 - A commitment’s scheduled instant is authoritative across time zones; presentation uses the user’s current local time and adds a time-zone label when relevant.
 - Recurring events are handled by Occurrence. A rescheduled Occurrence receives a fresh protection decision.
 - Duplicate representations merge only when they share a Recognized Meeting Link and matching start time.
-- The Early Reminder is global, blocking, configurable from five to thirty minutes, and defaults to ten minutes. It stays in front of other app windows until the user clears it.
+- The Early Reminder is optional, global, configurable from five to thirty minutes when enabled, and defaults to ten minutes. Optional Blocking Mode can keep it in front of other app windows.
 - The Strong Alert is the start-time intervention. It takes over every available display, is calm but urgent, overrides macOS Focus modes, and exposes the next action.
 - The global Repeat Interval ranges from one to five minutes and defaults to one minute. Repetition remains enabled after start until Join, Handled, Dismiss, or scheduled end.
 - Join is prominent when a Recognized Meeting Link exists. A Join click ends protection for the reminder lifecycle; the product does not need to verify attendance.
 - Handled ends protection without changing Google Calendar. It is primary for linkless commitments and available as a secondary action for commitments handled elsewhere.
 - Dismiss and Handled are occurrence-local decisions that persist through calendar refreshes and can be reversed by Restore Protection. Rescheduling resets them.
-- Snooze is available once per Occurrence before start, offers five- and ten-minute choices, and is capped at the start time.
+- Snooze is available once per Occurrence before start, offers a five-minute choice, and is capped at the start time.
 - Clearing or closing an alert surface without an explicit action does not change protection.
 - Pause is a global, temporary escape hatch with one-hour, end-of-day, and custom-expiration choices. It immediately suppresses active and future protection; protection resumes according to the current commitment state when it expires.
 - Full-Screen Sharing, window sharing, and app sharing do not suppress or relocate visual reminders. The same reminder behavior applies regardless of sharing mode or how many displays are shared.

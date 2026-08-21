@@ -112,6 +112,7 @@ private struct SetupView: View {
                 if flow.connectedAccount != nil {
                     CalendarSelectionCard()
                     EarlyReminderSettingsCard()
+                    BlockingModeSettingsCard()
                     StrongAlertSettingsCard()
                     TestAlertCard()
                 }
@@ -293,8 +294,17 @@ private struct EarlyReminderSettingsCard: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Early Reminder")
                 .font(.headline)
-            Text("A visual reminder before an accepted commitment starts. Optional blocking mode can keep it in front of other windows.")
+            Text("A visual reminder before an accepted commitment starts. Strong Alert still appears when the commitment begins.")
                 .foregroundStyle(.secondary)
+
+            Toggle(
+                isOn: Binding(
+                    get: { flow.isEarlyReminderEnabled },
+                    set: { flow.setEarlyReminderEnabled($0) }
+                )
+            ) {
+                Text("Show Early Reminder")
+            }
 
             Stepper(
                 value: Binding(
@@ -308,6 +318,7 @@ private struct EarlyReminderSettingsCard: View {
             }
             .accessibilityLabel("Early Reminder lead time")
             .accessibilityValue("\(flow.earlyReminderLeadTimeMinutes) minutes")
+            .disabled(!flow.isEarlyReminderEnabled)
 
             if !flow.isProtectionConfirmed {
                 Text("Review your calendars and reminder timing, then confirm protection.")
@@ -328,6 +339,50 @@ private struct EarlyReminderSettingsCard: View {
     }
 }
 
+private struct BlockingModeSettingsCard: View {
+    @EnvironmentObject private var flow: CommitmentProtectionFlow
+    @ObservedObject private var windowController = EarlyReminderWindowController.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Optional Blocking Mode")
+                .font(.headline)
+            Text("Keep Early Reminder in front and block background interaction while it is open. Normal reminders work without these permissions.")
+                .foregroundStyle(.secondary)
+
+            Toggle(
+                isOn: Binding(
+                    get: { flow.isBlockingModeEnabled },
+                    set: { isEnabled in
+                        flow.setBlockingModeEnabled(isEnabled)
+                        windowController.setBlockingModeEnabled(isEnabled)
+                    }
+                )
+            ) {
+                Text("Keep Early Reminder in front")
+            }
+
+            if flow.isBlockingModeEnabled {
+                Text("Blocking Mode needs macOS Accessibility and Input Monitoring permissions. You can grant them here or keep using the visual reminder.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+
+                HStack(spacing: 10) {
+                    Button("Open Accessibility Settings") {
+                        windowController.openAccessibilitySettings()
+                    }
+                    Button("Open Input Monitoring Settings") {
+                        windowController.openInputMonitoringSettings()
+                    }
+                }
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 16))
+    }
+}
+
 private struct StrongAlertSettingsCard: View {
     @EnvironmentObject private var flow: CommitmentProtectionFlow
 
@@ -335,7 +390,7 @@ private struct StrongAlertSettingsCard: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Strong Alert")
                 .font(.headline)
-            Text("After a commitment starts, repeat the alert until you Join, choose Handled, or it ends.")
+            Text("After a commitment starts, repeat the alert until you Join, choose Handled elsewhere, or it ends.")
                 .foregroundStyle(.secondary)
 
             Stepper(
@@ -439,46 +494,20 @@ private struct EarlyReminderView: View {
                     .font(.title3.weight(.semibold))
                 Text(flow.countdownText(for: commitment, at: Date()))
                     .foregroundStyle(.secondary)
-                if windowController.isGlobalInteractionBarrierAvailable {
-                    Text("Protection stays active if you clear this reminder.")
-                        .multilineTextAlignment(.center)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("Visual Early Reminder is active. Optional blocking is not enabled.")
-                        .multilineTextAlignment(.center)
-                        .foregroundStyle(.secondary)
-                    Button("Open Accessibility Settings") {
-                        windowController.openAccessibilitySettings()
-                    }
-                    Button("Open Input Monitoring Settings") {
-                        windowController.openInputMonitoringSettings()
-                    }
-                    Button("Enable Blocking Mode") {
-                        windowController.retryBlocking()
+                Text("Strong Alert will still appear when the commitment begins.")
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+                Button("Snooze 5 minutes") {
+                    if flow.snoozeEarlyReminder(minutes: 5) {
+                        announceActionResult(flow.lastActionMessage)
+                        closeAfterAction()
                     }
                 }
-                HStack(spacing: 10) {
-                    Button("Snooze 5 minutes") {
-                        if flow.snoozeEarlyReminder(minutes: 5) {
-                            announceActionResult(flow.lastActionMessage)
-                            closeAfterAction()
-                        }
-                    }
-                    .keyboardShortcut("5")
-                    .disabled(!flow.canSnoozeEarlyReminder)
-
-                    Button("Snooze 10 minutes") {
-                        if flow.snoozeEarlyReminder(minutes: 10) {
-                            announceActionResult(flow.lastActionMessage)
-                            closeAfterAction()
-                        }
-                    }
-                    .keyboardShortcut("0")
-                    .disabled(!flow.canSnoozeEarlyReminder)
-                }
+                .keyboardShortcut("5")
+                .disabled(!flow.canSnoozeEarlyReminder)
 
                 HStack(spacing: 10) {
-                    Button("Handled") {
+                    Button("Handled elsewhere") {
                         if flow.handleCommitment(for: commitment) {
                             announceActionResult(flow.lastActionMessage)
                             closeAfterAction()
@@ -488,7 +517,7 @@ private struct EarlyReminderView: View {
                     .buttonStyle(.bordered)
                     .accessibilityHint("Stop protection for this occurrence because you handled it elsewhere.")
 
-                    Button("Dismiss Commitment") {
+                    Button("Skip this commitment") {
                         if flow.dismissCommitment(for: commitment) {
                             announceActionResult(flow.lastActionMessage)
                             closeAfterAction()
@@ -498,14 +527,14 @@ private struct EarlyReminderView: View {
                     .buttonStyle(.bordered)
                     .accessibilityHint("Stop protection for this occurrence without changing Google Calendar.")
                 }
-                Button("Clear Early Reminder") {
+                Button("Skip early reminder") {
                     flow.clearEarlyReminder()
                     announceActionResult(flow.lastActionMessage)
                     closeAfterAction()
                 }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
-                .accessibilityHint("Clear this surface while leaving protection active.")
+                .accessibilityHint("Skip the early reminder while keeping the Strong Alert at the commitment start.")
             } else {
                 EmptyView()
             }
@@ -520,6 +549,7 @@ private struct EarlyReminderView: View {
         }
         .onAppear {
             flow.setBlockingAvailability(false)
+            windowController.setBlockingModeEnabled(flow.isBlockingModeEnabled)
             guard let commitment = flow.earlyReminderCommitment else {
                 flow.setBlockingAvailability(true)
                 dismiss()
@@ -665,7 +695,7 @@ private struct StrongAlertContentView: View {
                         title: commitment.title,
                         timing: flow.strongAlertTimingText(for: commitment, at: context.date),
                         detail: flow.strongAlertContextText(for: commitment),
-                        primaryActionTitle: commitment.recognizedMeetingLink == nil ? "Handled" : "Join",
+                        primaryActionTitle: commitment.recognizedMeetingLink == nil ? "Handled elsewhere" : "Join",
                         primaryAction: {
                             if commitment.recognizedMeetingLink == nil {
                                 flow.handleStrongAlert()
@@ -674,7 +704,7 @@ private struct StrongAlertContentView: View {
                             }
                             announceActionResult(flow.lastActionMessage)
                         },
-                        secondaryActionTitle: commitment.recognizedMeetingLink == nil ? "Dismiss Commitment" : "Handled",
+                        secondaryActionTitle: commitment.recognizedMeetingLink == nil ? "Skip this commitment" : "Handled elsewhere",
                         secondaryAction: {
                             if commitment.recognizedMeetingLink == nil {
                                 flow.dismissCommitment()
@@ -684,7 +714,7 @@ private struct StrongAlertContentView: View {
                             announceActionResult(flow.lastActionMessage)
                         },
                         secondaryActionKeyboardShortcut: commitment.recognizedMeetingLink == nil ? "d" : "h",
-                        tertiaryActionTitle: commitment.recognizedMeetingLink == nil ? nil : "Dismiss Commitment",
+                        tertiaryActionTitle: commitment.recognizedMeetingLink == nil ? nil : "Skip this commitment",
                         tertiaryAction: {
                             if flow.dismissCommitment() {
                                 announceActionResult(flow.lastActionMessage)
@@ -711,15 +741,11 @@ private struct EarlyReminderFallbackContent {
 
 private struct EarlyReminderFallbackView: View {
     let content: EarlyReminderFallbackContent
-    let isBlockingAvailable: Bool
     let canSnooze: Bool
     let clear: () -> Void
     let snooze: (Int) -> Void
     let handle: () -> Void
     let dismiss: () -> Void
-    let openAccessibilitySettings: () -> Void
-    let openInputMonitoringSettings: () -> Void
-    let retryBlocking: () -> Void
 
     var body: some View {
         VStack(spacing: 16) {
@@ -731,41 +757,26 @@ private struct EarlyReminderFallbackView: View {
                 .multilineTextAlignment(.center)
             Text(content.timing)
                 .font(.title3.weight(.semibold))
-
-            if isBlockingAvailable {
-                Text("Protection stays active if you clear this reminder.")
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("Visual Early Reminder is active. Optional blocking is not enabled.")
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(.secondary)
-                Button("Open Accessibility Settings", action: openAccessibilitySettings)
-                Button("Open Input Monitoring Settings", action: openInputMonitoringSettings)
-                Button("Enable Blocking Mode", action: retryBlocking)
-            }
+            Text("Strong Alert will still appear when the commitment begins.")
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+            Button("Snooze 5 minutes") { snooze(5) }
+                .keyboardShortcut("5")
+                .disabled(!canSnooze)
             HStack(spacing: 10) {
-                Button("Snooze 5 minutes") { snooze(5) }
-                    .keyboardShortcut("5")
-                    .disabled(!canSnooze)
-                Button("Snooze 10 minutes") { snooze(10) }
-                    .keyboardShortcut("0")
-                    .disabled(!canSnooze)
-            }
-            HStack(spacing: 10) {
-                Button("Handled", action: handle)
+                Button("Handled elsewhere", action: handle)
                     .keyboardShortcut("h")
                     .buttonStyle(.bordered)
                     .accessibilityHint("Stop protection for this occurrence because you handled it elsewhere.")
-                Button("Dismiss Commitment", action: dismiss)
+                Button("Skip this commitment", action: dismiss)
                     .keyboardShortcut("d")
                     .buttonStyle(.bordered)
                     .accessibilityHint("Stop protection for this occurrence without changing Google Calendar.")
             }
-            Button("Clear Early Reminder", action: clear)
+            Button("Skip early reminder", action: clear)
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
-                .accessibilityHint("Clear this surface while leaving protection active.")
+                .accessibilityHint("Skip the early reminder while keeping the Strong Alert at the commitment start.")
         }
         .padding(28)
         .frame(minWidth: 380)
@@ -1154,21 +1165,11 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         panel.contentView = NSHostingView(
             rootView: EarlyReminderFallbackView(
                 content: content,
-                isBlockingAvailable: isGlobalInteractionBarrierAvailable,
                 canSnooze: canSnoozeEarlyReminder,
                 clear: clearEarlyReminder,
                 snooze: snoozeEarlyReminder,
                 handle: handleCommitment,
-                dismiss: dismissCommitment,
-                openAccessibilitySettings: { [weak self] in
-                    self?.openAccessibilitySettings()
-                },
-                openInputMonitoringSettings: { [weak self] in
-                    self?.openInputMonitoringSettings()
-                },
-                retryBlocking: { [weak self] in
-                    self?.retryBlocking()
-                }
+                dismiss: dismissCommitment
             )
         )
         panel.center()
@@ -1203,13 +1204,23 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         NSWorkspace.shared.open(settingsURL)
     }
 
-    func retryBlocking() {
+    func setBlockingModeEnabled(_ isEnabled: Bool) {
+        if isEnabled {
+            blockingMode.enableBlocking()
+        } else {
+            blockingMode.disableBlocking()
+        }
+
         guard isPresented else { return }
-        blockingMode.enableBlocking()
+
         stopBarrierRetryMonitoring()
         deactivateInteractionBarrier()
-        startBarrierRetryMonitoring()
-        retryInteractionBarrierIfNeeded()
+        if isEnabled {
+            startBarrierRetryMonitoring()
+            retryInteractionBarrierIfNeeded()
+        } else {
+            window?.orderFrontRegardless()
+        }
     }
 
     @discardableResult
@@ -1337,21 +1348,11 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         panel.contentView = NSHostingView(
             rootView: EarlyReminderFallbackView(
                 content: content,
-                isBlockingAvailable: isGlobalInteractionBarrierAvailable,
                 canSnooze: canSnoozeEarlyReminder,
                 clear: clearEarlyReminder,
                 snooze: snoozeEarlyReminder,
                 handle: handleCommitment,
-                dismiss: dismissCommitment,
-                openAccessibilitySettings: { [weak self] in
-                    self?.openAccessibilitySettings()
-                },
-                openInputMonitoringSettings: { [weak self] in
-                    self?.openInputMonitoringSettings()
-                },
-                retryBlocking: { [weak self] in
-                    self?.retryBlocking()
-                }
+                dismiss: dismissCommitment
             )
         )
     }
@@ -1429,8 +1430,6 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
     private func attemptBlockingMode() -> Bool {
         guard blockingMode.shouldAttemptBlocking else { return false }
         guard activateInteractionBarrier() else {
-            blockingMode.disableBlocking()
-            stopBarrierRetryMonitoring()
             return false
         }
         return true
@@ -1526,7 +1525,7 @@ private struct StrongAlertView: View {
                     .keyboardShortcut(secondaryActionKeyboardShortcut)
                     .buttonStyle(.bordered)
                     .accessibilityLabel(secondaryActionTitle)
-                    .accessibilityHint(secondaryActionTitle == "Handled"
+                    .accessibilityHint(secondaryActionTitle == "Handled elsewhere"
                         ? "Stop protection because you handled this commitment elsewhere."
                         : "Stop protection for this occurrence without changing Google Calendar.")
             }
