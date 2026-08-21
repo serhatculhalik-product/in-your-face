@@ -970,15 +970,12 @@ private struct EarlyReminderView: View {
                     .accessibilityHint("Stop Early Reminder and Strong Alert for this commitment occurrence without changing Google Calendar.")
                 }
             } else {
-                Color.clear
-                    .frame(width: 1, height: 1)
+                ProgressView("Preparing Early Reminder…")
+                    .padding(28)
             }
         }
-        .padding(flow.earlyReminderCommitment == nil ? 0 : 28)
-        .frame(
-            minWidth: flow.earlyReminderCommitment == nil ? 1 : 380,
-            minHeight: flow.earlyReminderCommitment == nil ? 1 : 0
-        )
+        .padding(28)
+        .frame(minWidth: 380, minHeight: 240)
         .accessibilityAddTraits(.isModal)
         .transaction { transaction in
             if reduceMotion {
@@ -991,8 +988,8 @@ private struct EarlyReminderView: View {
             guard let commitment = flow.earlyReminderCommitment else {
                 flow.setBlockingAvailability(true)
                 EarlyReminderWindowController.shared.prepareForProgrammaticClose()
-                dismiss()
                 EarlyReminderWindowController.shared.close()
+                dismiss()
                 return
             }
             let actions = EarlyReminderActionHandlers.fallback(flow: flow, commitment: commitment)
@@ -1853,11 +1850,22 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
 
     func close() {
         allowsWindowClose = true
-        let window = self.window
+        let trackedWindow = self.window
+        var windowsToClose = NSApp.windows.filter { $0.title == "Early Reminder" }
+        if let trackedWindow {
+            windowsToClose.append(trackedWindow)
+        }
+        if let fallbackPanel {
+            windowsToClose.append(fallbackPanel)
+        }
         stop()
         stopScreenObservation()
-        window?.delegate = nil
-        window?.close()
+        var closedWindowIDs = Set<ObjectIdentifier>()
+        for window in windowsToClose {
+            guard closedWindowIDs.insert(ObjectIdentifier(window)).inserted else { continue }
+            window.delegate = nil
+            window.close()
+        }
         fallbackPanel = nil
         self.window = nil
         self.fallbackContent = nil
