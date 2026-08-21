@@ -105,6 +105,8 @@ struct AlertPresentationLifecycle: Equatable, Sendable {
         surface = nil
         isPresented = false
         hasDiscoveredSurface = false
+        availableDisplayCount = 0
+        primaryDisplayIndex = nil
         displayPlan = nil
         requiresSurfaceCreation = false
         requiresSurfaceRecovery = false

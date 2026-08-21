@@ -112,6 +112,8 @@ final class StrongAlertDisplayPlanTests: XCTestCase {
 
         XCTAssertFalse(lifecycle.isPresented)
         XCTAssertNil(lifecycle.surface)
+        XCTAssertEqual(lifecycle.availableDisplayCount, 0)
+        XCTAssertNil(lifecycle.primaryDisplayIndex)
         XCTAssertFalse(lifecycle.requiresSurfaceRecovery)
     }
 
@@ -255,6 +257,7 @@ final class StrongAlertDisplayPlanTests: XCTestCase {
         XCTAssertEqual(normalClearActions.clear(), fallbackClearActions.clear())
         XCTAssertNil(normalClear.flow.earlyReminderCommitment)
         XCTAssertNil(fallbackClear.flow.earlyReminderCommitment)
+        XCTAssertEqual(normalClear.flow.lastActionMessage, fallbackClear.flow.lastActionMessage)
 
         let normalSnooze = await makeEarlyReminderTestFlow()
         let fallbackSnooze = await makeEarlyReminderTestFlow()
@@ -269,6 +272,7 @@ final class StrongAlertDisplayPlanTests: XCTestCase {
         XCTAssertEqual(normalSnoozeActions.snooze(5), fallbackSnoozeActions.snooze(5))
         XCTAssertNil(normalSnooze.flow.earlyReminderCommitment)
         XCTAssertNil(fallbackSnooze.flow.earlyReminderCommitment)
+        XCTAssertEqual(normalSnooze.flow.lastActionMessage, fallbackSnooze.flow.lastActionMessage)
 
         let normalDismiss = await makeEarlyReminderTestFlow()
         let fallbackDismiss = await makeEarlyReminderTestFlow()
@@ -283,6 +287,7 @@ final class StrongAlertDisplayPlanTests: XCTestCase {
         XCTAssertEqual(normalDismissActions.dismiss(), fallbackDismissActions.dismiss())
         XCTAssertNil(normalDismiss.flow.earlyReminderCommitment)
         XCTAssertNil(fallbackDismiss.flow.earlyReminderCommitment)
+        XCTAssertEqual(normalDismiss.flow.lastActionMessage, fallbackDismiss.flow.lastActionMessage)
     }
 
     func testEarlyReminderInteractionBarrierRestoresItsTrackedWindowState() {
