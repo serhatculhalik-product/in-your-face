@@ -28,6 +28,15 @@ final class RefreshCoordinator {
         intent: Intent,
         work: @escaping Work
     ) async {
+        enqueue(at: date, intent: intent, work: work)
+        await drain()
+    }
+
+    func enqueue(
+        at date: Date,
+        intent: Intent,
+        work: @escaping Work
+    ) {
         self.work = work
         let inheritedIntent = [pendingRequest, runningRequest]
             .compactMap { request in
@@ -38,6 +47,10 @@ final class RefreshCoordinator {
         currentID = nextID
         let effectiveIntent: Intent = inheritedIntent == .recovery ? .recovery : .ordinary
         pendingRequest = Request(id: currentID, date: date, intent: effectiveIntent)
+        pump()
+    }
+
+    func drain() async {
         await waitForDrain()
     }
 
