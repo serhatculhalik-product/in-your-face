@@ -28,9 +28,15 @@ final class RefreshCoordinator {
         work: @escaping Work
     ) async {
         self.work = work
+        let pendingIntent = pendingRequest?.id == currentID
+            ? pendingRequest?.intent
+            : nil
         nextID &+= 1
         currentID = nextID
-        pendingRequest = Request(id: currentID, date: date, intent: intent)
+        let effectiveIntent: Intent = pendingIntent == .recovery || intent == .recovery
+            ? .recovery
+            : .ordinary
+        pendingRequest = Request(id: currentID, date: date, intent: effectiveIntent)
         await waitForDrain()
     }
 

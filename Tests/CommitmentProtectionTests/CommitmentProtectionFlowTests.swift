@@ -3891,7 +3891,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertEqual(flow.upcomingCommitment, rescheduledCommitment)
     }
 
-    func testRecoveryKeepsARecoveryOnlyPastOccurrenceQuiet() async {
+    func testRecoveryBurstKeepsAnUntrackedPastOccurrenceQuiet() async {
         let (account, calendar) = makeTestAccountAndCalendar()
         let now = Date(timeIntervalSince1970: 1_000_000)
         let lateDiscoveredCommitment = CalendarEvent(
@@ -3914,6 +3914,69 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         await activateProtection(for: flow, calendarID: calendar.id)
         connector.events = [lateDiscoveredCommitment]
         await flow.recoverProtection(at: now)
+
+        XCTAssertNil(flow.strongAlertCommitment)
+        XCTAssertFalse(flow.isStrongAlertPresented)
+    }
+
+    func testRecoveryIntentSurvivesAnOrdinaryRefreshBurst() async {
+        let (account, calendar) = makeTestAccountAndCalendar()
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let lateDiscoveredCommitment = CalendarEvent(
+            id: "late-discovered-burst-event",
+            title: "Late discovered burst review",
+            startDate: now.addingTimeInterval(-10 * 60),
+            endDate: now.addingTimeInterval(50 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let state = RefreshRaceConnectorState(holdNextLoad: false)
+        let connector = RefreshRaceTestConnector(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [],
+            state: state
+        )
+        let flow = CommitmentProtectionFlow(
+            calendarConnector: connector,
+            launchAtLogin: TestLaunchAtLoginController(),
+            now: { now }
+        )
+
+        await flow.connectGoogleAccount()
+        flow.setCalendarSelected(true, calendarID: calendar.id)
+        XCTAssertTrue(flow.confirmProtection())
+        await settleScheduledRefreshes()
+        await flow.refreshCommitmentProtection(at: now)
+
+        await state.holdNextLoad()
+        let firstRefresh = Task { @MainActor in
+            await flow.refreshCommitmentProtection(at: now)
+        }
+        for _ in 0..<20 {
+            if await state.hasFirstLoadStarted() { break }
+            await Task.yield()
+        }
+        let firstLoadStarted = await state.hasFirstLoadStarted()
+        XCTAssertTrue(firstLoadStarted)
+
+        connector.replaceEvents([lateDiscoveredCommitment])
+        let recovery = Task { @MainActor in
+            await flow.recoverProtection(at: now)
+        }
+        for _ in 0..<10 {
+            await Task.yield()
+        }
+        let ordinary = Task { @MainActor in
+            await flow.refreshCommitmentProtection(at: now)
+        }
+        await state.releaseFirstLoad()
+
+        await firstRefresh.value
+        await recovery.value
+        await ordinary.value
 
         XCTAssertNil(flow.strongAlertCommitment)
         XCTAssertFalse(flow.isStrongAlertPresented)
@@ -4386,17 +4449,17 @@ private final class TestGoogleCalendarConnectorState: @unchecked Sendable {
 }
 
 private actor RefreshRaceConnectorState {
-    var holdNextLoad: Bool
+    var shouldHoldNextLoad: Bool
     var firstLoadStarted = false
     private var releaseContinuation: CheckedContinuation<Void, Never>?
 
     init(holdNextLoad: Bool) {
-        self.holdNextLoad = holdNextLoad
+        shouldHoldNextLoad = holdNextLoad
     }
 
     func waitForFirstLoadIfNeeded() async {
-        guard holdNextLoad else { return }
-        holdNextLoad = false
+        guard shouldHoldNextLoad else { return }
+        shouldHoldNextLoad = false
         firstLoadStarted = true
         await withCheckedContinuation { continuation in
             releaseContinuation = continuation
@@ -4405,6 +4468,12 @@ private actor RefreshRaceConnectorState {
 
     func hasFirstLoadStarted() -> Bool {
         firstLoadStarted
+    }
+
+    func holdNextLoad() {
+        shouldHoldNextLoad = true
+        firstLoadStarted = false
+        releaseContinuation = nil
     }
 
     func releaseFirstLoad() {
