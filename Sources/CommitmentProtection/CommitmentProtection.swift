@@ -730,6 +730,16 @@ public final class CommitmentProtectionFlow: ObservableObject {
         return true
     }
 
+    @discardableResult
+    public func snoozeEarlyReminder(
+        minutes: Int,
+        for commitment: CalendarEvent,
+        at date: Date? = nil
+    ) -> Bool {
+        guard isCurrentEarlyReminder(commitment) else { return false }
+        return snoozeEarlyReminder(minutes: minutes, at: date)
+    }
+
     public func closeStrongAlertSurface(at date: Date = Date()) {
         guard isStrongAlertPresented,
               let commitment = strongAlertCommitment else { return }
@@ -774,11 +784,25 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
     public func clearEarlyReminder() {
         guard let earlyReminderCommitment else { return }
+        _ = clearEarlyReminder(for: earlyReminderCommitment)
+    }
+
+    @discardableResult
+    public func clearEarlyReminder(for commitment: CalendarEvent) -> Bool {
+        guard isCurrentEarlyReminder(commitment),
+              let earlyReminderCommitment else { return false }
         clearedEarlyReminderEventID = earlyReminderCommitment.id
         clearedEarlyReminderEventStartDate = earlyReminderCommitment.startDate
         self.earlyReminderCommitment = nil
         lastActionMessage = "Early Reminder cleared. Protection remains active."
         lastActionOccurrence = OccurrenceIdentity(earlyReminderCommitment)
+        return true
+    }
+
+    private func isCurrentEarlyReminder(_ commitment: CalendarEvent) -> Bool {
+        guard let earlyReminderCommitment else { return false }
+        return earlyReminderCommitment.id == commitment.id &&
+            earlyReminderCommitment.startDate == commitment.startDate
     }
 
     public func localStartTimeText(for commitment: CalendarEvent) -> String {

@@ -51,7 +51,7 @@ _Avoid_: Overlap, double booking
 ## Reminder language
 
 **Early Reminder**:
-A visual reminder shown before a commitment starts. It can optionally stay in front of other app windows through Blocking Mode. Its global lead time ranges from five to thirty minutes and defaults to ten minutes; the reminder can also be turned off while Strong Alert protection remains active. Skipping it does not change protection at the commitment start; only an explicit action such as Snooze, Handled, or Dismiss does.
+A visual reminder shown before a commitment starts. It can optionally stay in front of other app windows through Blocking Mode. Its global lead time ranges from five to thirty minutes and defaults to ten minutes; the reminder can also be turned off while Strong Alert protection remains active. The user can Snooze it for five minutes, choose Got it to close only the early surface, or Stop reminders to end protection for the current occurrence. Got it does not change protection at the commitment start; only an explicit stop action such as Handled or Dismiss does.
 _Avoid_: Warning, alert (when referring specifically to the early reminder)
 
 **Unverified Reminder**:

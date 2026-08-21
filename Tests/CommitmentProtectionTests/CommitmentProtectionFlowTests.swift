@@ -655,6 +655,49 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertFalse(flow.snoozeEarlyReminder(minutes: 5, at: now.addingTimeInterval(8 * 60)))
     }
 
+    func testEarlyReminderActionsAreBoundToTheirDisplayedOccurrence() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let displayedCommitment = CalendarEvent(
+            id: "displayed-event",
+            title: "Displayed commitment",
+            startDate: now.addingTimeInterval(10 * 60),
+            endDate: now.addingTimeInterval(70 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let newerCommitment = CalendarEvent(
+            id: "newer-event",
+            title: "Newer commitment",
+            startDate: now.addingTimeInterval(20 * 60),
+            endDate: now.addingTimeInterval(80 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [displayedCommitment],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertFalse(flow.clearEarlyReminder(for: newerCommitment))
+        XCTAssertFalse(flow.snoozeEarlyReminder(minutes: 5, for: newerCommitment, at: now))
+        XCTAssertEqual(flow.earlyReminderCommitment, displayedCommitment)
+
+        XCTAssertTrue(flow.clearEarlyReminder(for: displayedCommitment))
+        XCTAssertNil(flow.earlyReminderCommitment)
+    }
+
     func testSnoozeReturnsOnceButCannotBeUsedAgain() async {
         let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
         let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)

@@ -34,7 +34,7 @@ The experience is intentionally narrow: Google Calendar is the source of truth f
 16. As a user, I want several recognized links presented as choices when no primary link is designated, so that the app does not guess incorrectly.
 17. As a user, I want the Early Reminder to appear before a commitment, so that I have time to stop my current work.
 18. As a user, I want the Early Reminder to be optional and its lead time configurable from five to thirty minutes, with ten minutes as the default when enabled, so that the warning fits my transition needs without requiring complex schedules.
-19. As a user, I want clearing the Early Reminder to leave protection active, so that dismissing a passive notification does not make me late.
+19. As a user, I want a Got it action to close the Early Reminder while leaving protection active, so that dismissing a passive notification does not make me late.
 20. As a user, I want to Snooze the Early Reminder for five minutes, so that I can briefly finish a safe stopping point without adding another timing preference.
 21. As a user, I want Snooze capped at the commitment’s start time, so that it cannot defer protection past the point when lateness begins.
 22. As a user, I want Snooze available only once per Occurrence, so that repeated deferral does not undermine the safety net.
@@ -99,6 +99,7 @@ The experience is intentionally narrow: Google Calendar is the source of truth f
 - Recurring events are handled by Occurrence. A rescheduled Occurrence receives a fresh protection decision.
 - Duplicate representations merge only when they share a Recognized Meeting Link and matching start time.
 - The Early Reminder is optional, global, configurable from five to thirty minutes when enabled, and defaults to ten minutes. Optional Blocking Mode can keep it in front of other app windows.
+- The Early Reminder exposes three user actions: Snooze for five minutes, Got it to close only the early surface, and Stop reminders to end protection for the current occurrence. Handled and Dismiss remain distinct domain decisions for the Strong Alert; the Early Reminder does not expose both variants.
 - The Strong Alert is the start-time intervention. It takes over every available display, is calm but urgent, overrides macOS Focus modes, and exposes the next action.
 - The global Repeat Interval ranges from one to five minutes and defaults to one minute. Repetition remains enabled after start until Join, Handled, Dismiss, or scheduled end.
 - Join is prominent when a Recognized Meeting Link exists. A Join click ends protection for the reminder lifecycle; the product does not need to verify attendance.

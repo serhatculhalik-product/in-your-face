@@ -494,47 +494,42 @@ private struct EarlyReminderView: View {
                     .font(.title3.weight(.semibold))
                 Text(flow.countdownText(for: commitment, at: Date()))
                     .foregroundStyle(.secondary)
-                Text("Strong Alert will still appear when the commitment begins.")
+                Text("Got it closes this reminder. Strong Alert will still appear when the commitment begins.")
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
                 Button("Snooze 5 minutes") {
-                    if flow.snoozeEarlyReminder(minutes: 5) {
+                    let didApply = flow.snoozeEarlyReminder(minutes: 5, for: commitment)
+                    if didApply {
                         announceActionResult(flow.lastActionMessage)
-                        closeAfterAction()
                     }
+                    closeAfterAction(reopenIfNeeded: !didApply)
                 }
                 .keyboardShortcut("5")
                 .disabled(!flow.canSnoozeEarlyReminder)
 
                 HStack(spacing: 10) {
-                    Button("Handled elsewhere") {
-                        if flow.handleCommitment(for: commitment) {
+                    Button("Got it") {
+                        let didApply = flow.clearEarlyReminder(for: commitment)
+                        if didApply {
                             announceActionResult(flow.lastActionMessage)
-                            closeAfterAction()
                         }
+                        closeAfterAction(reopenIfNeeded: !didApply)
                     }
-                    .keyboardShortcut("h")
+                    .keyboardShortcut("g")
                     .buttonStyle(.bordered)
-                    .accessibilityHint("Stop protection for this occurrence because you handled it elsewhere.")
+                    .accessibilityHint("Close this early reminder while keeping the Strong Alert at the commitment start.")
 
-                    Button("Skip this commitment") {
-                        if flow.dismissCommitment(for: commitment) {
+                    Button("Stop reminders") {
+                        let didApply = flow.dismissCommitment(for: commitment)
+                        if didApply {
                             announceActionResult(flow.lastActionMessage)
-                            closeAfterAction()
                         }
+                        closeAfterAction(reopenIfNeeded: !didApply)
                     }
-                    .keyboardShortcut("d")
+                    .keyboardShortcut("s")
                     .buttonStyle(.bordered)
-                    .accessibilityHint("Stop protection for this occurrence without changing Google Calendar.")
+                    .accessibilityHint("Stop Early Reminder and Strong Alert for this commitment occurrence without changing Google Calendar.")
                 }
-                Button("Skip early reminder") {
-                    flow.clearEarlyReminder()
-                    announceActionResult(flow.lastActionMessage)
-                    closeAfterAction()
-                }
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
-                .accessibilityHint("Skip the early reminder while keeping the Strong Alert at the commitment start.")
             } else {
                 EmptyView()
             }
@@ -565,28 +560,26 @@ private struct EarlyReminderView: View {
                     openWindow(id: "early-reminder")
                 },
                 clear: {
-                    flow.clearEarlyReminder()
-                    announceActionResult(flow.lastActionMessage)
-                    closeAfterAction()
+                    let didApply = flow.clearEarlyReminder(for: commitment)
+                    if didApply {
+                        announceActionResult(flow.lastActionMessage)
+                    }
+                    closeAfterAction(reopenIfNeeded: !didApply)
                 },
                 canSnooze: flow.canSnoozeEarlyReminder,
                 snooze: { minutes in
-                    if flow.snoozeEarlyReminder(minutes: minutes) {
+                    let didApply = flow.snoozeEarlyReminder(minutes: minutes, for: commitment)
+                    if didApply {
                         announceActionResult(flow.lastActionMessage)
-                        closeAfterAction()
                     }
-                },
-                handle: {
-                    if flow.handleCommitment(for: commitment) {
-                        announceActionResult(flow.lastActionMessage)
-                        closeAfterAction()
-                    }
+                    closeAfterAction(reopenIfNeeded: !didApply)
                 },
                 dismiss: {
-                    if flow.dismissCommitment(for: commitment) {
+                    let didApply = flow.dismissCommitment(for: commitment)
+                    if didApply {
                         announceActionResult(flow.lastActionMessage)
-                        closeAfterAction()
                     }
+                    closeAfterAction(reopenIfNeeded: !didApply)
                 }
             )
         }
@@ -605,28 +598,26 @@ private struct EarlyReminderView: View {
                         openWindow(id: "early-reminder")
                     },
                     clear: {
-                        flow.clearEarlyReminder()
-                        announceActionResult(flow.lastActionMessage)
-                        EarlyReminderWindowController.shared.close()
+                        let didApply = flow.clearEarlyReminder(for: commitment)
+                        if didApply {
+                            announceActionResult(flow.lastActionMessage)
+                        }
+                        closeAfterAction(reopenIfNeeded: !didApply)
                     },
                     canSnooze: flow.canSnoozeEarlyReminder,
                     snooze: { minutes in
-                        if flow.snoozeEarlyReminder(minutes: minutes) {
+                        let didApply = flow.snoozeEarlyReminder(minutes: minutes, for: commitment)
+                        if didApply {
                             announceActionResult(flow.lastActionMessage)
                         }
-                        EarlyReminderWindowController.shared.close()
-                    },
-                    handle: {
-                        if flow.handleCommitment(for: commitment) {
-                            announceActionResult(flow.lastActionMessage)
-                        }
-                        EarlyReminderWindowController.shared.close()
+                        closeAfterAction(reopenIfNeeded: !didApply)
                     },
                     dismiss: {
-                        if flow.dismissCommitment(for: commitment) {
+                        let didApply = flow.dismissCommitment(for: commitment)
+                        if didApply {
                             announceActionResult(flow.lastActionMessage)
                         }
-                        EarlyReminderWindowController.shared.close()
+                        closeAfterAction(reopenIfNeeded: !didApply)
                     }
                 )
             }
@@ -643,9 +634,12 @@ private struct EarlyReminderView: View {
         }
     }
 
-    private func closeAfterAction() {
+    private func closeAfterAction(reopenIfNeeded: Bool = false) {
         dismiss()
         EarlyReminderWindowController.shared.close()
+        if reopenIfNeeded, flow.earlyReminderCommitment != nil {
+            openWindow(id: "early-reminder")
+        }
     }
 }
 
@@ -744,7 +738,6 @@ private struct EarlyReminderFallbackView: View {
     let canSnooze: Bool
     let clear: () -> Void
     let snooze: (Int) -> Void
-    let handle: () -> Void
     let dismiss: () -> Void
 
     var body: some View {
@@ -757,26 +750,22 @@ private struct EarlyReminderFallbackView: View {
                 .multilineTextAlignment(.center)
             Text(content.timing)
                 .font(.title3.weight(.semibold))
-            Text("Strong Alert will still appear when the commitment begins.")
+            Text("Got it closes this reminder. Strong Alert will still appear when the commitment begins.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
             Button("Snooze 5 minutes") { snooze(5) }
                 .keyboardShortcut("5")
                 .disabled(!canSnooze)
             HStack(spacing: 10) {
-                Button("Handled elsewhere", action: handle)
-                    .keyboardShortcut("h")
+                Button("Got it", action: clear)
+                    .keyboardShortcut("g")
                     .buttonStyle(.bordered)
-                    .accessibilityHint("Stop protection for this occurrence because you handled it elsewhere.")
-                Button("Skip this commitment", action: dismiss)
-                    .keyboardShortcut("d")
+                    .accessibilityHint("Close this early reminder while keeping the Strong Alert at the commitment start.")
+                Button("Stop reminders", action: dismiss)
+                    .keyboardShortcut("s")
                     .buttonStyle(.bordered)
-                    .accessibilityHint("Stop protection for this occurrence without changing Google Calendar.")
+                    .accessibilityHint("Stop Early Reminder and Strong Alert for this commitment occurrence without changing Google Calendar.")
             }
-            Button("Skip early reminder", action: clear)
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
-                .accessibilityHint("Skip the early reminder while keeping the Strong Alert at the commitment start.")
         }
         .padding(28)
         .frame(minWidth: 380)
@@ -950,7 +939,6 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
     private var reopenSurface: (@MainActor () -> Void)?
     private var clearEarlyReminder: (@MainActor () -> Void)?
     private var snoozeEarlyReminder: ((Int) -> Void)?
-    private var handleCommitment: (() -> Void)?
     private var dismissCommitment: (() -> Void)?
     private var canSnoozeEarlyReminder = false
     private var fallbackContent: EarlyReminderFallbackContent?
@@ -968,14 +956,12 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         clear: @escaping @MainActor () -> Void,
         canSnooze: Bool,
         snooze: @escaping (Int) -> Void,
-        handle: @escaping () -> Void,
         dismiss: @escaping () -> Void
     ) {
         reopenSurface = reopen
         clearEarlyReminder = clear
         canSnoozeEarlyReminder = canSnooze
         snoozeEarlyReminder = snooze
-        handleCommitment = handle
         dismissCommitment = dismiss
         fallbackContent = content
         if isPresented,
@@ -1007,7 +993,6 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
                     clear: clear,
                     canSnooze: canSnooze,
                     snooze: snooze,
-                    handle: handle,
                     dismiss: dismiss
                 )
             }
@@ -1061,7 +1046,6 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         self.fallbackContent = nil
         self.clearEarlyReminder = nil
         self.snoozeEarlyReminder = nil
-        self.handleCommitment = nil
         self.dismissCommitment = nil
         self.canSnoozeEarlyReminder = false
         allowsWindowClose = false
@@ -1093,14 +1077,12 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         clear: @escaping @MainActor () -> Void,
         canSnooze: Bool,
         snooze: @escaping (Int) -> Void,
-        handle: @escaping () -> Void,
         dismiss: @escaping () -> Void
     ) {
         reopenSurface = reopen
         clearEarlyReminder = clear
         canSnoozeEarlyReminder = canSnooze
         snoozeEarlyReminder = snooze
-        handleCommitment = handle
         dismissCommitment = dismiss
         fallbackContent = content
         guard isPresented else {
@@ -1141,7 +1123,6 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
               let content = fallbackContent,
               let clearEarlyReminder,
               let snoozeEarlyReminder,
-              let handleCommitment,
               let dismissCommitment else { return }
 
         let reopenSurface = self.reopenSurface
@@ -1168,7 +1149,6 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
                 canSnooze: canSnoozeEarlyReminder,
                 clear: clearEarlyReminder,
                 snooze: snoozeEarlyReminder,
-                handle: handleCommitment,
                 dismiss: dismissCommitment
             )
         )
@@ -1343,7 +1323,6 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
               let content = fallbackContent,
               let clearEarlyReminder,
               let snoozeEarlyReminder,
-              let handleCommitment,
               let dismissCommitment else { return }
         panel.contentView = NSHostingView(
             rootView: EarlyReminderFallbackView(
@@ -1351,7 +1330,6 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
                 canSnooze: canSnoozeEarlyReminder,
                 clear: clearEarlyReminder,
                 snooze: snoozeEarlyReminder,
-                handle: handleCommitment,
                 dismiss: dismissCommitment
             )
         )
