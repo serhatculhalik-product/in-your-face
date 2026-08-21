@@ -2115,12 +2115,14 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
             for: window,
             isApplicationActive: NSApp.isActive
         ) else {
+            interactionBarrierLifecycle.activationFailed()
             setInteractionBarrierAvailability(false)
             return false
         }
         guard let eventSource = CFMachPortCreateRunLoopSource(nil, eventTap, 0) else {
             CGEvent.tapEnable(tap: eventTap, enable: false)
             interactionGate.stop()
+            interactionBarrierLifecycle.activationFailed()
             setInteractionBarrierAvailability(false)
             return false
         }
@@ -2299,6 +2301,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         if lifecycle.isInteractionBarrierAvailable && isInteractionBarrierActive {
             if interactionGate.userDisabledEventTap() {
                 stopBarrierRetryMonitoring()
+                interactionBarrierLifecycle.disabledBySystem()
                 deactivateInteractionBarrier()
                 blockingMode.disableBlocking()
                 refreshFallbackPanelContent()

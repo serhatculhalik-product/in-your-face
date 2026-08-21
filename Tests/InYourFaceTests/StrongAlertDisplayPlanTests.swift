@@ -248,19 +248,30 @@ final class StrongAlertDisplayPlanTests: XCTestCase {
     func testEarlyReminderInteractionBarrierRestoresItsTrackedWindowState() {
         var lifecycle = EarlyReminderInteractionBarrierLifecycle()
 
+        XCTAssertFalse(lifecycle.isAvailable)
         XCTAssertFalse(lifecycle.isActive)
         XCTAssertFalse(lifecycle.restoresWindowInteraction)
 
+        lifecycle.activationFailed()
+        XCTAssertFalse(lifecycle.isAvailable)
+        XCTAssertFalse(lifecycle.isActive)
+
         lifecycle.activated(restoresWindowInteraction: true)
+        XCTAssertTrue(lifecycle.isAvailable)
         XCTAssertTrue(lifecycle.isActive)
         XCTAssertTrue(lifecycle.restoresWindowInteraction)
 
-        lifecycle.deactivated()
+        lifecycle.disabledBySystem()
+        XCTAssertFalse(lifecycle.isAvailable)
         XCTAssertFalse(lifecycle.isActive)
         XCTAssertFalse(lifecycle.restoresWindowInteraction)
 
         lifecycle.activated(restoresWindowInteraction: false)
+        XCTAssertTrue(lifecycle.isAvailable)
+        XCTAssertTrue(lifecycle.isActive)
+
         lifecycle.deactivated()
+        XCTAssertFalse(lifecycle.isAvailable)
         XCTAssertFalse(lifecycle.isActive)
         XCTAssertFalse(lifecycle.restoresWindowInteraction)
     }
