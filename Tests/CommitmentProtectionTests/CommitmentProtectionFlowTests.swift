@@ -809,6 +809,50 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertEqual(flow.lastActionMessage, "Protection restored for this occurrence.")
     }
 
+    func testDismissedOccurrenceDoesNotHideTheNextRecurringOccurrence() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let firstOccurrence = CalendarEvent(
+            id: "weekly-review",
+            title: "Weekly review",
+            startDate: now.addingTimeInterval(10 * 60),
+            endDate: now.addingTimeInterval(12 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let nextOccurrence = CalendarEvent(
+            id: firstOccurrence.id,
+            title: firstOccurrence.title,
+            startDate: now.addingTimeInterval(15 * 60),
+            endDate: now.addingTimeInterval(17 * 60),
+            timeZoneIdentifier: firstOccurrence.timeZoneIdentifier,
+            isAllDay: firstOccurrence.isAllDay,
+            isAccepted: firstOccurrence.isAccepted,
+            calendarID: firstOccurrence.calendarID,
+            accountID: firstOccurrence.accountID
+        )
+        let connector = MutableTestGoogleCalendarConnector(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [firstOccurrence, nextOccurrence]
+        )
+        let flow = makeMutableFlow(connector: connector, now: now)
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+        XCTAssertEqual(flow.earlyReminderCommitment, firstOccurrence)
+        XCTAssertTrue(flow.dismissCommitment(at: now))
+
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(5 * 60))
+
+        XCTAssertEqual(flow.upcomingCommitment, firstOccurrence)
+        XCTAssertEqual(flow.earlyReminderCommitment, nextOccurrence)
+        XCTAssertEqual(flow.currentCommitmentDecision, .dismissed)
+    }
+
     func testHandledDecisionCanBeRestoredAfterStrongAlertIsCleared() async {
         let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
         let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)

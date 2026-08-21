@@ -856,26 +856,28 @@ public final class CommitmentProtectionFlow: ObservableObject {
         // A successful calendar refresh replaces the visible snapshot. This is what removes
         // canceled commitments and updates changed occurrences, links, times, and time zones.
         updateLocalState(for: eligibleEvents, at: currentDate)
-        let nextCommitment = eligibleEvents.first(where: { event in
-            guard let startDate = event.startDate else { return false }
-            return startDate > currentDate
-        })
-        let activeCommitment = eligibleEvents.first(where: { event in
-            guard let startDate = event.startDate else { return false }
-            return startDate <= currentDate
-        })
+        let nextCommitment = eligibleEvents.first {
+            isUpcoming($0, at: currentDate)
+        }
+        let protectedEvents = eligibleEvents.filter {
+            isProtectionAvailable(for: $0, at: currentDate)
+        }
+        let nextProtectedCommitment = protectedEvents.first {
+            isUpcoming($0, at: currentDate)
+        }
+        let activeProtectedCommitment = protectedEvents.first {
+            !isUpcoming($0, at: currentDate)
+        }
 
         upcomingCommitment = nextCommitment
-        if clearedEarlyReminderEventID != nextCommitment?.id ||
-            clearedEarlyReminderEventStartDate != nextCommitment?.startDate {
+        if clearedEarlyReminderEventID != nextProtectedCommitment?.id ||
+            clearedEarlyReminderEventStartDate != nextProtectedCommitment?.startDate {
             clearedEarlyReminderEventID = nil
             clearedEarlyReminderEventStartDate = nil
         }
 
-        if let activeCommitment,
-           !isSnoozed(activeCommitment, at: currentDate),
-           !suppressedPostStartAcceptanceOccurrences.contains(OccurrenceIdentity(activeCommitment)) {
-            updateStrongAlert(for: activeCommitment, at: currentDate)
+        if let activeProtectedCommitment {
+            updateStrongAlert(for: activeProtectedCommitment, at: currentDate)
         } else {
             clearStrongAlertState()
         }
@@ -885,18 +887,16 @@ public final class CommitmentProtectionFlow: ObservableObject {
             return
         }
 
-        guard let nextCommitment,
-              let startDate = nextCommitment.startDate,
+        guard let nextProtectedCommitment,
+              let startDate = nextProtectedCommitment.startDate,
               currentDate >= startDate.addingTimeInterval(-Double(earlyReminderLeadTimeMinutes) * 60),
-              !(clearedEarlyReminderEventID == nextCommitment.id &&
-                clearedEarlyReminderEventStartDate == startDate),
-              !isDecisionActive(nextCommitment),
-              !isSnoozed(nextCommitment, at: currentDate) else {
+              !(clearedEarlyReminderEventID == nextProtectedCommitment.id &&
+                clearedEarlyReminderEventStartDate == startDate) else {
             earlyReminderCommitment = nil
             return
         }
 
-        earlyReminderCommitment = nextCommitment
+        earlyReminderCommitment = nextProtectedCommitment
     }
 
     private func recordAcceptanceMutations(in events: [CalendarEvent], at currentDate: Date) {
@@ -1009,6 +1009,17 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
     private func isDecisionActive(_ commitment: CalendarEvent) -> Bool {
         decisionOccurrence == OccurrenceIdentity(commitment) && currentCommitmentDecision != nil
+    }
+
+    private func isUpcoming(_ commitment: CalendarEvent, at date: Date) -> Bool {
+        guard let startDate = commitment.startDate else { return false }
+        return startDate > date
+    }
+
+    private func isProtectionAvailable(for commitment: CalendarEvent, at date: Date) -> Bool {
+        !isDecisionActive(commitment) &&
+            !isSnoozed(commitment, at: date) &&
+            !suppressedPostStartAcceptanceOccurrences.contains(OccurrenceIdentity(commitment))
     }
 
     private func restoreDisplayedProtection(for commitment: CalendarEvent, at date: Date) {
