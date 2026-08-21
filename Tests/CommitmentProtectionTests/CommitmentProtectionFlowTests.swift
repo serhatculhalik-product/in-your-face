@@ -2221,14 +2221,17 @@ final class CommitmentProtectionFlowTests: XCTestCase {
 
         await activateProtection(for: flow, calendarID: calendar.id)
         await flow.refreshCommitmentProtection(at: now)
-        XCTAssertTrue(flow.activityLog.contains {
+        let earlyReminderActivity = flow.activityLog.first {
             $0.actor == .system &&
                 $0.kind == .earlyReminderShown &&
                 $0.commitmentTitle == commitment.title &&
                 $0.commitmentID == commitment.id &&
                 $0.commitmentStartDate == commitment.startDate &&
+                $0.calendarID == calendar.id &&
+                $0.calendarName == calendar.name &&
                 $0.accountEmail == account.email
-        })
+        }
+        XCTAssertNotNil(earlyReminderActivity)
 
         XCTAssertTrue(flow.clearEarlyReminder(for: commitment))
         XCTAssertTrue(flow.activityLog.contains {
@@ -2249,6 +2252,122 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertTrue(flow.activityLog.contains {
             $0.actor == .user && $0.kind == .dismissed && $0.commitmentTitle == commitment.title
         })
+    }
+
+    func testProtectionActivityCanBeViewedPerCalendar() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let workCalendar = CalendarOption(id: "calendar-work", name: "Work", accountID: account.id)
+        let personalCalendar = CalendarOption(id: "calendar-personal", name: "Personal", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let workCommitment = CalendarEvent(
+            id: "work-event",
+            title: "Work review",
+            startDate: now,
+            endDate: now.addingTimeInterval(60 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: workCalendar.id,
+            accountID: account.id
+        )
+        let personalCommitment = CalendarEvent(
+            id: "personal-event",
+            title: "Personal appointment",
+            startDate: now.addingTimeInterval(5 * 60),
+            endDate: now.addingTimeInterval(65 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: personalCalendar.id,
+            accountID: account.id
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(
+                account: account,
+                calendars: [workCalendar, personalCalendar]
+            ),
+            events: [workCommitment, personalCommitment],
+            now: now
+        )
+
+        await flow.connectGoogleAccount()
+        flow.setCalendarSelected(true, calendarID: workCalendar.id)
+        flow.setCalendarSelected(true, calendarID: personalCalendar.id)
+        XCTAssertTrue(flow.confirmAllProtection())
+        await settleScheduledRefreshes()
+        await flow.refreshCommitmentProtection(at: now)
+
+        let workActivities = flow.activities(forCalendarID: workCalendar.id, accountID: account.id)
+        let personalActivities = flow.activities(forCalendarID: personalCalendar.id, accountID: account.id)
+
+        XCTAssertTrue(workActivities.contains { $0.calendarID == workCalendar.id })
+        XCTAssertTrue(workActivities.contains { $0.commitmentID == workCommitment.id })
+        XCTAssertFalse(workActivities.contains { $0.calendarID == personalCalendar.id })
+        XCTAssertTrue(personalActivities.contains { $0.calendarID == personalCalendar.id })
+        XCTAssertTrue(personalActivities.contains { $0.commitmentID == personalCommitment.id })
+        XCTAssertFalse(personalActivities.contains { $0.calendarID == workCalendar.id })
+    }
+
+    func testProtectionActivitySeparatesSameCalendarIDAcrossAccounts() async {
+        let firstAccount = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let secondAccount = GoogleAccount(id: "account-2", email: "sam@example.com", displayName: "Sam")
+        let firstCalendar = CalendarOption(id: "shared-calendar", name: "Work", accountID: firstAccount.id)
+        let secondCalendar = CalendarOption(id: "shared-calendar", name: "Work", accountID: secondAccount.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let firstCommitment = CalendarEvent(
+            id: "first-event",
+            title: "Alex review",
+            startDate: now,
+            endDate: now.addingTimeInterval(60 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: firstCalendar.id,
+            accountID: firstAccount.id
+        )
+        let secondCommitment = CalendarEvent(
+            id: "second-event",
+            title: "Sam review",
+            startDate: now.addingTimeInterval(5 * 60),
+            endDate: now.addingTimeInterval(65 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: secondCalendar.id,
+            accountID: secondAccount.id
+        )
+        let connector = MultiAccountTestGoogleCalendarConnector(
+            connections: [
+                GoogleCalendarConnection(account: firstAccount, calendars: [firstCalendar]),
+                GoogleCalendarConnection(account: secondAccount, calendars: [secondCalendar])
+            ],
+            events: [firstCommitment, secondCommitment]
+        )
+        let suiteName = "CommitmentProtectionFlowTests.activityCalendarAccounts.\(UUID().uuidString)"
+        let stateStore = UserDefaults(suiteName: suiteName)!
+        defer { stateStore.removePersistentDomain(forName: suiteName) }
+        let flow = CommitmentProtectionFlow(
+            calendarConnector: connector,
+            launchAtLogin: TestLaunchAtLoginController(),
+            stateStore: stateStore,
+            now: { now }
+        )
+
+        await flow.connectGoogleAccount()
+        await flow.connectGoogleAccount()
+        flow.setCalendarSelected(true, calendarID: firstCalendar.id, accountID: firstAccount.id)
+        flow.setCalendarSelected(true, calendarID: secondCalendar.id, accountID: secondAccount.id)
+        XCTAssertTrue(flow.confirmAllProtection())
+        await settleScheduledRefreshes()
+        await flow.refreshCommitmentProtection(at: now)
+
+        let firstActivities = flow.activities(forCalendarID: firstCalendar.id, accountID: firstAccount.id)
+        let secondActivities = flow.activities(forCalendarID: secondCalendar.id, accountID: secondAccount.id)
+
+        XCTAssertTrue(firstActivities.contains { $0.commitmentID == firstCommitment.id })
+        XCTAssertFalse(firstActivities.contains { $0.commitmentID == secondCommitment.id })
+        XCTAssertTrue(secondActivities.contains { $0.commitmentID == secondCommitment.id })
+        XCTAssertFalse(secondActivities.contains { $0.commitmentID == firstCommitment.id })
     }
 
     func testActivityLogShowsPauseExpiryAsSystemAction() async {
@@ -2336,24 +2455,50 @@ final class CommitmentProtectionFlowTests: XCTestCase {
     }
 
     func testLegacyMissedActivityDoesNotEraseProtectionHistory() async throws {
+        struct LegacyProtectionActivity: Encodable {
+            let id: UUID
+            let occurredAt: Date
+            let actor: ProtectionActivityActor
+            let kind: ProtectionActivityKind
+            let title: String
+            let detail: String
+            let commitmentTitle: String?
+            let commitmentID: String?
+            let commitmentStartDate: Date?
+            let accountID: String?
+            let accountEmail: String?
+        }
+
         let now = Date(timeIntervalSince1970: 1_000_000)
         let suiteName = "CommitmentProtectionFlowTests.legacyActivityLog.\(UUID().uuidString)"
         let stateStore = UserDefaults(suiteName: suiteName)!
         defer { stateStore.removePersistentDomain(forName: suiteName) }
 
-        let legacyActivity = ProtectionActivity(
+        let legacyActivity = LegacyProtectionActivity(
+            id: UUID(),
             occurredAt: now.addingTimeInterval(-60),
             actor: .system,
             kind: .missedCommitment,
             title: "Missed Commitment",
-            detail: "Legacy activity entry."
+            detail: "Legacy activity entry.",
+            commitmentTitle: nil,
+            commitmentID: nil,
+            commitmentStartDate: nil,
+            accountID: nil,
+            accountEmail: nil
         )
-        let currentActivity = ProtectionActivity(
+        let currentActivity = LegacyProtectionActivity(
+            id: UUID(),
             occurredAt: now,
             actor: .user,
             kind: .pauseStarted,
             title: "Protection paused",
-            detail: "Protection paused for one hour."
+            detail: "Protection paused for one hour.",
+            commitmentTitle: nil,
+            commitmentID: nil,
+            commitmentStartDate: nil,
+            accountID: nil,
+            accountEmail: nil
         )
         stateStore.set(
             try JSONEncoder().encode([legacyActivity, currentActivity]),

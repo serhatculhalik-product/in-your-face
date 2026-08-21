@@ -658,6 +658,24 @@ private struct PauseProtectionCard: View {
 
 private struct ProtectionActivityCard: View {
     @EnvironmentObject private var flow: CommitmentProtectionFlow
+    @State private var selectedFilterID = Self.allActivityFilterID
+
+    private static let allActivityFilterID = "all-activity"
+
+    private struct CalendarFilter: Hashable, Identifiable {
+        let accountID: String
+        let accountEmail: String
+        let calendarID: String
+        let calendarName: String
+
+        var id: String {
+            "\(accountID)::\(calendarID)"
+        }
+
+        var displayName: String {
+            "\(calendarName) · \(accountEmail)"
+        }
+    }
 
     private static let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -676,15 +694,25 @@ private struct ProtectionActivityCard: View {
             Text("See what you did and what protection did today. This list resets at the end of your local day.")
                 .foregroundStyle(.secondary)
 
-            if flow.activityLog.isEmpty {
-                Text("No protection activity recorded today.")
+            Picker("Activity scope", selection: $selectedFilterID) {
+                Text("All Activity")
+                    .tag(Self.allActivityFilterID)
+                ForEach(calendarFilters) { filter in
+                    Text(filter.displayName)
+                        .tag(filter.id)
+                }
+            }
+            .pickerStyle(.menu)
+
+            if visibleActivities.isEmpty {
+                Text(emptyStateText)
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 4)
             } else {
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(flow.activityLog) { activity in
+                    ForEach(visibleActivities) { activity in
                         ActivityRow(activity: activity)
-                        if activity.id != flow.activityLog.last?.id {
+                        if activity.id != visibleActivities.last?.id {
                             Divider()
                                 .padding(.leading, 32)
                         }
@@ -692,10 +720,70 @@ private struct ProtectionActivityCard: View {
                 }
             }
         }
+        .onChange(of: calendarFilters.map(\.id)) { _, filterIDs in
+            guard selectedFilterID != Self.allActivityFilterID,
+                  !filterIDs.contains(selectedFilterID) else {
+                return
+            }
+            selectedFilterID = Self.allActivityFilterID
+        }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 16))
         .accessibilityElement(children: .contain)
+    }
+
+    private var calendarFilters: [CalendarFilter] {
+        var filters: [String: CalendarFilter] = [:]
+        for coverage in flow.accountCoverages {
+            for calendar in coverage.calendars {
+                let filter = CalendarFilter(
+                    accountID: coverage.account.id,
+                    accountEmail: coverage.account.email,
+                    calendarID: calendar.id,
+                    calendarName: calendar.name
+                )
+                filters[filter.id] = filter
+            }
+        }
+
+        for activity in flow.activityLog {
+            guard let accountID = activity.accountID,
+                  let calendarID = activity.calendarID else {
+                continue
+            }
+            let filter = CalendarFilter(
+                accountID: accountID,
+                accountEmail: activity.accountEmail ?? accountID,
+                calendarID: calendarID,
+                calendarName: activity.calendarName ?? calendarID
+            )
+            filters[filter.id] = filters[filter.id] ?? filter
+        }
+
+        return filters.values.sorted {
+            if $0.accountEmail == $1.accountEmail {
+                return $0.calendarName.localizedCaseInsensitiveCompare($1.calendarName) == .orderedAscending
+            }
+            return $0.accountEmail.localizedCaseInsensitiveCompare($1.accountEmail) == .orderedAscending
+        }
+    }
+
+    private var visibleActivities: [ProtectionActivity] {
+        guard selectedFilterID != Self.allActivityFilterID,
+              let selectedFilter = calendarFilters.first(where: { $0.id == selectedFilterID }) else {
+            return flow.activityLog
+        }
+        return flow.activities(
+            forCalendarID: selectedFilter.calendarID,
+            accountID: selectedFilter.accountID
+        )
+    }
+
+    private var emptyStateText: String {
+        selectedFilterID == Self.allActivityFilterID
+            ? "No protection activity recorded today."
+            : "No activity recorded for this calendar today."
     }
 
     private struct ActivityRow: View {
@@ -736,6 +824,12 @@ private struct ProtectionActivityCard: View {
                             .foregroundStyle(.secondary)
                     }
 
+                    if let calendarContext = activity.calendarName ?? activity.calendarID {
+                        Text("Calendar: \(calendarContext)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
                     if let accountEmail = activity.accountEmail {
                         Text("Account: \(accountEmail)")
                             .font(.caption)
@@ -745,9 +839,25 @@ private struct ProtectionActivityCard: View {
             }
             .padding(.vertical, 10)
             .accessibilityElement(children: .combine)
-            .accessibilityLabel(
-                "\(activity.actor == .user ? "You" : "System"), \(activity.title), \(activity.detail)"
-            )
+            .accessibilityLabel(accessibilityText)
+        }
+
+        private var accessibilityText: String {
+            var parts = [
+                activity.actor == .user ? "You" : "System",
+                activity.title,
+                activity.detail
+            ]
+            if let commitmentTitle = activity.commitmentTitle {
+                parts.append("Commitment: \(commitmentTitle)")
+            }
+            if let calendarContext = activity.calendarName ?? activity.calendarID {
+                parts.append("Calendar: \(calendarContext)")
+            }
+            if let accountEmail = activity.accountEmail {
+                parts.append("Account: \(accountEmail)")
+            }
+            return parts.joined(separator: ", ")
         }
     }
 }

@@ -168,6 +168,8 @@ public struct ProtectionActivity: Codable, Equatable, Identifiable, Sendable {
     public let commitmentStartDate: Date?
     public let accountID: String?
     public let accountEmail: String?
+    public let calendarID: String?
+    public let calendarName: String?
 
     public init(
         id: UUID = UUID(),
@@ -180,7 +182,9 @@ public struct ProtectionActivity: Codable, Equatable, Identifiable, Sendable {
         commitmentID: String? = nil,
         commitmentStartDate: Date? = nil,
         accountID: String? = nil,
-        accountEmail: String? = nil
+        accountEmail: String? = nil,
+        calendarID: String? = nil,
+        calendarName: String? = nil
     ) {
         self.id = id
         self.occurredAt = occurredAt
@@ -193,6 +197,8 @@ public struct ProtectionActivity: Codable, Equatable, Identifiable, Sendable {
         self.commitmentStartDate = commitmentStartDate
         self.accountID = accountID
         self.accountEmail = accountEmail
+        self.calendarID = calendarID
+        self.calendarName = calendarName
     }
 }
 
@@ -554,6 +560,12 @@ public final class CommitmentProtectionFlow: ObservableObject {
         }
     }
 
+    public func activities(forCalendarID calendarID: String, accountID: String) -> [ProtectionActivity] {
+        activityLog.filter {
+            $0.accountID == accountID && $0.calendarID == calendarID
+        }
+    }
+
     public func selectedCalendarIDs(for accountID: String) -> Set<String> {
         accountRecords[accountID]?.selectedCalendarIDs ?? []
     }
@@ -901,7 +913,8 @@ public final class CommitmentProtectionFlow: ObservableObject {
             }
         }
         accountRecords[accountID] = record
-        let calendarName = record.connection.calendars.first(where: { $0.id == calendarID })?.name ?? calendarID
+        let selectedCalendar = record.connection.calendars.first(where: { $0.id == calendarID })
+        let calendarName = selectedCalendar?.name ?? calendarID
         invalidateRefreshes()
         if !isSelected,
            [upcomingCommitment, earlyReminderCommitment, strongAlertCommitment]
@@ -916,7 +929,8 @@ public final class CommitmentProtectionFlow: ObservableObject {
             actor: .user,
             title: "Calendar selection changed",
             detail: isSelected ? "Monitoring \(calendarName)." : "Stopped monitoring \(calendarName).",
-            account: record.connection.account
+            account: record.connection.account,
+            calendar: selectedCalendar
         )
         Task { await refreshCommitmentProtection() }
     }
@@ -1351,9 +1365,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
     }
 
     public func strongAlertContextText(for commitment: CalendarEvent) -> String {
-        let calendarName = accountRecords[commitment.accountID]?.connection.calendars
-            .first(where: { $0.id == commitment.calendarID })?.name
-            ?? commitment.calendarID
+        let calendarName = calendarName(for: commitment) ?? commitment.calendarID
         let accountName = account(for: commitment)?.email ?? commitment.accountID
         return "\(calendarName) · \(accountName)"
     }
@@ -2051,10 +2063,14 @@ public final class CommitmentProtectionFlow: ObservableObject {
         detail: String,
         commitment: CalendarEvent? = nil,
         account: GoogleAccount? = nil,
+        calendar: CalendarOption? = nil,
         at date: Date? = nil
     ) {
         let occurredAt = date ?? now()
-        let activityAccount = account ?? commitment.flatMap { self.account(for: $0) } ?? connectedAccount
+        let activityAccount = account ?? commitment.flatMap { self.account(for: $0) } ??
+            calendar.flatMap { accountRecords[$0.accountID]?.connection.account } ?? connectedAccount
+        let activityCalendarID = calendar?.id ?? commitment?.calendarID
+        let activityCalendarName = calendar?.name ?? commitment.flatMap { calendarName(for: $0) }
         _ = pruneActivityLog(at: occurredAt)
         activityLog.insert(
             ProtectionActivity(
@@ -2067,12 +2083,19 @@ public final class CommitmentProtectionFlow: ObservableObject {
                 commitmentID: commitment?.id,
                 commitmentStartDate: commitment?.startDate,
                 accountID: activityAccount?.id,
-                accountEmail: activityAccount?.email
+                accountEmail: activityAccount?.email,
+                calendarID: activityCalendarID,
+                calendarName: activityCalendarName
             ),
             at: 0
         )
         saveActivityLog()
         saveConfiguration()
+    }
+
+    private func calendarName(for commitment: CalendarEvent) -> String? {
+        accountRecords[commitment.accountID]?.connection.calendars
+            .first(where: { $0.id == commitment.calendarID })?.name
     }
 
     private func saveActivityLog() {
