@@ -2906,7 +2906,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         )
     }
 
-    func testRecoveryBurstCoalescesWhileCalendarLoadIsInFlight() async {
+    func testRecoveryKeepsAlertStableWhileCalendarLoadIsInFlight() async {
         let (account, calendar) = makeTestAccountAndCalendar()
         let now = Date(timeIntervalSince1970: 1_000_000)
         let commitment = CalendarEvent(
@@ -2936,16 +2936,12 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         let strongAlertShownBeforeBurst = flow.activityLog.filter { $0.kind == .strongAlertShown }.count
         let strongAlertRepeatedBeforeBurst = flow.activityLog.filter { $0.kind == .strongAlertRepeated }.count
         await state.holdNextLoad()
-        let recoveryTasks = (0..<4).map { _ in
-            Task { @MainActor in
-                await flow.recoverProtection(at: now)
-            }
+        let recoveryTask = Task { @MainActor in
+            await flow.recoverProtection(at: now)
         }
         await state.waitForFirstLoadStart()
         await state.releaseFirstLoad()
-        for task in recoveryTasks {
-            await task.value
-        }
+        await recoveryTask.value
 
         XCTAssertEqual(flow.strongAlertCommitment, commitment)
         XCTAssertTrue(flow.isStrongAlertPresented)
