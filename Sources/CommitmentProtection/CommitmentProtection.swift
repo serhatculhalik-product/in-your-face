@@ -1087,12 +1087,17 @@ public final class CommitmentProtectionFlow: ObservableObject {
     public func localStartTimeText(for commitment: CalendarEvent) -> String {
         guard let startDate = commitment.startDate else { return "Time unavailable" }
 
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
-        formatter.locale = .current
-        formatter.timeZone = .current
-        var text = formatter.string(from: startDate)
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "dd/MM/yyyy"
+        dateFormatter.locale = Locale(identifier: "tr_TR")
+        dateFormatter.timeZone = .current
+
+        let timeFormatter = DateFormatter()
+        timeFormatter.dateStyle = .none
+        timeFormatter.timeStyle = .short
+        timeFormatter.locale = .current
+        timeFormatter.timeZone = .current
+        var text = "\(dateFormatter.string(from: startDate)), \(timeFormatter.string(from: startDate))"
 
         if let identifier = commitment.timeZoneIdentifier,
            let eventTimeZone = TimeZone(identifier: identifier),

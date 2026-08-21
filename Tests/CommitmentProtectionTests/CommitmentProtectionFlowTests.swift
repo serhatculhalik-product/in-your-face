@@ -1735,6 +1735,40 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertTrue(flow.localStartTimeText(for: commitment).contains(expectedZoneLabel))
     }
 
+    func testLocalStartTimeUsesDayMonthYearDateOrder() {
+        var calendar = Calendar.current
+        calendar.timeZone = .current
+        let startDate = calendar.date(from: DateComponents(
+            calendar: calendar,
+            timeZone: .current,
+            year: 2026,
+            month: 3,
+            day: 2,
+            hour: 14,
+            minute: 30
+        ))!
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let monitoredCalendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: startDate,
+            endDate: startDate.addingTimeInterval(60 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: monitoredCalendar.id,
+            accountID: account.id
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [monitoredCalendar]),
+            events: [commitment],
+            now: startDate
+        )
+
+        XCTAssertTrue(flow.localStartTimeText(for: commitment).hasPrefix("02/03/2026"))
+    }
+
     func testGoogleEventResponseMapsAcceptanceAndAllDayState() throws {
         let data = Data(#"""
         {

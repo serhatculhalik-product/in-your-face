@@ -526,6 +526,7 @@ private struct PauseProtectionCard: View {
                     in: Date()...
                 )
                 .datePickerStyle(.field)
+                .environment(\.locale, Locale(identifier: "tr_TR"))
 
                 Button("Pause until selected time") {
                     pause(.custom(customExpiration))
@@ -1871,6 +1872,7 @@ private struct StrongAlertView: View {
                     selection: $customPauseExpiration,
                     in: Date()...
                 )
+                .environment(\.locale, Locale(identifier: "tr_TR"))
                 Button("Pause until selected time") {
                     pauseAction?(.custom(customPauseExpiration))
                     isCustomPausePresented = false
@@ -1952,6 +1954,7 @@ private struct MenuBarContent: View {
                             in: context.date...
                         )
                         .datePickerStyle(.field)
+                        .environment(\.locale, Locale(identifier: "tr_TR"))
                         Button("Pause until selected time") {
                             pause(.custom(customPauseExpiration))
                         }
