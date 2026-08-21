@@ -117,6 +117,7 @@ The experience is intentionally narrow: Google Calendar is the source of truth f
 - Account failures are isolated: healthy accounts remain protected while the affected account is visibly uncovered.
 - The app starts automatically at login and supports recovery after sleep, lock, quit, or other unavailable periods. Ongoing commitments become Overdue Commitments on recovery; ended commitments become passive Missed Commitments.
 - Missed status lasts until Acknowledge or the end of the user’s local day and is not retained as event history.
+- The main app shows a Protection Activity timeline containing human-readable user actions and system transitions from the current local day. It survives a relaunch during that day, remains visible after an explicit account disconnect, and is discarded at the local-day boundary. When accounts change, each entry retains its account context so activity is never ambiguous; it is not permanent event history or an analytics dashboard.
 - Onboarding includes account selection, Monitored Calendar selection, global timing confirmation, and a Test Alert.
 - The product uses a menu-bar-first experience with a compact upcoming-commitment view rather than a full planning calendar.
 - Accessibility is a baseline product requirement for the commitment protection flow.
@@ -129,6 +130,7 @@ The experience is intentionally narrow: Google Calendar is the source of truth f
 - Calendar fixtures should cover multiple Connected Accounts, selected and unselected Monitored Calendars, Accepted Events, declined or unaccepted events, all-day events, recurring Occurrences, reschedules, cancellations, changed links, duplicate representations, and same-start conflicts.
 - User-visible reminder tests should cover Early Reminder, Strong Alert, Unverified Reminder, Missed Commitment, and Coverage Warning states, including their permitted and forbidden transitions.
 - Action tests should verify Join, Handled, Dismiss, Restore Protection, Snooze, Acknowledge, Pause, and incidental surface clearing independently from the calendar source.
+- Activity tests should verify that user and system actions are distinguishable, tied to the relevant commitment when applicable, persisted through a same-day relaunch, and removed at the local-day boundary.
 - Display tests should verify that reminders remain visible across multiple displays, Full-Screen Sharing, window sharing, app sharing, sharing beginning during an active alert, all displays being shared, and Focus-mode override behavior.
 - Lifecycle tests should cover login activation, account failure, stale-to-fresh recovery, lock/sleep recovery, app recovery, late acceptance, coverage activation near a commitment, and commitment end boundaries.
 - Conflict tests should verify primary selection, conflict lists, same-start equality, no-choice behavior, and transitions when one commitment is joined or handled.

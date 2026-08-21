@@ -106,6 +106,95 @@ public enum PauseDuration: Equatable, Sendable {
     case custom(Date)
 }
 
+public enum ProtectionActivityActor: String, Codable, Equatable, Sendable {
+    case user
+    case system
+}
+
+public enum ProtectionActivityKind: String, Codable, Equatable, Sendable {
+    case accountConnected
+    case accountDisconnected
+    case accountConnectionFailed
+    case accountDisconnectFailed
+    case configurationChanged
+    case blockingModeChanged
+    case testAlertShown
+    case testAlertDismissed
+    case earlyReminderShown
+    case earlyReminderCleared
+    case snoozed
+    case strongAlertShown
+    case strongAlertRepeated
+    case strongAlertClosed
+    case joined
+    case handled
+    case dismissed
+    case protectionRestored
+    case pauseStarted
+    case pauseEnded
+    case missedCommitment
+    case missedCommitmentAcknowledged
+    case coverageUnavailable
+    case coverageRestored
+
+    fileprivate var activityTitle: String {
+        switch self {
+        case .joined:
+            return "Joined commitment"
+        case .handled:
+            return "Commitment handled"
+        case .dismissed:
+            return "Reminders stopped"
+        case .strongAlertShown:
+            return "Strong Alert shown"
+        case .strongAlertRepeated:
+            return "Strong Alert repeated"
+        default:
+            return rawValue
+        }
+    }
+}
+
+public struct ProtectionActivity: Codable, Equatable, Identifiable, Sendable {
+    public let id: UUID
+    public let occurredAt: Date
+    public let actor: ProtectionActivityActor
+    public let kind: ProtectionActivityKind
+    public let title: String
+    public let detail: String
+    public let commitmentTitle: String?
+    public let commitmentID: String?
+    public let commitmentStartDate: Date?
+    public let accountID: String?
+    public let accountEmail: String?
+
+    public init(
+        id: UUID = UUID(),
+        occurredAt: Date,
+        actor: ProtectionActivityActor,
+        kind: ProtectionActivityKind,
+        title: String,
+        detail: String,
+        commitmentTitle: String? = nil,
+        commitmentID: String? = nil,
+        commitmentStartDate: Date? = nil,
+        accountID: String? = nil,
+        accountEmail: String? = nil
+    ) {
+        self.id = id
+        self.occurredAt = occurredAt
+        self.actor = actor
+        self.kind = kind
+        self.title = title
+        self.detail = detail
+        self.commitmentTitle = commitmentTitle
+        self.commitmentID = commitmentID
+        self.commitmentStartDate = commitmentStartDate
+        self.accountID = accountID
+        self.accountEmail = accountEmail
+    }
+}
+
 public enum ConnectionState: Equatable, Sendable {
     case notConnected
     case connecting
@@ -154,6 +243,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
     @Published public private(set) var strongAlertCommitment: CalendarEvent?
     @Published public private(set) var pauseUntil: Date?
     @Published public private(set) var missedCommitment: CalendarEvent?
+    @Published public private(set) var activityLog: [ProtectionActivity] = []
     @Published public private(set) var currentCommitmentDecision: CommitmentProtectionDecision?
     @Published public private(set) var decisionCommitment: CalendarEvent?
     @Published public private(set) var lastActionMessage: String?
@@ -167,6 +257,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
     private let stateStore: UserDefaults
     private let now: () -> Date
     private static let stateKey = "commitment-protection.configuration"
+    private static let activityLogKey = "commitment-protection.activity-log"
     private static let earlyReminderEnabledKey = "commitment-protection.early-reminder-enabled"
     private static let blockingModeEnabledKey = "commitment-protection.blocking-mode-enabled"
     private static let earlyReminderLeadTimeKey = "commitment-protection.early-reminder-lead-time"
@@ -333,6 +424,8 @@ public final class CommitmentProtectionFlow: ObservableObject {
             isLaunchAtLoginEnabled = launchAtLogin.isEnabled
         }
         isLaunchAtLoginEnabled = launchAtLogin.isEnabled
+        activityLog = loadActivityLog()
+        saveActivityLog()
     }
 
     public func refreshLaunchAtLoginStatus() {
@@ -429,17 +522,29 @@ public final class CommitmentProtectionFlow: ObservableObject {
         earlyReminderCommitment = nil
         clearStrongAlertState()
         lastActionMessage = pauseExpirationText(at: currentDate)
-        saveConfiguration()
+        recordActivity(
+            .pauseStarted,
+            actor: .user,
+            title: "Protection paused",
+            detail: lastActionMessage ?? "Protection paused.",
+            at: currentDate
+        )
         return true
     }
 
     @discardableResult
     public func acknowledgeMissedCommitment() -> Bool {
-        guard missedCommitment != nil else { return false }
+        guard let commitment = missedCommitment else { return false }
         missedCommitment = nil
         missedUntil = nil
         lastActionMessage = "Missed Commitment acknowledged. Google Calendar was not changed."
-        saveConfiguration()
+        recordActivity(
+            .missedCommitmentAcknowledged,
+            actor: .user,
+            title: "Missed Commitment acknowledged",
+            detail: lastActionMessage ?? "Missed Commitment acknowledged.",
+            commitment: commitment
+        )
         return true
     }
 
@@ -482,10 +587,21 @@ public final class CommitmentProtectionFlow: ObservableObject {
                 : []
             isProtectionConfirmed = shouldPreserveConfirmation
             connectionState = .connected
-            saveConfiguration()
+            recordActivity(
+                .accountConnected,
+                actor: .user,
+                title: "Google Calendar connected",
+                detail: "Connected \(connection.account.email)."
+            )
             await refreshCommitmentProtection()
         } catch {
             connectionState = .failed(error.localizedDescription)
+            recordActivity(
+                .accountConnectionFailed,
+                actor: .system,
+                title: "Google Calendar connection failed",
+                detail: "Connection could not be completed: \(error.localizedDescription)."
+            )
         }
     }
 
@@ -498,10 +614,22 @@ public final class CommitmentProtectionFlow: ObservableObject {
                 try calendarConnector.disconnect(accountID: accountID)
             } catch {
                 connectionState = .failed(error.localizedDescription)
+                recordActivity(
+                    .accountDisconnectFailed,
+                    actor: .system,
+                    title: "Google Calendar disconnect failed",
+                    detail: "The account could not be disconnected: \(error.localizedDescription)."
+                )
                 return false
             }
         }
 
+        recordActivity(
+            .accountDisconnected,
+            actor: .user,
+            title: "Google Calendar disconnected",
+            detail: "Disconnected the Google Calendar account."
+        )
         connectedAccount = nil
         availableCalendars = []
         selectedCalendarIDs = []
@@ -546,6 +674,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
                 .intersection(Set(connection.calendars.map(\.id)))
             isProtectionConfirmed = savedConfiguration.isProtectionConfirmed
             restoreLocalState(from: savedConfiguration)
+            saveActivityLog()
             connectionState = .connected
             saveConfiguration()
             await refreshCommitmentProtection()
@@ -566,9 +695,15 @@ public final class CommitmentProtectionFlow: ObservableObject {
             selectedCalendarIDs.remove(calendarID)
         }
         isProtectionConfirmed = false
+        let calendarName = availableCalendars.first(where: { $0.id == calendarID })?.name ?? calendarID
         invalidateRefreshes()
         clearProtectionState()
-        saveConfiguration()
+        recordActivity(
+            .configurationChanged,
+            actor: .user,
+            title: "Calendar selection changed",
+            detail: isSelected ? "Monitoring \(calendarName)." : "Stopped monitoring \(calendarName)."
+        )
         Task { await refreshCommitmentProtection() }
     }
 
@@ -577,7 +712,12 @@ public final class CommitmentProtectionFlow: ObservableObject {
         guard connectedAccount != nil, !selectedCalendarIDs.isEmpty else { return false }
         isProtectionConfirmed = true
         invalidateRefreshes()
-        saveConfiguration()
+        recordActivity(
+            .configurationChanged,
+            actor: .user,
+            title: "Protection confirmed",
+            detail: "Protection is enabled for the selected calendars."
+        )
         Task { await refreshCommitmentProtection() }
         return true
     }
@@ -595,7 +735,12 @@ public final class CommitmentProtectionFlow: ObservableObject {
         if !isEnabled {
             earlyReminderCommitment = nil
         }
-        saveConfiguration()
+        recordActivity(
+            .configurationChanged,
+            actor: .user,
+            title: "Early Reminder setting changed",
+            detail: isEnabled ? "Early Reminder enabled." : "Early Reminder disabled."
+        )
         Task { await refreshCommitmentProtection() }
     }
 
@@ -604,6 +749,12 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
         isBlockingModeEnabled = isEnabled
         stateStore.set(isEnabled, forKey: Self.blockingModeEnabledKey)
+        recordActivity(
+            .blockingModeChanged,
+            actor: .user,
+            title: "Blocking mode changed",
+            detail: isEnabled ? "Blocking mode enabled." : "Blocking mode disabled."
+        )
     }
 
     public func setStrongAlertRepeatInterval(minutes: Int) {
@@ -615,7 +766,12 @@ public final class CommitmentProtectionFlow: ObservableObject {
         isProtectionConfirmed = false
         invalidateRefreshes()
         clearProtectionState()
-        saveConfiguration()
+        recordActivity(
+            .configurationChanged,
+            actor: .user,
+            title: "Strong Alert setting changed",
+            detail: "Strong Alert repeats every \(clampedMinutes) minute\(clampedMinutes == 1 ? "" : "s")."
+        )
         Task { await refreshCommitmentProtection() }
     }
 
@@ -628,7 +784,12 @@ public final class CommitmentProtectionFlow: ObservableObject {
         isProtectionConfirmed = false
         invalidateRefreshes()
         clearProtectionState()
-        saveConfiguration()
+        recordActivity(
+            .configurationChanged,
+            actor: .user,
+            title: "Early Reminder setting changed",
+            detail: "Early Reminder lead time is \(clampedMinutes) minutes."
+        )
         Task { await refreshCommitmentProtection() }
     }
 
@@ -653,6 +814,10 @@ public final class CommitmentProtectionFlow: ObservableObject {
     }
 
     public func refreshCommitmentProtection(at currentDate: Date) async {
+        if pruneActivityLog(at: currentDate) {
+            saveActivityLog()
+            saveConfiguration()
+        }
         let generation = beginRefresh()
         guard let connectedAccount, isProtectionConfirmed else {
             clearProtectionState()
@@ -680,22 +845,66 @@ public final class CommitmentProtectionFlow: ObservableObject {
             }
 
             guard generation == refreshGeneration else { return }
+            let wasUnavailable: Bool
+            if case .failed = connectionState {
+                wasUnavailable = true
+            } else {
+                wasUnavailable = false
+            }
             connectionState = .connected
+            if wasUnavailable {
+                recordActivity(
+                    .coverageRestored,
+                    actor: .system,
+                    title: "Calendar coverage restored",
+                    detail: "Calendar protection is available again.",
+                    at: currentDate
+                )
+            }
 
             reconcileCalendarSnapshot(events, at: currentDate)
         } catch {
             guard generation == refreshGeneration else { return }
             clearDisplayedProtectionState()
+            let wasUnavailable: Bool
+            if case .failed = connectionState {
+                wasUnavailable = true
+            } else {
+                wasUnavailable = false
+            }
             connectionState = .failed(error.localizedDescription)
+            if !wasUnavailable {
+                recordActivity(
+                    .coverageUnavailable,
+                    actor: .system,
+                    title: "Calendar coverage unavailable",
+                    detail: "Calendar events could not be refreshed: \(error.localizedDescription).",
+                    at: currentDate
+                )
+            }
         }
     }
 
     public func presentTestAlert() {
+        guard !isTestAlertPresented else { return }
         isTestAlertPresented = true
+        recordActivity(
+            .testAlertShown,
+            actor: .user,
+            title: "Test Alert shown",
+            detail: "The interruption experience was opened."
+        )
     }
 
     public func dismissTestAlert() {
+        guard isTestAlertPresented else { return }
         isTestAlertPresented = false
+        recordActivity(
+            .testAlertDismissed,
+            actor: .user,
+            title: "Test Alert dismissed",
+            detail: "The interruption experience was closed."
+        )
     }
 
     public var strongAlertPrimaryActionTitle: String {
@@ -769,7 +978,14 @@ public final class CommitmentProtectionFlow: ObservableObject {
         clearLocalDecision()
         lastActionMessage = "Protection restored for this occurrence."
         lastActionOccurrence = OccurrenceIdentity(commitment)
-        saveConfiguration()
+        recordActivity(
+            .protectionRestored,
+            actor: .user,
+            title: "Protection restored",
+            detail: lastActionMessage ?? "Protection restored for this occurrence.",
+            commitment: commitment,
+            at: currentDate
+        )
         restoreDisplayedProtection(for: commitment, at: currentDate)
         return true
     }
@@ -799,7 +1015,14 @@ public final class CommitmentProtectionFlow: ObservableObject {
             ? "All reminders snoozed until the commitment ends. Protection remains active."
             : "All reminders snoozed for \(minutes) minutes. Protection remains active."
         lastActionOccurrence = occurrence
-        saveConfiguration()
+        recordActivity(
+            .snoozed,
+            actor: .user,
+            title: "Reminders snoozed",
+            detail: lastActionMessage ?? "Reminders snoozed.",
+            commitment: commitment,
+            at: currentDate
+        )
         return true
     }
 
@@ -825,6 +1048,14 @@ public final class CommitmentProtectionFlow: ObservableObject {
             : "\(strongAlertRepeatIntervalMinutes) minutes"
         lastActionMessage = "Strong Alert closed. Protection remains active and will repeat in \(interval)."
         lastActionOccurrence = OccurrenceIdentity(commitment)
+        recordActivity(
+            .strongAlertClosed,
+            actor: .user,
+            title: "Strong Alert closed",
+            detail: lastActionMessage ?? "Strong Alert closed.",
+            commitment: commitment,
+            at: date
+        )
     }
 
     public func strongAlertTimingText(for commitment: CalendarEvent, at date: Date) -> String {
@@ -869,6 +1100,13 @@ public final class CommitmentProtectionFlow: ObservableObject {
         self.earlyReminderCommitment = nil
         lastActionMessage = "Early Reminder cleared. Protection remains active."
         lastActionOccurrence = OccurrenceIdentity(earlyReminderCommitment)
+        recordActivity(
+            .earlyReminderCleared,
+            actor: .user,
+            title: "Early Reminder cleared",
+            detail: lastActionMessage ?? "Early Reminder cleared.",
+            commitment: earlyReminderCommitment
+        )
         return true
     }
 
@@ -1024,13 +1262,32 @@ public final class CommitmentProtectionFlow: ObservableObject {
             return
         }
 
+        let isNewEarlyReminder = earlyReminderCommitment?.id != nextProtectedCommitment.id ||
+            earlyReminderCommitment?.startDate != startDate
         earlyReminderCommitment = nextProtectedCommitment
+        if isNewEarlyReminder {
+            recordActivity(
+                .earlyReminderShown,
+                actor: .system,
+                title: "Early Reminder shown",
+                detail: "Protection is active for \(nextProtectedCommitment.title).",
+                commitment: nextProtectedCommitment,
+                at: currentDate
+            )
+        }
     }
 
     private func updateTemporaryLifecycleState(at currentDate: Date) {
         var didChange = false
         if let pauseUntil, pauseUntil <= currentDate {
             self.pauseUntil = nil
+            recordActivity(
+                .pauseEnded,
+                actor: .system,
+                title: "Protection resumed",
+                detail: "The pause expired and protection resumed.",
+                at: currentDate
+            )
             didChange = true
         }
         if let missedUntil, missedUntil <= currentDate {
@@ -1067,7 +1324,14 @@ public final class CommitmentProtectionFlow: ObservableObject {
         missedCommitment = commitment
         missedUntil = endOfLocalDay(for: endDate)
         lastActionMessage = "Missed Commitment: \(commitment.title). Acknowledge it when you are ready."
-        saveConfiguration()
+        recordActivity(
+            .missedCommitment,
+            actor: .system,
+            title: "Missed Commitment",
+            detail: "No Join, Handled, or Stop reminders action was taken before it ended.",
+            commitment: commitment,
+            at: currentDate
+        )
     }
 
     private func recordAcceptanceMutations(in events: [CalendarEvent], at currentDate: Date) {
@@ -1138,7 +1402,22 @@ public final class CommitmentProtectionFlow: ObservableObject {
         }
         lastActionMessage = message
         lastActionOccurrence = OccurrenceIdentity(commitment)
-        saveConfiguration()
+        let activityKind: ProtectionActivityKind
+        switch decision {
+        case .handled:
+            activityKind = .handled
+        case .dismissed:
+            activityKind = .dismissed
+        case .joined:
+            activityKind = .joined
+        }
+        recordActivity(
+            activityKind,
+            actor: .user,
+            title: activityKind.activityTitle,
+            detail: message,
+            commitment: commitment
+        )
     }
 
     private func updateLocalState(for eligibleEvents: [CalendarEvent], at date: Date) {
@@ -1215,6 +1494,14 @@ public final class CommitmentProtectionFlow: ObservableObject {
             }
             upcomingCommitment = commitment
             earlyReminderCommitment = commitment
+            recordActivity(
+                .earlyReminderShown,
+                actor: .system,
+                title: "Early Reminder shown",
+                detail: "Protection is active for \(commitment.title).",
+                commitment: commitment,
+                at: date
+            )
             return
         }
 
@@ -1225,6 +1512,14 @@ public final class CommitmentProtectionFlow: ObservableObject {
         isStrongAlertPresented = true
         strongAlertNextPresentationDate = date.addingTimeInterval(
             Double(strongAlertRepeatIntervalMinutes) * 60
+        )
+        recordActivity(
+            .strongAlertShown,
+            actor: .system,
+            title: "Strong Alert shown",
+            detail: "\(commitment.title) needs attention now.",
+            commitment: commitment,
+            at: date
         )
     }
 
@@ -1249,12 +1544,24 @@ public final class CommitmentProtectionFlow: ObservableObject {
             return
         }
 
-        if !isStrongAlertPresented {
+        let wasPresented = isStrongAlertPresented
+        if !wasPresented {
             clearLastActionMessage()
         }
         isStrongAlertPresented = true
         strongAlertNextPresentationDate = date.addingTimeInterval(
             Double(strongAlertRepeatIntervalMinutes) * 60
+        )
+        let activityKind: ProtectionActivityKind = wasPresented ? .strongAlertRepeated : .strongAlertShown
+        recordActivity(
+            activityKind,
+            actor: .system,
+            title: activityKind.activityTitle,
+            detail: wasPresented
+                ? "\(commitment.title) is still awaiting an explicit action."
+                : "\(commitment.title) needs attention now.",
+            commitment: commitment,
+            at: date
         )
     }
 
@@ -1283,6 +1590,16 @@ public final class CommitmentProtectionFlow: ObservableObject {
     private func loadConfiguration() -> SavedConfiguration? {
         guard let data = stateStore.data(forKey: Self.stateKey) else { return nil }
         return try? JSONDecoder().decode(SavedConfiguration.self, from: data)
+    }
+
+    private func loadActivityLog() -> [ProtectionActivity] {
+        guard let data = stateStore.data(forKey: Self.activityLogKey),
+              let activities = try? JSONDecoder().decode([ProtectionActivity].self, from: data) else {
+            return []
+        }
+        return activities.filter {
+            isActivityFromSameLocalDay($0, as: now())
+        }
     }
 
     private func restoreLocalState(from configuration: SavedConfiguration) {
@@ -1370,6 +1687,54 @@ public final class CommitmentProtectionFlow: ObservableObject {
     private func clearLastActionMessage() {
         lastActionMessage = nil
         lastActionOccurrence = nil
+    }
+
+    @discardableResult
+    private func pruneActivityLog(at date: Date) -> Bool {
+        let retainedActivities = activityLog.filter {
+            isActivityFromSameLocalDay($0, as: date)
+        }
+        guard retainedActivities != activityLog else { return false }
+        activityLog = retainedActivities
+        return true
+    }
+
+    private func recordActivity(
+        _ kind: ProtectionActivityKind,
+        actor: ProtectionActivityActor,
+        title: String,
+        detail: String,
+        commitment: CalendarEvent? = nil,
+        at date: Date? = nil
+    ) {
+        let occurredAt = date ?? now()
+        _ = pruneActivityLog(at: occurredAt)
+        activityLog.insert(
+            ProtectionActivity(
+                occurredAt: occurredAt,
+                actor: actor,
+                kind: kind,
+                title: title,
+                detail: detail,
+                commitmentTitle: commitment?.title,
+                commitmentID: commitment?.id,
+                commitmentStartDate: commitment?.startDate,
+                accountID: connectedAccount?.id,
+                accountEmail: connectedAccount?.email
+            ),
+            at: 0
+        )
+        saveActivityLog()
+        saveConfiguration()
+    }
+
+    private func saveActivityLog() {
+        guard let data = try? JSONEncoder().encode(activityLog) else { return }
+        stateStore.set(data, forKey: Self.activityLogKey)
+    }
+
+    private func isActivityFromSameLocalDay(_ activity: ProtectionActivity, as date: Date) -> Bool {
+        Calendar.current.isDate(activity.occurredAt, inSameDayAs: date)
     }
 }
 

@@ -102,6 +102,10 @@ _Avoid_: Failed reminder, unattended event
 An explicit action that clears a passive Missed Commitment status without changing the Google Calendar event.
 _Avoid_: Dismiss (which applies before the occurrence ends), archive
 
+**Protection Activity**:
+A human-readable, current-local-day timeline of user actions and system transitions that explain the app's protection behavior. It is retained through a relaunch during the same local day, remains visible after an explicit account disconnect without reconnecting the account, and is discarded at the local-day boundary. When accounts change, each entry retains its account context so activity is never ambiguous; this is not permanent calendar history or analytics.
+_Avoid_: Audit log, attendance history
+
 ## Privacy and control language
 
 **Full-Screen Sharing**:

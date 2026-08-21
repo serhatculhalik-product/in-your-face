@@ -119,6 +119,7 @@ private struct SetupView: View {
                     TestAlertCard()
                 }
 
+                ProtectionActivityCard()
                 LoginAvailabilityCard()
             }
             .padding(32)
@@ -505,6 +506,102 @@ private struct MissedCommitmentCard: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 16))
             .accessibilityElement(children: .contain)
+        }
+    }
+}
+
+private struct ProtectionActivityCard: View {
+    @EnvironmentObject private var flow: CommitmentProtectionFlow
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .short
+        formatter.locale = .current
+        formatter.timeZone = .current
+        return formatter
+    }()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Protection Activity", systemImage: "clock.arrow.circlepath")
+                .font(.headline)
+
+            Text("See what you did and what protection did today. This list resets at the end of your local day.")
+                .foregroundStyle(.secondary)
+
+            if flow.activityLog.isEmpty {
+                Text("No protection activity recorded today.")
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 4)
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(flow.activityLog) { activity in
+                        ActivityRow(activity: activity)
+                        if activity.id != flow.activityLog.last?.id {
+                            Divider()
+                                .padding(.leading, 32)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 16))
+        .accessibilityElement(children: .contain)
+    }
+
+    private struct ActivityRow: View {
+        let activity: ProtectionActivity
+
+        var body: some View {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: activity.actor == .user ? "person.circle.fill" : "gearshape.circle.fill")
+                    .foregroundStyle(activity.actor == .user ? Color.accentColor : Color.secondary)
+                    .font(.title3)
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(activity.title)
+                            .font(.body.weight(.semibold))
+                        Spacer(minLength: 8)
+                        Text(ProtectionActivityCard.timeFormatter.string(from: activity.occurredAt))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Text(activity.actor == .user ? "You" : "System")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+
+                    Text(activity.detail)
+                        .font(.callout)
+
+                    if let commitmentTitle = activity.commitmentTitle {
+                        let commitmentContext = if let startDate = activity.commitmentStartDate {
+                            "\(commitmentTitle) · \(ProtectionActivityCard.timeFormatter.string(from: startDate))"
+                        } else {
+                            commitmentTitle
+                        }
+                        Text("Commitment: \(commitmentContext)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if let accountEmail = activity.accountEmail {
+                        Text("Account: \(accountEmail)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .padding(.vertical, 10)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(
+                "\(activity.actor == .user ? "You" : "System"), \(activity.title), \(activity.detail)"
+            )
         }
     }
 }

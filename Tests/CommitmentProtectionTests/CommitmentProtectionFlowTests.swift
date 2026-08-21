@@ -128,6 +128,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
 
         flow.disconnectGoogleAccount()
 
+        XCTAssertTrue(flow.activityLog.contains { $0.kind == .accountDisconnected && $0.actor == .user })
         XCTAssertNil(flow.connectedAccount)
         XCTAssertTrue(flow.availableCalendars.isEmpty)
         XCTAssertTrue(flow.selectedCalendarIDs.isEmpty)
@@ -142,6 +143,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         )
         await relaunchedFlow.restoreSavedConnection()
         XCTAssertNil(relaunchedFlow.connectedAccount)
+        XCTAssertTrue(relaunchedFlow.activityLog.contains { $0.kind == .accountDisconnected })
     }
 
     func testTestAlertCanBePresentedAndDismissedWithoutACommitment() async {
@@ -1825,6 +1827,177 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertNil(flow.strongAlertCommitment)
     }
 
+    func testActivityLogExplainsUserAndSystemProtectionActions() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(10 * 60),
+            endDate: now.addingTimeInterval(70 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [commitment],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+        XCTAssertTrue(flow.activityLog.contains {
+            $0.actor == .system &&
+                $0.kind == .earlyReminderShown &&
+                $0.commitmentTitle == commitment.title &&
+                $0.commitmentID == commitment.id &&
+                $0.commitmentStartDate == commitment.startDate &&
+                $0.accountEmail == account.email
+        })
+
+        XCTAssertTrue(flow.clearEarlyReminder(for: commitment))
+        XCTAssertTrue(flow.activityLog.contains {
+            $0.actor == .user && $0.kind == .earlyReminderCleared && $0.commitmentTitle == commitment.title
+        })
+
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(10 * 60))
+        XCTAssertTrue(flow.activityLog.contains {
+            $0.actor == .system && $0.kind == .strongAlertShown && $0.commitmentTitle == commitment.title
+        })
+
+        flow.closeStrongAlertSurface(at: now.addingTimeInterval(10 * 60 + 1))
+        XCTAssertTrue(flow.activityLog.contains {
+            $0.actor == .user && $0.kind == .strongAlertClosed && $0.commitmentTitle == commitment.title
+        })
+
+        XCTAssertTrue(flow.dismissCommitment(for: commitment, at: now.addingTimeInterval(10 * 60 + 2)))
+        XCTAssertTrue(flow.activityLog.contains {
+            $0.actor == .user && $0.kind == .dismissed && $0.commitmentTitle == commitment.title
+        })
+    }
+
+    func testActivityLogShowsPauseExpiryAndMissedCommitmentAsSystemActions() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(5 * 60),
+            endDate: now.addingTimeInterval(65 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [commitment],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+        XCTAssertTrue(flow.pause(for: .oneHour, at: now))
+        XCTAssertTrue(flow.activityLog.contains { $0.actor == .user && $0.kind == .pauseStarted })
+
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(70 * 60))
+
+        XCTAssertTrue(flow.activityLog.contains { $0.actor == .system && $0.kind == .pauseEnded })
+        XCTAssertTrue(flow.activityLog.contains {
+            $0.actor == .system && $0.kind == .missedCommitment && $0.commitmentTitle == commitment.title
+        })
+    }
+
+    func testActivityLogPersistsAcrossSameDayRelaunch() async {
+        var calendar = Calendar.current
+        calendar.timeZone = .current
+        let day = calendar.startOfDay(for: Date(timeIntervalSince1970: 1_000_000))
+        let now = calendar.date(byAdding: .hour, value: 10, to: day)!
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let monitoredCalendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let suiteName = "CommitmentProtectionFlowTests.activityLog.\(UUID().uuidString)"
+        let stateStore = UserDefaults(suiteName: suiteName)!
+        defer { stateStore.removePersistentDomain(forName: suiteName) }
+
+        let firstLaunch = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [monitoredCalendar]),
+            now: now,
+            stateStore: stateStore
+        )
+        await activateProtection(for: firstLaunch, calendarID: monitoredCalendar.id)
+        XCTAssertTrue(firstLaunch.pause(for: .oneHour, at: now))
+
+        let relaunch = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [monitoredCalendar]),
+            now: now,
+            stateStore: stateStore
+        )
+        await relaunch.restoreSavedConnection()
+        XCTAssertTrue(relaunch.activityLog.contains { $0.kind == .pauseStarted })
+    }
+
+    func testActivityLogRetainsAccountContextWhenConnectedAccountChanges() async {
+        let firstAccount = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let firstCalendar = CalendarOption(id: "calendar-1", name: "Work", accountID: firstAccount.id)
+        let secondAccount = GoogleAccount(id: "account-2", email: "sam@example.com", displayName: "Sam")
+        let secondCalendar = CalendarOption(id: "calendar-2", name: "Personal", accountID: secondAccount.id)
+        let connection = GoogleCalendarConnection(account: firstAccount, calendars: [firstCalendar])
+        let connector = MutableTestGoogleCalendarConnector(connection: connection, events: [])
+        let flow = makeMutableFlow(
+            connector: connector,
+            now: Date(timeIntervalSince1970: 1_000_000)
+        )
+
+        await activateProtection(for: flow, calendarID: firstCalendar.id)
+        connector.connection = GoogleCalendarConnection(
+            account: secondAccount,
+            calendars: [secondCalendar]
+        )
+        await flow.connectGoogleAccount()
+
+        let connectedAccountEmails = Set(
+            flow.activityLog
+                .filter { $0.kind == .accountConnected }
+                .compactMap(\.accountEmail)
+        )
+        XCTAssertEqual(connectedAccountEmails, [firstAccount.email, secondAccount.email])
+    }
+
+    func testActivityLogExpiresAtLocalDayBoundary() async {
+        var calendar = Calendar.current
+        calendar.timeZone = .current
+        let day = calendar.startOfDay(for: Date(timeIntervalSince1970: 1_000_000))
+        let now = calendar.date(byAdding: .hour, value: 10, to: day)!
+        let nextLocalDay = calendar.date(byAdding: .day, value: 1, to: day)!
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let monitoredCalendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let suiteName = "CommitmentProtectionFlowTests.activityLogExpiry.\(UUID().uuidString)"
+        let stateStore = UserDefaults(suiteName: suiteName)!
+        defer { stateStore.removePersistentDomain(forName: suiteName) }
+
+        let firstLaunch = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [monitoredCalendar]),
+            now: now,
+            stateStore: stateStore
+        )
+        await activateProtection(for: firstLaunch, calendarID: monitoredCalendar.id)
+        XCTAssertTrue(firstLaunch.pause(for: .oneHour, at: now))
+
+        let followingDayLaunch = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [monitoredCalendar]),
+            now: nextLocalDay,
+            stateStore: stateStore
+        )
+        await followingDayLaunch.restoreSavedConnection()
+        XCTAssertEqual(followingDayLaunch.activityLog.map(\.kind), [.pauseEnded])
+    }
+
     func testPauseSupportsEndOfDayAndCustomExpirationChoices() async {
         let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
         let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
@@ -1977,6 +2150,11 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertEqual(flow.missedCommitment, commitment)
         XCTAssertTrue(flow.acknowledgeMissedCommitment())
         XCTAssertNil(flow.missedCommitment)
+        XCTAssertTrue(flow.activityLog.contains {
+            $0.actor == .user &&
+                $0.kind == .missedCommitmentAcknowledged &&
+                $0.commitmentTitle == commitment.title
+        })
         XCTAssertTrue(connector.events.contains(commitment))
     }
 
@@ -2204,7 +2382,7 @@ private final class RefreshRaceTestConnector: GoogleCalendarConnecting, @uncheck
 }
 
 private final class MutableTestGoogleCalendarConnector: GoogleCalendarConnecting, @unchecked Sendable {
-    let connection: GoogleCalendarConnection
+    var connection: GoogleCalendarConnection
     var events: [CalendarEvent]
 
     init(connection: GoogleCalendarConnection, events: [CalendarEvent]) {
