@@ -165,8 +165,10 @@ private struct SetupView: View {
                 ProtectionStatusCard()
                 AccountSetupCard()
 
-                if flow.connectedAccount != nil {
-                    CalendarSelectionCard()
+                if !flow.accountCoverages.isEmpty {
+                    ForEach(flow.accountCoverages) { coverage in
+                        CalendarSelectionCard(coverage: coverage)
+                    }
                     EarlyReminderSettingsCard()
                     BlockingModeSettingsCard()
                     StrongAlertSettingsCard()
@@ -285,34 +287,41 @@ private struct AccountSetupCard: View {
             if flow.isRestoringConnection {
                 ProgressView("Restoring Google Calendar…")
                     .controlSize(.small)
-            } else if let account = flow.connectedAccount {
-                Label(account.email, systemImage: "person.crop.circle.fill")
-                    .foregroundStyle(.secondary)
-                Button("Log Out") {
-                    flow.disconnectGoogleAccount()
+            }
+
+            ForEach(flow.accountCoverages) { coverage in
+                VStack(alignment: .leading, spacing: 8) {
+                    Label(coverage.account.email, systemImage: "person.crop.circle.fill")
+                        .foregroundStyle(.secondary)
+
+                    CoverageHealthView(
+                        coverage: coverage,
+                        warning: flow.coverageWarning(for: coverage.account.id)
+                    )
+
+                    Button("Log Out") {
+                        flow.disconnectGoogleAccount(accountID: coverage.account.id)
+                    }
+                    .buttonStyle(.bordered)
                 }
-                .buttonStyle(.bordered)
-            } else {
+                .padding(.vertical, 4)
+            }
+
+            if flow.accountCoverages.isEmpty {
                 Text("Sign in with Google to choose the calendars you want protected.")
                     .foregroundStyle(.secondary)
-
-                Button {
-                    Task { await flow.connectGoogleAccount() }
-                } label: {
-                    Label(
-                        flow.connectionState == .connecting ? "Opening Google…" : "Sign in with Google",
-                        systemImage: "person.badge.key.fill"
-                    )
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(flow.connectionState == .connecting)
             }
 
-            if case .failed(let message) = flow.connectionState {
-                Text(message)
-                    .font(.callout)
-                    .foregroundStyle(.red)
+            Button {
+                Task { await flow.connectGoogleAccount() }
+            } label: {
+                Label(
+                    flow.connectionState == .connecting ? "Opening Google…" : "Add Google Account",
+                    systemImage: "person.badge.key.fill"
+                )
             }
+            .buttonStyle(.borderedProminent)
+            .disabled(flow.connectionState == .connecting || flow.isRestoringConnection)
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -320,22 +329,80 @@ private struct AccountSetupCard: View {
     }
 }
 
+private struct CoverageHealthView: View {
+    @EnvironmentObject private var flow: CommitmentProtectionFlow
+    let coverage: AccountCoverage
+    let warning: String?
+
+    var body: some View {
+        let health = flow.coverage(for: coverage.account.id) ?? coverage.health
+        VStack(alignment: .leading, spacing: 4) {
+            Label(health.displayTitle, systemImage: health.systemImage)
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(health.displayColor)
+
+            if let warning {
+                Text(warning)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+private extension CoverageHealth {
+    var displayTitle: String {
+        switch self {
+        case .noCoverage:
+            return "No Coverage"
+        case .fresh:
+            return "Fresh Coverage"
+        case .stale:
+            return "Stale Coverage"
+        case .unavailable:
+            return "Coverage Unavailable"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .fresh:
+            return "checkmark.circle.fill"
+        case .noCoverage, .stale, .unavailable:
+            return "exclamationmark.triangle.fill"
+        }
+    }
+
+    var displayColor: Color {
+        switch self {
+        case .fresh:
+            return .green
+        case .noCoverage, .stale, .unavailable:
+            return .orange
+        }
+    }
+}
+
 private struct CalendarSelectionCard: View {
     @EnvironmentObject private var flow: CommitmentProtectionFlow
+    let coverage: AccountCoverage
+    @State private var pendingDeselection: CalendarOption?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Monitored Calendars")
+            Text("Monitored Calendars · \(coverage.account.email)")
                 .font(.headline)
             Text("Only selected calendars can create protection.")
                 .foregroundStyle(.secondary)
 
-            ForEach(flow.availableCalendars) { calendar in
+            ForEach(coverage.calendars) { calendar in
                 Toggle(
                     isOn: Binding(
-                        get: { flow.selectedCalendarIDs.contains(calendar.id) },
+                        get: {
+                            flow.selectedCalendarIDs(for: coverage.account.id).contains(calendar.id)
+                        },
                         set: { isSelected in
-                            flow.setCalendarSelected(isSelected, calendarID: calendar.id)
+                            setCalendarSelected(isSelected, calendar: calendar)
                         }
                     )
                 ) {
@@ -344,10 +411,68 @@ private struct CalendarSelectionCard: View {
                 .toggleStyle(.checkbox)
             }
 
+            if !coverage.isProtectionConfirmed {
+                Text("Review this account's calendars and confirm protection.")
+                    .foregroundStyle(.secondary)
+                Button("Confirm Protection") {
+                    flow.confirmProtection(for: coverage.account.id)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(flow.selectedCalendarIDs(for: coverage.account.id).isEmpty)
+            } else {
+                Label("Protection settings confirmed", systemImage: "checkmark.circle")
+                    .foregroundStyle(.secondary)
+            }
+
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 16))
+        .alert(
+            "Stop monitoring this calendar?",
+            isPresented: Binding(
+                get: { pendingDeselection != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        pendingDeselection = nil
+                    }
+                }
+            )
+        ) {
+            Button("Keep monitoring", role: .cancel) {
+                pendingDeselection = nil
+            }
+            Button("Stop monitoring", role: .destructive) {
+                guard let pendingDeselection else { return }
+                flow.setCalendarSelected(
+                    false,
+                    calendarID: pendingDeselection.id,
+                    accountID: coverage.account.id
+                )
+                self.pendingDeselection = nil
+            }
+        } message: {
+            Text(flow.calendarDeselectionWarning(
+                for: pendingDeselection?.id ?? "",
+                accountID: coverage.account.id
+            ) ?? "Turning off this calendar removes its reminders.")
+        }
+    }
+
+    private func setCalendarSelected(_ isSelected: Bool, calendar: CalendarOption) {
+        guard !isSelected else {
+            flow.setCalendarSelected(true, calendarID: calendar.id, accountID: coverage.account.id)
+            return
+        }
+
+        if flow.calendarDeselectionWarning(
+            for: calendar.id,
+            accountID: coverage.account.id
+        ) != nil {
+            pendingDeselection = calendar
+        } else {
+            flow.setCalendarSelected(false, calendarID: calendar.id, accountID: coverage.account.id)
+        }
     }
 }
 
@@ -384,18 +509,15 @@ private struct EarlyReminderSettingsCard: View {
             .accessibilityValue("\(flow.earlyReminderLeadTimeMinutes) minutes")
             .disabled(!flow.isEarlyReminderEnabled)
 
-            if !flow.isProtectionConfirmed {
-                Text("Review your calendars and reminder timing, then confirm protection.")
+            if flow.isProtectionConfirmationRequired {
+                Text("Review the selected calendars and global timing, then confirm protection.")
                     .foregroundStyle(.secondary)
-                Button("Confirm Protection") {
-                    flow.confirmProtection()
+                Button("Confirm Protection for All Accounts") {
+                    flow.confirmAllProtection()
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(flow.selectedCalendarIDs.isEmpty)
-            } else {
-                Label("Protection settings confirmed", systemImage: "checkmark.circle")
-                    .foregroundStyle(.secondary)
             }
+
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -708,6 +830,11 @@ private struct EarlyReminderView: View {
             Label("Early Reminder", systemImage: "bell.fill")
                 .font(.headline)
             if let commitment = flow.earlyReminderCommitment {
+                if flow.isEarlyReminderUnverified {
+                    Label("Unverified Reminder", systemImage: "questionmark.circle")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.orange)
+                }
                 Text(commitment.title)
                     .font(.title2.bold())
                     .multilineTextAlignment(.center)
@@ -777,7 +904,8 @@ private struct EarlyReminderView: View {
                 content: EarlyReminderFallbackContent(
                     title: commitment.title,
                     timing: flow.localStartTimeText(for: commitment),
-                    snoozeOptionsMinutes: flow.snoozeOptionsMinutes
+                    snoozeOptionsMinutes: flow.snoozeOptionsMinutes,
+                    verificationLabel: flow.isEarlyReminderUnverified ? "Unverified Reminder" : nil
                 ),
                 reopen: {
                     openWindow(id: "early-reminder")
@@ -816,7 +944,8 @@ private struct EarlyReminderView: View {
                     content: EarlyReminderFallbackContent(
                         title: commitment.title,
                         timing: flow.localStartTimeText(for: commitment),
-                        snoozeOptionsMinutes: flow.snoozeOptionsMinutes
+                        snoozeOptionsMinutes: flow.snoozeOptionsMinutes,
+                        verificationLabel: flow.isEarlyReminderUnverified ? "Unverified Reminder" : nil
                     ),
                     reopen: {
                         openWindow(id: "early-reminder")
@@ -935,6 +1064,7 @@ private struct StrongAlertContentView: View {
                         title: commitment.title,
                         timing: flow.strongAlertTimingText(for: commitment, at: context.date),
                         detail: flow.strongAlertContextText(for: commitment),
+                        verificationLabel: flow.isStrongAlertUnverified ? "Unverified Reminder" : nil,
                         primaryActionTitle: commitment.recognizedMeetingLink == nil ? "Stop reminders" : "Join",
                         primaryAction: {
                             if commitment.recognizedMeetingLink == nil {
@@ -995,6 +1125,7 @@ private struct EarlyReminderFallbackContent {
     let title: String
     let timing: String
     let snoozeOptionsMinutes: [Int]
+    let verificationLabel: String?
 }
 
 private struct EarlyReminderFallbackView: View {
@@ -1009,6 +1140,11 @@ private struct EarlyReminderFallbackView: View {
         VStack(spacing: 16) {
             Label("Early Reminder", systemImage: "bell.fill")
                 .font(.headline)
+            if let verificationLabel = content.verificationLabel {
+                Label(verificationLabel, systemImage: "questionmark.circle")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.orange)
+            }
 
             Text(content.title)
                 .font(.title2.bold())
@@ -1787,6 +1923,7 @@ private struct StrongAlertView: View {
     let title: String
     let timing: String
     let detail: String
+    var verificationLabel: String? = nil
     let primaryActionTitle: String
     let primaryAction: () -> Void
     var secondaryActionTitle: String? = nil
@@ -1803,6 +1940,11 @@ private struct StrongAlertView: View {
             Label("Strong Alert", systemImage: "bell.and.waves.left.and.right.fill")
                 .font(.headline)
                 .foregroundStyle(.primary)
+            if let verificationLabel {
+                Label(verificationLabel, systemImage: "questionmark.circle")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.orange)
+            }
             Text(title)
                 .font(.largeTitle.bold())
             Text(timing)
@@ -1987,15 +2129,27 @@ private struct MenuBarContent: View {
                 )
                     .font(.headline)
 
-                if let account = flow.connectedAccount {
-                    Text(account.email)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    Button("Log Out") {
-                        flow.disconnectGoogleAccount()
+                ForEach(flow.accountCoverages) { coverage in
+                    let health = flow.coverage(for: coverage.account.id) ?? coverage.health
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(coverage.account.email)
+                            .font(.caption.weight(.semibold))
+                        Text(health.displayTitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        if let warning = flow.coverageWarning(for: coverage.account.id) {
+                            Text(warning)
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
+                        Button("Log Out") {
+                            flow.disconnectGoogleAccount(accountID: coverage.account.id)
+                        }
                     }
-                    .keyboardShortcut("l")
+
+                    if coverage.id != flow.accountCoverages.last?.id {
+                        Divider()
+                    }
                 }
 
                 Divider()
