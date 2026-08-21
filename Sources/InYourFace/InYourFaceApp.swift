@@ -190,12 +190,7 @@ private struct SetupView: View {
                 EarlyReminderWindowController.shared.close()
                 return
             }
-            Task { @MainActor in
-                await Task.yield()
-                guard flow.earlyReminderCommitment != nil else {
-                    EarlyReminderWindowController.shared.close()
-                    return
-                }
+            openEarlyReminderIfNeeded(flow: flow) {
                 openWindow(id: "early-reminder")
             }
         }
@@ -211,6 +206,25 @@ private struct SetupView: View {
                 transaction.animation = nil
             }
         }
+    }
+}
+
+@MainActor
+private func openEarlyReminderIfNeeded(
+    flow: CommitmentProtectionFlow,
+    openWindow: @escaping () -> Void
+) {
+    guard flow.earlyReminderCommitment != nil else {
+        EarlyReminderWindowController.shared.close()
+        return
+    }
+    Task { @MainActor in
+        await Task.yield()
+        guard flow.earlyReminderCommitment != nil else {
+            EarlyReminderWindowController.shared.close()
+            return
+        }
+        openWindow()
     }
 }
 
@@ -982,10 +996,16 @@ private struct EarlyReminderView: View {
                     .buttonStyle(.bordered)
                     .accessibilityHint("Stop Early Reminder and Strong Alert for this commitment occurrence without changing Google Calendar.")
                 }
+            } else {
+                Color.clear
+                    .frame(width: 1, height: 1)
             }
         }
-        .padding(28)
-        .frame(minWidth: 380)
+        .padding(flow.earlyReminderCommitment == nil ? 0 : 28)
+        .frame(
+            minWidth: flow.earlyReminderCommitment == nil ? 1 : 380,
+            minHeight: flow.earlyReminderCommitment == nil ? 1 : 0
+        )
         .accessibilityAddTraits(.isModal)
         .transaction { transaction in
             if reduceMotion {
@@ -2146,8 +2166,9 @@ private struct MenuBarContent: View {
 
                     if flow.earlyReminderCommitment != nil {
                         Button("Open Early Reminder") {
-                            guard flow.earlyReminderCommitment != nil else { return }
-                            openWindow(id: "early-reminder")
+                            openEarlyReminderIfNeeded(flow: flow) {
+                                openWindow(id: "early-reminder")
+                            }
                         }
                         .keyboardShortcut("r")
                     }
@@ -2299,12 +2320,7 @@ private struct MenuBarLabel: View {
                 openWindow(id: "setup")
             }
             if flow.earlyReminderCommitment != nil {
-                Task { @MainActor in
-                    await Task.yield()
-                    guard flow.earlyReminderCommitment != nil else {
-                        EarlyReminderWindowController.shared.close()
-                        return
-                    }
+                openEarlyReminderIfNeeded(flow: flow) {
                     openWindow(id: "early-reminder")
                 }
             }
@@ -2313,17 +2329,12 @@ private struct MenuBarLabel: View {
             }
         }
         .onChange(of: flow.earlyReminderCommitment) { _, commitment in
-            guard commitment != nil else {
-                EarlyReminderWindowController.shared.close()
-                return
-            }
-            Task { @MainActor in
-                await Task.yield()
-                guard flow.earlyReminderCommitment != nil else {
-                    EarlyReminderWindowController.shared.close()
-                    return
+            if commitment != nil {
+                openEarlyReminderIfNeeded(flow: flow) {
+                    openWindow(id: "early-reminder")
                 }
-                openWindow(id: "early-reminder")
+            } else {
+                EarlyReminderWindowController.shared.close()
             }
         }
         .onChange(of: flow.isStrongAlertPresented) { _, isPresented in

@@ -78,12 +78,12 @@ public struct CalendarEvent: Codable, Equatable, Identifiable, Sendable {
         self.eventType = eventType
     }
 
-    public var isProtectionTrackable: Bool {
+    public var hasProtectionWindow: Bool {
         eventType != .outOfOffice && !isAllDay && startDate != nil && endDate != nil
     }
 
     public var isEligibleForProtection: Bool {
-        isAccepted && isProtectionTrackable
+        isAccepted && hasProtectionWindow
     }
 }
 
@@ -913,12 +913,11 @@ public final class CommitmentProtectionFlow: ObservableObject {
                     isProtectionConfirmed: savedAccount.isProtectionConfirmed,
                     connectionState: .connected,
                     lastSuccessfulRefreshAt: savedAccount.lastSuccessfulRefreshAt,
-                    lastFreshEvents: savedAccount.lastFreshEventsSchemaVersion == Self.freshEventsSchemaVersion
-                        ? savedAccount.lastFreshEvents.filter { event in
-                            event.accountID == connection.account.id &&
-                                connection.calendars.contains { calendar in calendar.id == event.calendarID }
-                        }
-                        : []
+                    lastFreshEvents: restoredFreshEvents(
+                        from: savedAccount,
+                        accountID: connection.account.id,
+                        calendars: connection.calendars
+                    )
                 )
             } catch {
                 guard !savedAccount.account.id.isEmpty else { continue }
@@ -931,12 +930,11 @@ public final class CommitmentProtectionFlow: ObservableObject {
                     isProtectionConfirmed: savedAccount.isProtectionConfirmed,
                     connectionState: .failed(error.localizedDescription),
                     lastSuccessfulRefreshAt: savedAccount.lastSuccessfulRefreshAt,
-                    lastFreshEvents: savedAccount.lastFreshEventsSchemaVersion == Self.freshEventsSchemaVersion
-                        ? savedAccount.lastFreshEvents.filter { event in
-                            event.accountID == savedAccount.account.id &&
-                                savedAccount.calendars.contains { calendar in calendar.id == event.calendarID }
-                        }
-                        : []
+                    lastFreshEvents: restoredFreshEvents(
+                        from: savedAccount,
+                        accountID: savedAccount.account.id,
+                        calendars: savedAccount.calendars
+                    )
                 )
             }
         }
@@ -1686,7 +1684,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
     private func recordAcceptanceMutations(in events: [CalendarEvent], at currentDate: Date) {
         let trackedEvents = events.filter { event in
-            guard event.isProtectionTrackable,
+            guard event.hasProtectionWindow,
                   let endDate = event.endDate else {
                 return false
             }
@@ -2054,6 +2052,20 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
     private func account(for commitment: CalendarEvent) -> GoogleAccount? {
         accountRecords[commitment.accountID]?.connection.account
+    }
+
+    private func restoredFreshEvents(
+        from savedAccount: SavedAccountConfiguration,
+        accountID: String,
+        calendars: [CalendarOption]
+    ) -> [CalendarEvent] {
+        guard savedAccount.lastFreshEventsSchemaVersion == Self.freshEventsSchemaVersion else {
+            return []
+        }
+        return savedAccount.lastFreshEvents.filter { event in
+            event.accountID == accountID &&
+                calendars.contains { calendar in calendar.id == event.calendarID }
+        }
     }
 
     private func loadConfiguration() -> SavedConfiguration? {
