@@ -1819,13 +1819,18 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         window.standardWindowButton(.miniaturizeButton)?.isEnabled = false
         window.standardWindowButton(.zoomButton)?.isEnabled = false
         window.isMovable = false
-        _ = lifecycle.present(
+        let displayPlan = lifecycle.present(
             surface: .earlyReminderNormal,
             displayCount: NSScreen.screens.count,
             primaryIndex: NSScreen.screens.firstIndex(where: { $0 === window.screen }),
             surfaceDiscovered: true
         )
-        isPresented = lifecycle.isPresented
+        guard displayPlan != nil, lifecycle.isPresented else {
+            isPresented = false
+            startScreenObservation()
+            return
+        }
+        isPresented = true
         startScreenObservation()
         let barrierAvailable: Bool
         if blockingMode.shouldAttemptBlocking {
@@ -2016,13 +2021,18 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         panel.center()
         fallbackPanel = panel
         window = panel
-        _ = lifecycle.present(
+        let displayPlan = lifecycle.present(
             surface: .earlyReminderFallback,
             displayCount: NSScreen.screens.count,
             primaryIndex: NSScreen.screens.firstIndex(where: { $0 === panel.screen }),
             surfaceDiscovered: true
         )
-        isPresented = lifecycle.isPresented
+        guard displayPlan != nil, lifecycle.isPresented else {
+            isPresented = false
+            startScreenObservation()
+            return
+        }
+        isPresented = true
         startScreenObservation()
         let barrierAvailable: Bool
         if blockingMode.shouldAttemptBlocking {

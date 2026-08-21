@@ -64,6 +64,7 @@ final class RefreshCoordinator {
     }
 
     private func waitForDrain() async {
+        guard isRunning || pendingRequest != nil else { return }
         await withCheckedContinuation { continuation in
             waiters.append(continuation)
             pump()

@@ -8,6 +8,8 @@ final class RefreshCoordinatorTests: XCTestCase {
         let gate = RefreshCoordinatorGate()
         var executedRequests: [RefreshCoordinator.Request] = []
 
+        await coordinator.drain()
+
         coordinator.enqueue(at: Date(timeIntervalSince1970: 1), intent: .recovery) { request in
             executedRequests.append(request)
             await gate.markStartedAndWaitForRelease()
@@ -33,6 +35,8 @@ final class RefreshCoordinatorTests: XCTestCase {
         XCTAssertEqual(executedRequests.count, 2)
         XCTAssertEqual(executedRequests.map(\.intent), [.recovery, .recovery])
         XCTAssertEqual(executedRequests.last?.date, Date(timeIntervalSince1970: 4))
+
+        await coordinator.drain()
     }
 }
 

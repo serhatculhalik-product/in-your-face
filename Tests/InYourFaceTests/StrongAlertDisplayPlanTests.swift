@@ -21,6 +21,19 @@ final class StrongAlertDisplayPlanTests: XCTestCase {
         XCTAssertTrue(lifecycle.isPresented)
         XCTAssertFalse(lifecycle.requiresSurfaceRecovery)
 
+        XCTAssertNil(lifecycle.displayTopologyChanged(displayCount: 0, primaryIndex: nil))
+        XCTAssertFalse(lifecycle.isPresented)
+        XCTAssertTrue(lifecycle.requiresSurfaceRecovery)
+
+        lifecycle.surfaceDisappeared()
+        XCTAssertFalse(lifecycle.hasDiscoveredSurface)
+        XCTAssertTrue(lifecycle.requiresSurfaceCreation)
+
+        let unavailableRecoveryPlan = lifecycle.displayTopologyChanged(displayCount: 1, primaryIndex: 0)
+        XCTAssertEqual(unavailableRecoveryPlan?.primaryIndex, 0)
+        XCTAssertFalse(lifecycle.isPresented)
+        XCTAssertTrue(lifecycle.requiresSurfaceRecovery)
+
         XCTAssertNil(
             lifecycle.present(
                 surface: .strongAlert,

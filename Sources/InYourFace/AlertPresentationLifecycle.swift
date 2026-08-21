@@ -50,7 +50,12 @@ struct AlertPresentationLifecycle: Equatable, Sendable {
             displayCount: availableDisplayCount,
             primaryIndex: primaryIndex
         )
-        if displayPlan != nil, hasDiscoveredSurface {
+        if displayPlan == nil {
+            isPresented = false
+            requiresActivation = false
+            requiresSurfaceCreation = hasDiscoveredSurface
+            requiresSurfaceRecovery = true
+        } else if hasDiscoveredSurface {
             isPresented = true
             requiresSurfaceCreation = false
             requiresSurfaceRecovery = false
@@ -63,7 +68,6 @@ struct AlertPresentationLifecycle: Equatable, Sendable {
     }
 
     mutating func surfaceDisappeared() {
-        guard isPresented else { return }
         isPresented = false
         hasDiscoveredSurface = false
         requiresSurfaceCreation = true

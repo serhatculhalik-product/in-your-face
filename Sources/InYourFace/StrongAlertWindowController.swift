@@ -53,10 +53,13 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
             primaryIndex: primaryScreenIndex(in: screens, matching: window.screen ?? NSScreen.main),
             surfaceDiscovered: true
         )
-        isPresented = lifecycle.isPresented
-        if let displayPlan {
-            createAdditionalWindows(using: displayPlan)
+        guard let displayPlan, lifecycle.isPresented else {
+            isPresented = false
+            startScreenObservation()
+            return
         }
+        isPresented = true
+        createAdditionalWindows(using: displayPlan)
         startScreenObservation()
         startApplicationObservation()
         NSApp.activate(ignoringOtherApps: true)
