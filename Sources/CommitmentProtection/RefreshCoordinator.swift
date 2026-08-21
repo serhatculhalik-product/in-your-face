@@ -18,6 +18,7 @@ final class RefreshCoordinator {
     private var nextID: UInt64 = 0
     private var currentID: UInt64 = 0
     private var pendingRequest: Request?
+    private var runningRequest: Request?
     private var isRunning = false
     private var work: Work?
     private var waiters: [CheckedContinuation<Void, Never>] = []
@@ -28,14 +29,14 @@ final class RefreshCoordinator {
         work: @escaping Work
     ) async {
         self.work = work
-        let pendingIntent = pendingRequest?.id == currentID
-            ? pendingRequest?.intent
-            : nil
+        let inheritedIntent = [pendingRequest, runningRequest]
+            .compactMap { request in
+                request?.id == currentID ? request?.intent : nil
+            }
+            .contains(.recovery) ? .recovery : intent
         nextID &+= 1
         currentID = nextID
-        let effectiveIntent: Intent = pendingIntent == .recovery || intent == .recovery
-            ? .recovery
-            : .ordinary
+        let effectiveIntent: Intent = inheritedIntent == .recovery ? .recovery : .ordinary
         pendingRequest = Request(id: currentID, date: date, intent: effectiveIntent)
         await waitForDrain()
     }
@@ -64,10 +65,12 @@ final class RefreshCoordinator {
         }
 
         pendingRequest = nil
+        runningRequest = request
         isRunning = true
         Task { @MainActor [weak self] in
             await work(request)
             guard let self else { return }
+            self.runningRequest = nil
             self.isRunning = false
             if self.pendingRequest != nil {
                 self.pump()

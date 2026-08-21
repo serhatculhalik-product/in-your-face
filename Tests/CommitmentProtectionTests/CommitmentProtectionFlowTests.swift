@@ -2928,12 +2928,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         await flow.connectGoogleAccount()
         flow.setCalendarSelected(true, calendarID: calendar.id)
         XCTAssertTrue(flow.confirmProtection())
-        for _ in 0..<20 {
-            if await state.hasFirstLoadStarted() { break }
-            await Task.yield()
-        }
-        let firstLoadStarted = await state.hasFirstLoadStarted()
-        XCTAssertTrue(firstLoadStarted)
+        await state.waitForFirstLoadStart()
 
         connector.replaceEvents([])
         XCTAssertTrue(flow.confirmProtection())
@@ -2943,6 +2938,73 @@ final class CommitmentProtectionFlowTests: XCTestCase {
 
         XCTAssertNil(flow.upcomingCommitment)
         XCTAssertNil(flow.earlyReminderCommitment)
+    }
+
+    func testSupersededRefreshCannotPublishStaleCoverageActivityOrAlertState() async {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let firstAccount = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let firstCalendar = CalendarOption(id: "calendar-1", name: "Work", accountID: firstAccount.id)
+        let secondAccount = GoogleAccount(id: "account-2", email: "sam@example.com", displayName: "Sam")
+        let secondCalendar = CalendarOption(id: "calendar-2", name: "Personal", accountID: secondAccount.id)
+        let knownCommitment = CalendarEvent(
+            id: "known-ongoing-event",
+            title: "Known ongoing review",
+            startDate: now.addingTimeInterval(-10 * 60),
+            endDate: now.addingTimeInterval(50 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: firstCalendar.id,
+            accountID: firstAccount.id
+        )
+        let connector = MultiAccountTestGoogleCalendarConnector(
+            connections: [
+                GoogleCalendarConnection(account: firstAccount, calendars: [firstCalendar]),
+                GoogleCalendarConnection(account: secondAccount, calendars: [secondCalendar])
+            ],
+            events: [knownCommitment]
+        )
+        let flow = CommitmentProtectionFlow(
+            calendarConnector: connector,
+            launchAtLogin: TestLaunchAtLoginController(),
+            now: { now }
+        )
+
+        await flow.connectGoogleAccount()
+        flow.setCalendarSelected(true, calendarID: firstCalendar.id)
+        XCTAssertTrue(flow.confirmProtection())
+        await flow.connectGoogleAccount()
+        flow.setCalendarSelected(true, calendarID: secondCalendar.id)
+        XCTAssertTrue(flow.confirmProtection())
+        await flow.refreshCommitmentProtection(at: now)
+        XCTAssertEqual(flow.strongAlertCommitment, knownCommitment)
+
+        await connector.holdNextLoad(for: secondAccount.id)
+        let olderRefresh = Task { @MainActor in
+            await flow.refreshCommitmentProtection(at: now)
+        }
+        await connector.waitForHeldLoadStart()
+        await connector.setFailingAccountIDs([secondAccount.id])
+        let newerRefresh = Task { @MainActor in
+            await flow.refreshCommitmentProtection(at: now.addingTimeInterval(1))
+        }
+        await connector.releaseHeldLoad()
+
+        await olderRefresh.value
+        await newerRefresh.value
+
+        XCTAssertEqual(flow.coverage(for: firstAccount.id), .fresh)
+        if case .unavailable = flow.coverage(for: secondAccount.id) {
+            // The newest refresh owns the failed account's coverage state.
+        } else {
+            XCTFail("Expected the newest refresh to publish unavailable coverage for the second account.")
+        }
+        XCTAssertEqual(flow.strongAlertCommitment, knownCommitment)
+        XCTAssertFalse(flow.isStrongAlertUnverified)
+        XCTAssertEqual(
+            flow.activityLog.filter { $0.kind == .coverageUnavailable }.count,
+            1
+        )
     }
 
     func testLeadTimeIsGlobalAndPersistsWithinConfiguration() {
@@ -3955,12 +4017,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         let firstRefresh = Task { @MainActor in
             await flow.refreshCommitmentProtection(at: now)
         }
-        for _ in 0..<20 {
-            if await state.hasFirstLoadStarted() { break }
-            await Task.yield()
-        }
-        let firstLoadStarted = await state.hasFirstLoadStarted()
-        XCTAssertTrue(firstLoadStarted)
+        await state.waitForFirstLoadStart()
 
         connector.replaceEvents([lateDiscoveredCommitment])
         let recovery = Task { @MainActor in
@@ -3975,6 +4032,55 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         await state.releaseFirstLoad()
 
         await firstRefresh.value
+        await recovery.value
+        await ordinary.value
+
+        XCTAssertNil(flow.strongAlertCommitment)
+        XCTAssertFalse(flow.isStrongAlertPresented)
+    }
+
+    func testOrdinaryRefreshAfterRecoveryStartsPreservesRecoveryIntent() async {
+        let (account, calendar) = makeTestAccountAndCalendar()
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let lateDiscoveredCommitment = CalendarEvent(
+            id: "late-discovered-active-recovery-event",
+            title: "Late discovered active recovery review",
+            startDate: now.addingTimeInterval(-10 * 60),
+            endDate: now.addingTimeInterval(50 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let state = RefreshRaceConnectorState(holdNextLoad: false)
+        let connector = RefreshRaceTestConnector(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [],
+            state: state
+        )
+        let flow = CommitmentProtectionFlow(
+            calendarConnector: connector,
+            launchAtLogin: TestLaunchAtLoginController(),
+            now: { now }
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await state.holdNextLoad()
+        let recovery = Task { @MainActor in
+            await flow.recoverProtection(at: now)
+        }
+        await state.waitForFirstLoadStart()
+
+        connector.replaceEvents([lateDiscoveredCommitment])
+        await state.holdFollowingLoad()
+        let ordinary = Task { @MainActor in
+            await flow.refreshCommitmentProtection(at: now)
+        }
+        await state.releaseFirstLoad()
+        await state.waitForFirstLoadStart()
+        await state.releaseFirstLoad()
+
         await recovery.value
         await ordinary.value
 
@@ -4451,6 +4557,7 @@ private final class TestGoogleCalendarConnectorState: @unchecked Sendable {
 private actor RefreshRaceConnectorState {
     var shouldHoldNextLoad: Bool
     var firstLoadStarted = false
+    private var firstLoadStartContinuation: CheckedContinuation<Void, Never>?
     private var releaseContinuation: CheckedContinuation<Void, Never>?
 
     init(holdNextLoad: Bool) {
@@ -4461,19 +4568,31 @@ private actor RefreshRaceConnectorState {
         guard shouldHoldNextLoad else { return }
         shouldHoldNextLoad = false
         firstLoadStarted = true
+        firstLoadStartContinuation?.resume()
+        firstLoadStartContinuation = nil
         await withCheckedContinuation { continuation in
             releaseContinuation = continuation
         }
     }
 
-    func hasFirstLoadStarted() -> Bool {
-        firstLoadStarted
+    func waitForFirstLoadStart() async {
+        guard !firstLoadStarted else { return }
+        await withCheckedContinuation { continuation in
+            firstLoadStartContinuation = continuation
+        }
     }
 
     func holdNextLoad() {
         shouldHoldNextLoad = true
         firstLoadStarted = false
+        firstLoadStartContinuation = nil
         releaseContinuation = nil
+    }
+
+    func holdFollowingLoad() {
+        shouldHoldNextLoad = true
+        firstLoadStarted = false
+        firstLoadStartContinuation = nil
     }
 
     func releaseFirstLoad() {
@@ -4600,6 +4719,18 @@ private final class MultiAccountTestGoogleCalendarConnector: GoogleCalendarConne
         await state.setFailingAccountIDs(accountIDs)
     }
 
+    func holdNextLoad(for accountID: String) async {
+        await state.holdNextLoad(for: accountID)
+    }
+
+    func waitForHeldLoadStart() async {
+        await state.waitForHeldLoadStart()
+    }
+
+    func releaseHeldLoad() async {
+        await state.releaseHeldLoad()
+    }
+
     func loadEvents(
         accountID: String,
         calendarID: String,
@@ -4607,17 +4738,17 @@ private final class MultiAccountTestGoogleCalendarConnector: GoogleCalendarConne
         to endDate: Date
     ) async throws -> [CalendarEvent] {
         let shouldFail = await state.shouldFail(accountID: accountID)
-
-        if shouldFail {
-            throw TestCalendarError.unavailable
-        }
-
-        return events.filter {
+        let response = events.filter {
             $0.accountID == accountID &&
                 $0.calendarID == calendarID &&
                 ($0.startDate ?? .distantPast) < endDate &&
                 ($0.endDate ?? .distantFuture) > startDate
         }
+        await state.waitForHeldLoadIfNeeded(accountID: accountID)
+        if shouldFail {
+            throw TestCalendarError.unavailable
+        }
+        return response
     }
 }
 
@@ -4625,6 +4756,10 @@ private actor MultiAccountTestGoogleCalendarConnectorState {
     private var connections: [GoogleCalendarConnection]
     private let allConnections: [GoogleCalendarConnection]
     private var failingAccountIDs: Set<String> = []
+    private var heldAccountID: String?
+    private var heldLoadStarted = false
+    private var heldLoadStartContinuation: CheckedContinuation<Void, Never>?
+    private var heldLoadReleaseContinuation: CheckedContinuation<Void, Never>?
 
     init(connections: [GoogleCalendarConnection]) {
         self.connections = connections
@@ -4646,6 +4781,36 @@ private actor MultiAccountTestGoogleCalendarConnectorState {
 
     func shouldFail(accountID: String) -> Bool {
         failingAccountIDs.contains(accountID)
+    }
+
+    func holdNextLoad(for accountID: String) {
+        heldAccountID = accountID
+        heldLoadStarted = false
+        heldLoadStartContinuation = nil
+        heldLoadReleaseContinuation = nil
+    }
+
+    func waitForHeldLoadStart() async {
+        guard !heldLoadStarted else { return }
+        await withCheckedContinuation { continuation in
+            heldLoadStartContinuation = continuation
+        }
+    }
+
+    func waitForHeldLoadIfNeeded(accountID: String) async {
+        guard heldAccountID == accountID else { return }
+        heldAccountID = nil
+        heldLoadStarted = true
+        heldLoadStartContinuation?.resume()
+        heldLoadStartContinuation = nil
+        await withCheckedContinuation { continuation in
+            heldLoadReleaseContinuation = continuation
+        }
+    }
+
+    func releaseHeldLoad() {
+        heldLoadReleaseContinuation?.resume()
+        heldLoadReleaseContinuation = nil
     }
 }
 
