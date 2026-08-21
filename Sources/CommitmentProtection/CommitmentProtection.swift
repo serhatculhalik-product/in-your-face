@@ -132,8 +132,6 @@ public enum ProtectionActivityKind: String, Codable, Equatable, Sendable {
     case protectionRestored
     case pauseStarted
     case pauseEnded
-    case missedCommitment
-    case missedCommitmentAcknowledged
     case coverageUnavailable
     case coverageRestored
 
@@ -242,7 +240,6 @@ public final class CommitmentProtectionFlow: ObservableObject {
     @Published public private(set) var earlyReminderCommitment: CalendarEvent?
     @Published public private(set) var strongAlertCommitment: CalendarEvent?
     @Published public private(set) var pauseUntil: Date?
-    @Published public private(set) var missedCommitments: [CalendarEvent] = []
     @Published public private(set) var activityLog: [ProtectionActivity] = []
     @Published public private(set) var currentCommitmentDecision: CommitmentProtectionDecision?
     @Published public private(set) var decisionCommitment: CalendarEvent?
@@ -251,10 +248,6 @@ public final class CommitmentProtectionFlow: ObservableObject {
     @Published public private(set) var isBlockingModeEnabled: Bool
     @Published public private(set) var earlyReminderLeadTimeMinutes: Int
     @Published public private(set) var strongAlertRepeatIntervalMinutes: Int
-
-    public var missedCommitment: CalendarEvent? {
-        missedCommitments.first
-    }
 
     private let calendarConnector: any GoogleCalendarConnecting
     private let launchAtLogin: any LaunchAtLoginControlling
@@ -289,7 +282,6 @@ public final class CommitmentProtectionFlow: ObservableObject {
     private var suppressedPostStartAcceptanceOccurrences: Set<OccurrenceIdentity> = []
     private var decisionOccurrence: OccurrenceIdentity?
     private var lastActionOccurrence: OccurrenceIdentity?
-    private var missedUntil: Date?
     private var strongAlertEventID: String?
     private var strongAlertEventStartDate: Date?
     private var strongAlertNextPresentationDate: Date?
@@ -319,9 +311,6 @@ public final class CommitmentProtectionFlow: ObservableObject {
         let snoozedOccurrence: SavedOccurrence?
         let snoozedUntil: Date?
         let pauseUntil: Date?
-        let missedCommitment: CalendarEvent?
-        let missedCommitments: [CalendarEvent]
-        let missedUntil: Date?
         let observedUnacceptedOccurrences: [SavedOccurrence]
         let suppressedPostStartAcceptanceOccurrences: [SavedOccurrence]
 
@@ -334,9 +323,6 @@ public final class CommitmentProtectionFlow: ObservableObject {
             case snoozedOccurrence
             case snoozedUntil
             case pauseUntil
-            case missedCommitment
-            case missedCommitments
-            case missedUntil
             case observedUnacceptedOccurrences
             case suppressedPostStartAcceptanceOccurrences
         }
@@ -350,9 +336,6 @@ public final class CommitmentProtectionFlow: ObservableObject {
             snoozedOccurrence: SavedOccurrence?,
             snoozedUntil: Date?,
             pauseUntil: Date?,
-            missedCommitment: CalendarEvent?,
-            missedCommitments: [CalendarEvent],
-            missedUntil: Date?,
             observedUnacceptedOccurrences: [SavedOccurrence],
             suppressedPostStartAcceptanceOccurrences: [SavedOccurrence]
         ) {
@@ -364,9 +347,6 @@ public final class CommitmentProtectionFlow: ObservableObject {
             self.snoozedOccurrence = snoozedOccurrence
             self.snoozedUntil = snoozedUntil
             self.pauseUntil = pauseUntil
-            self.missedCommitment = missedCommitment
-            self.missedCommitments = missedCommitments
-            self.missedUntil = missedUntil
             self.observedUnacceptedOccurrences = observedUnacceptedOccurrences
             self.suppressedPostStartAcceptanceOccurrences = suppressedPostStartAcceptanceOccurrences
         }
@@ -384,11 +364,6 @@ public final class CommitmentProtectionFlow: ObservableObject {
             snoozedOccurrence = try container.decodeIfPresent(SavedOccurrence.self, forKey: .snoozedOccurrence)
             snoozedUntil = try container.decodeIfPresent(Date.self, forKey: .snoozedUntil)
             pauseUntil = try container.decodeIfPresent(Date.self, forKey: .pauseUntil)
-            missedCommitment = try container.decodeIfPresent(CalendarEvent.self, forKey: .missedCommitment)
-            missedCommitments = try container.decodeIfPresent([CalendarEvent].self, forKey: .missedCommitments)
-                ?? missedCommitment.map { [$0] }
-                ?? []
-            missedUntil = try container.decodeIfPresent(Date.self, forKey: .missedUntil)
             observedUnacceptedOccurrences = try container.decodeIfPresent(
                 [SavedOccurrence].self,
                 forKey: .observedUnacceptedOccurrences
@@ -421,7 +396,6 @@ public final class CommitmentProtectionFlow: ObservableObject {
             ? 1
             : Self.clampedStrongAlertRepeatInterval(savedRepeatInterval)
         pauseUntil = nil
-        missedCommitments = []
 
         do {
             try launchAtLogin.enable()
@@ -537,43 +511,6 @@ public final class CommitmentProtectionFlow: ObservableObject {
         return true
     }
 
-    @discardableResult
-    public func acknowledgeMissedCommitment() -> Bool {
-        guard !missedCommitments.isEmpty else { return false }
-        let commitments = missedCommitments
-        missedCommitments = []
-        missedUntil = nil
-        lastActionMessage = "Missed Commitment acknowledged. Google Calendar was not changed."
-        for commitment in commitments {
-            recordActivity(
-                .missedCommitmentAcknowledged,
-                actor: .user,
-                title: "Missed Commitment acknowledged",
-                detail: lastActionMessage ?? "Missed Commitment acknowledged.",
-                commitment: commitment
-            )
-        }
-        return true
-    }
-
-    @discardableResult
-    public func acknowledgeMissedCommitment(for commitment: CalendarEvent) -> Bool {
-        guard let index = missedCommitments.firstIndex(of: commitment) else { return false }
-        missedCommitments.remove(at: index)
-        if missedCommitments.isEmpty {
-            missedUntil = nil
-        }
-        lastActionMessage = "Missed Commitment acknowledged. Google Calendar was not changed."
-        recordActivity(
-            .missedCommitmentAcknowledged,
-            actor: .user,
-            title: "Missed Commitment acknowledged",
-            detail: lastActionMessage ?? "Missed Commitment acknowledged.",
-            commitment: commitment
-        )
-        return true
-    }
-
     public var canSnoozeEarlyReminder: Bool {
         guard let commitment = earlyReminderCommitment,
               let startDate = commitment.startDate else {
@@ -668,8 +605,6 @@ public final class CommitmentProtectionFlow: ObservableObject {
         snoozedOccurrence = nil
         snoozedUntil = nil
         pauseUntil = nil
-        missedCommitments = []
-        missedUntil = nil
         clearLocalDecision()
         lastActionMessage = nil
         connectionState = .notConnected
@@ -1222,7 +1157,6 @@ public final class CommitmentProtectionFlow: ObservableObject {
     private func reconcileCalendarSnapshot(_ events: [CalendarEvent], at currentDate: Date) {
         updateTemporaryLifecycleState(at: currentDate)
         recordAcceptanceMutations(in: events, at: currentDate)
-        recordMissedCommitmentsIfNeeded(in: events, at: currentDate)
         let eligibleEvents = events
             .filter { event in
                 guard event.isEligibleForProtection,
@@ -1319,56 +1253,9 @@ public final class CommitmentProtectionFlow: ObservableObject {
             )
             didChange = true
         }
-        if let missedUntil, missedUntil <= currentDate {
-            missedCommitments = []
-            self.missedUntil = nil
-            didChange = true
-        }
         if didChange {
             saveConfiguration()
         }
-    }
-
-    private func recordMissedCommitmentsIfNeeded(
-        in events: [CalendarEvent],
-        at currentDate: Date
-    ) {
-        let existingOccurrences = Set(missedCommitments.map(OccurrenceIdentity.init))
-        let endedCommitments = events
-            .filter { commitment in
-                guard commitment.isEligibleForProtection,
-                      let endDate = commitment.endDate,
-                      endDate <= currentDate,
-                      currentDate < endOfLocalDay(for: endDate) else {
-                    return false
-                }
-                let occurrence = OccurrenceIdentity(commitment)
-                return !existingOccurrences.contains(occurrence) &&
-                    !isDecisionActive(for: occurrence)
-            }
-            .sorted {
-                ($0.endDate ?? .distantPast) > ($1.endDate ?? .distantPast)
-            }
-
-        guard !endedCommitments.isEmpty else { return }
-
-        missedCommitments.append(contentsOf: endedCommitments)
-        if let earliestEndDate = endedCommitments.compactMap(\.endDate).min() {
-            missedUntil = endOfLocalDay(for: earliestEndDate)
-        }
-        for commitment in endedCommitments {
-            recordActivity(
-                .missedCommitment,
-                actor: .system,
-                title: "Missed Commitment",
-                detail: "No Join, Handled, or Stop reminders action was taken before it ended.",
-                commitment: commitment,
-                at: currentDate
-            )
-        }
-        lastActionMessage = endedCommitments.count == 1
-            ? "Missed Commitment: \(endedCommitments[0].title). Acknowledge it when you are ready."
-            : "\(endedCommitments.count) Missed Commitments are waiting for acknowledgement."
     }
 
     private func recordAcceptanceMutations(in events: [CalendarEvent], at currentDate: Date) {
@@ -1645,8 +1532,6 @@ public final class CommitmentProtectionFlow: ObservableObject {
         snoozedOccurrence = configuration.snoozedOccurrence?.identity
         snoozedUntil = configuration.snoozedUntil
         pauseUntil = configuration.pauseUntil
-        missedCommitments = configuration.missedCommitments
-        missedUntil = configuration.missedUntil
         observedUnacceptedOccurrences = Set(configuration.observedUnacceptedOccurrences.map(\.identity))
         suppressedPostStartAcceptanceOccurrences = Set(
             configuration.suppressedPostStartAcceptanceOccurrences.map(\.identity)
@@ -1665,9 +1550,6 @@ public final class CommitmentProtectionFlow: ObservableObject {
             snoozedOccurrence: snoozedOccurrence.map(SavedOccurrence.init),
             snoozedUntil: snoozedUntil,
             pauseUntil: pauseUntil,
-            missedCommitment: missedCommitment,
-            missedCommitments: missedCommitments,
-            missedUntil: missedUntil,
             observedUnacceptedOccurrences: observedUnacceptedOccurrences.map(SavedOccurrence.init),
             suppressedPostStartAcceptanceOccurrences: suppressedPostStartAcceptanceOccurrences.map(SavedOccurrence.init)
         )
@@ -1691,8 +1573,6 @@ public final class CommitmentProtectionFlow: ObservableObject {
         snoozedOccurrence = nil
         snoozedUntil = nil
         pauseUntil = nil
-        missedCommitments = []
-        missedUntil = nil
         observedUnacceptedOccurrences = []
         suppressedPostStartAcceptanceOccurrences = []
         clearLocalDecision()

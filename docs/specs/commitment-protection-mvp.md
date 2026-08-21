@@ -59,7 +59,7 @@ The experience is intentionally narrow: Google Calendar is the source of truth f
 41. As a user, I want protection to resume immediately when Pause ends if a commitment is still ongoing, so that Pause defers protection rather than silently erasing it.
 42. As a user, I want visual reminders to remain visible during Full-Screen Sharing, so that sharing cannot silently suppress the protection experience.
 43. As a user, I want visual reminders to remain visible during window or app sharing, so that every sharing mode has the same predictable alert behavior.
-44. As a user, I want an active alert to remain visible if sharing starts, without clearing the underlying protection decision, so that sharing cannot turn an active commitment into a missed reminder.
+44. As a user, I want an active alert to remain visible if sharing starts, without clearing the underlying protection decision, so that sharing cannot suppress protection.
 45. As a user, I want the reminder to remain visible when every display is shared, so that the app keeps its punctuality promise in any sharing configuration.
 50. As a user, I want the Strong Alert to cover every available display, so that I cannot miss it simply because I was working on another screen or sharing a display.
 51. As a user, I want overlapping commitments represented as a Commitment Conflict, so that the app makes scheduling reality visible instead of silently choosing for me.
@@ -75,9 +75,6 @@ The experience is intentionally narrow: Google Calendar is the source of truth f
 61. As a user, I want the app to update protection when Google Calendar cancels, reschedules, or changes a meeting link, so that stale calendar state does not continue to interrupt me.
 62. As a user, I want explicit Dismiss and Handled decisions to survive routine calendar refreshes for the current Occurrence, so that a deliberate choice does not resurrect.
 63. As a user, I want app recovery after an unavailable period to show an overdue Strong Alert for an ongoing commitment, so that restarting the app does not create a silent protection gap.
-64. As a user, I want a commitment that has already ended when the Mac or app becomes active to appear only as a passive Missed Commitment, so that recovery does not create a useless new interruption.
-65. As a user, I want Missed Commitment status to remain until I explicitly Acknowledge it or the end of my local day, so that I have closure without permanent event history.
-66. As a user, I want Acknowledge to clear missed status without changing Google Calendar, so that reflection on a miss does not alter calendar intent.
 67. As a user, I want locked or sleeping Macs to show an overdue alert after becoming active when the commitment is still ongoing, so that sleep does not permanently erase protection.
 68. As a user, I want no new strong interruption after a commitment has reached its scheduled end, so that the app respects its lifecycle boundary.
 69. As a user, I want a compact upcoming-commitment view in the menu bar, so that I can understand what the app is protecting without opening a full schedule product.
@@ -115,8 +112,7 @@ The experience is intentionally narrow: Google Calendar is the source of truth f
 - Connected Account freshness is evaluated at a fifteen-minute boundary. Stale accounts show persistent, non-interruptive Coverage Warnings and do not create new reminders.
 - Already-known reminders may fire as Unverified Reminders after coverage becomes stale, preserving the normal action path with visible uncertainty.
 - Account failures are isolated: healthy accounts remain protected while the affected account is visibly uncovered.
-- The app starts automatically at login and supports recovery after sleep, lock, quit, or other unavailable periods. Ongoing commitments become Overdue Commitments on recovery; ended commitments become passive Missed Commitments.
-- Missed status lasts until Acknowledge or the end of the user’s local day and is not retained as event history.
+- The app starts automatically at login and supports recovery after sleep, lock, quit, or other unavailable periods. Ongoing commitments become Overdue Commitments on recovery; ended commitments remain quiet.
 - The main app shows a Protection Activity timeline containing human-readable user actions and system transitions from the current local day. It survives a relaunch during that day, remains visible after an explicit account disconnect, and is discarded at the local-day boundary. When accounts change, each entry retains its account context so activity is never ambiguous; it is not permanent event history or an analytics dashboard.
 - Onboarding includes account selection, Monitored Calendar selection, global timing confirmation, and a Test Alert.
 - The product uses a menu-bar-first experience with a compact upcoming-commitment view rather than a full planning calendar.
@@ -125,11 +121,11 @@ The experience is intentionally narrow: Google Calendar is the source of truth f
 ## Testing Decisions
 
 - Tests should verify externally observable Commitment Protection behavior rather than internal modules, state storage, timing mechanisms, or rendering implementation.
-- The single highest-level seam is the user-visible Commitment Protection flow. It should accept controlled calendar state, time, app-availability, display-sharing, coverage, and user-action conditions and expose reminders, actions, coverage states, and missed status.
+- The single highest-level seam is the user-visible Commitment Protection flow. It should accept controlled calendar state, time, app-availability, display-sharing, coverage, and user-action conditions and expose reminders, actions, and coverage states.
 - The flow should be tested with controllable time so lead times, start boundaries, Repeat Intervals, scheduled ends, local-day expiry, time-zone display, Pause expiry, and recovery can be verified deterministically.
 - Calendar fixtures should cover multiple Connected Accounts, selected and unselected Monitored Calendars, Accepted Events, declined or unaccepted events, all-day events, recurring Occurrences, reschedules, cancellations, changed links, duplicate representations, and same-start conflicts.
-- User-visible reminder tests should cover Early Reminder, Strong Alert, Unverified Reminder, Missed Commitment, and Coverage Warning states, including their permitted and forbidden transitions.
-- Action tests should verify Join, Handled, Dismiss, Restore Protection, Snooze, Acknowledge, Pause, and incidental surface clearing independently from the calendar source.
+- User-visible reminder tests should cover Early Reminder, Strong Alert, Unverified Reminder, and Coverage Warning states, including their permitted and forbidden transitions.
+- Action tests should verify Join, Handled, Dismiss, Restore Protection, Snooze, Pause, and incidental surface clearing independently from the calendar source.
 - Activity tests should verify that user and system actions are distinguishable, tied to the relevant commitment when applicable, persisted through a same-day relaunch, and removed at the local-day boundary.
 - Display tests should verify that reminders remain visible across multiple displays, Full-Screen Sharing, window sharing, app sharing, sharing beginning during an active alert, all displays being shared, and Focus-mode override behavior.
 - Lifecycle tests should cover login activation, account failure, stale-to-fresh recovery, lock/sleep recovery, app recovery, late acceptance, coverage activation near a commitment, and commitment end boundaries.

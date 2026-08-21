@@ -186,7 +186,6 @@ private struct SetupView: View {
                     BlockingModeSettingsCard()
                     StrongAlertSettingsCard()
                     PauseProtectionCard()
-                    MissedCommitmentCard()
                     TestAlertCard()
                 }
 
@@ -545,43 +544,6 @@ private struct PauseProtectionCard: View {
     private func pause(_ duration: PauseDuration) {
         if flow.pause(for: duration) {
             announceActionResult(flow.lastActionMessage)
-        }
-    }
-}
-
-private struct MissedCommitmentCard: View {
-    @EnvironmentObject private var flow: CommitmentProtectionFlow
-
-    var body: some View {
-        if !flow.missedCommitments.isEmpty {
-            VStack(alignment: .leading, spacing: 12) {
-                Label("Missed Commitment", systemImage: "calendar.badge.exclamationmark")
-                    .font(.headline)
-                Text("This passive status does not change Google Calendar.")
-                    .foregroundStyle(.secondary)
-
-                ForEach(Array(flow.missedCommitments.enumerated()), id: \.offset) { _, commitment in
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(commitment.title)
-                            .font(.title3.weight(.semibold))
-                        Text(flow.localStartTimeText(for: commitment))
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                        Button("Acknowledge") {
-                            if flow.acknowledgeMissedCommitment(for: commitment) {
-                                announceActionResult(flow.lastActionMessage)
-                            }
-                        }
-                        .keyboardShortcut("a")
-                        .buttonStyle(.borderedProminent)
-                        .accessibilityHint("Clear the missed status without changing the Google Calendar event.")
-                    }
-                }
-            }
-            .padding(20)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 16))
-            .accessibilityElement(children: .contain)
         }
     }
 }
@@ -1996,33 +1958,6 @@ private struct MenuBarContent: View {
                         .keyboardShortcut("c")
                         .accessibilityHint("Suppress reminders until the selected local date and time.")
                     }
-
-                    Divider()
-                }
-
-                if !flow.missedCommitments.isEmpty {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Label("Missed Commitment", systemImage: "calendar.badge.exclamationmark")
-                            .font(.headline)
-                        ForEach(Array(flow.missedCommitments.enumerated()), id: \.offset) { _, commitment in
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(commitment.title)
-                                    .lineLimit(2)
-                                Text(flow.localStartTimeText(for: commitment))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                Button("Acknowledge") {
-                                    if flow.acknowledgeMissedCommitment(for: commitment) {
-                                        announceActionResult(flow.lastActionMessage)
-                                    }
-                                }
-                                .keyboardShortcut("a")
-                                .buttonStyle(.borderedProminent)
-                                .accessibilityHint("Clear the missed status without changing the Google Calendar event.")
-                            }
-                        }
-                    }
-                    .accessibilityElement(children: .contain)
 
                     Divider()
                 }

@@ -68,7 +68,7 @@ _Avoid_: Notification, popup, takeover (as the canonical product term)
 
 **Overdue Commitment**:
 A commitment whose scheduled start has passed but whose scheduled end has not. It remains eligible for repeating Strong Alerts until it is handled or reaches its end, including when protection resumes after the app was unavailable.
-_Avoid_: Late meeting, missed event (while the commitment is still ongoing)
+_Avoid_: Late meeting (while the commitment is still ongoing)
 
 **Join**:
 The primary action for an accepted event with a recognized meeting link. The user's click counts as joining for the reminder lifecycle.
@@ -94,14 +94,6 @@ _Avoid_: Delay, postpone
 The global delay between post-start Strong Alerts. It ranges from one to five minutes, defaults to one minute, and remains enabled until Join, Handled, Dismiss, or the commitment's scheduled end.
 _Avoid_: Reminder frequency, retry interval
 
-**Missed Commitment**:
-A commitment that reaches its scheduled end without Join, Handled, or Dismiss. Post-start repeats stop at that boundary, including during Full-Screen Sharing, and the result is shown passively rather than as a new Strong Alert. The status remains until acknowledged or the end of the user's local day, then is discarded.
-_Avoid_: Failed reminder, unattended event
-
-**Acknowledge**:
-An explicit action that clears a passive Missed Commitment status without changing the Google Calendar event.
-_Avoid_: Dismiss (which applies before the occurrence ends), archive
-
 **Protection Activity**:
 A human-readable, current-local-day timeline of user actions and system transitions that explain the app's protection behavior. It is retained through a relaunch during the same local day, remains visible after an explicit account disconnect without reconnecting the account, and is discarded at the local-day boundary. When accounts change, each entry retains its account context so activity is never ambiguous; this is not permanent calendar history or analytics.
 _Avoid_: Audit log, attendance history
@@ -113,7 +105,7 @@ Sharing an entire display. Visual reminders remain visible during Full-Screen Sh
 _Avoid_: Screen sharing (when the distinction matters)
 
 **Pause**:
-A user-requested global suspension of protection until a specified time, offered as one hour, end of day, or a custom expiration. It immediately suppresses active alerts as well as future protection. When it ends, an ongoing commitment becomes overdue immediately; an already-ended commitment remains a passive missed commitment.
+A user-requested global suspension of protection until a specified time, offered as one hour, end of day, or a custom expiration. It immediately suppresses active alerts as well as future protection. When it ends, an ongoing commitment becomes overdue immediately; an already-ended commitment remains quiet.
 _Avoid_: Quiet hours, disable (unless referring to a permanent setting)
 
 **Active Protection**:
