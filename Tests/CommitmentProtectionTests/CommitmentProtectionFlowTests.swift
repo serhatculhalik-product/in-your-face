@@ -3103,6 +3103,70 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         )
     }
 
+    func testExplicitAndRecoveryRefreshesConvergeOnTheNewestCalendarSnapshot() async {
+        let (account, calendar) = makeTestAccountAndCalendar()
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let originalCommitment = CalendarEvent(
+            id: "original-coordinated-event",
+            title: "Original coordinated review",
+            startDate: now.addingTimeInterval(10 * 60),
+            endDate: now.addingTimeInterval(70 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let newestCommitment = CalendarEvent(
+            id: "newest-coordinated-event",
+            title: "Newest coordinated review",
+            startDate: now.addingTimeInterval(20 * 60),
+            endDate: now.addingTimeInterval(80 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let state = RefreshRaceConnectorState(holdNextLoad: false)
+        let connector = RefreshRaceTestConnector(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [originalCommitment],
+            state: state
+        )
+        let flow = CommitmentProtectionFlow(
+            calendarConnector: connector,
+            launchAtLogin: TestLaunchAtLoginController(),
+            now: { now }
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        XCTAssertEqual(flow.upcomingCommitment, originalCommitment)
+
+        await state.holdNextLoad()
+        let olderRefresh = Task { @MainActor in
+            await flow.refreshCommitmentProtection(at: now)
+        }
+        await state.waitForFirstLoadStart()
+        connector.replaceEvents([newestCommitment])
+
+        let explicitRefresh = Task { @MainActor in
+            await flow.refreshCommitmentProtection(at: now.addingTimeInterval(1))
+        }
+        let recoveryRefresh = Task { @MainActor in
+            await flow.recoverProtection(at: now.addingTimeInterval(2))
+        }
+        await state.releaseFirstLoad()
+
+        await olderRefresh.value
+        await explicitRefresh.value
+        await recoveryRefresh.value
+
+        XCTAssertEqual(flow.upcomingCommitment, newestCommitment)
+        XCTAssertNil(flow.earlyReminderCommitment)
+        XCTAssertNil(flow.strongAlertCommitment)
+    }
+
     func testLeadTimeIsGlobalAndPersistsWithinConfiguration() {
         let suiteName = "CommitmentProtectionFlowTests.\(UUID().uuidString)"
         let stateStore = UserDefaults(suiteName: suiteName)!
