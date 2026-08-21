@@ -186,10 +186,17 @@ private struct SetupView: View {
             SetupWindowController.shared.bringToFront()
         }
         .onChange(of: flow.earlyReminderCommitment) { _, commitment in
-            if commitment != nil {
-                openWindow(id: "early-reminder")
-            } else {
+            guard commitment != nil else {
                 EarlyReminderWindowController.shared.close()
+                return
+            }
+            Task { @MainActor in
+                await Task.yield()
+                guard flow.earlyReminderCommitment != nil else {
+                    EarlyReminderWindowController.shared.close()
+                    return
+                }
+                openWindow(id: "early-reminder")
             }
         }
         .onChange(of: flow.isStrongAlertPresented) { _, isPresented in
@@ -2139,6 +2146,7 @@ private struct MenuBarContent: View {
 
                     if flow.earlyReminderCommitment != nil {
                         Button("Open Early Reminder") {
+                            guard flow.earlyReminderCommitment != nil else { return }
                             openWindow(id: "early-reminder")
                         }
                         .keyboardShortcut("r")
@@ -2291,17 +2299,31 @@ private struct MenuBarLabel: View {
                 openWindow(id: "setup")
             }
             if flow.earlyReminderCommitment != nil {
-                openWindow(id: "early-reminder")
+                Task { @MainActor in
+                    await Task.yield()
+                    guard flow.earlyReminderCommitment != nil else {
+                        EarlyReminderWindowController.shared.close()
+                        return
+                    }
+                    openWindow(id: "early-reminder")
+                }
             }
             if flow.isStrongAlertPresented {
                 openWindow(id: "strong-alert")
             }
         }
         .onChange(of: flow.earlyReminderCommitment) { _, commitment in
-            if commitment != nil {
-                openWindow(id: "early-reminder")
-            } else {
+            guard commitment != nil else {
                 EarlyReminderWindowController.shared.close()
+                return
+            }
+            Task { @MainActor in
+                await Task.yield()
+                guard flow.earlyReminderCommitment != nil else {
+                    EarlyReminderWindowController.shared.close()
+                    return
+                }
+                openWindow(id: "early-reminder")
             }
         }
         .onChange(of: flow.isStrongAlertPresented) { _, isPresented in

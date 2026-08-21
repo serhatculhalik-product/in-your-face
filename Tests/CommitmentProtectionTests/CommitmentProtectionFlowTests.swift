@@ -2162,30 +2162,33 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertFalse(events[2].isAccepted)
     }
 
-    func testGoogleOutOfOfficeEventIsNotEligibleForProtection() throws {
-        let data = Data(#"""
-        {
-            "items": [
-                {
-                    "id": "out-of-office-event",
-                    "summary": "Out of office",
-                    "eventType": "outOfOffice",
-                    "start": {"dateTime": "2026-08-20T00:00:00+03:00"},
-                    "end": {"dateTime": "2026-08-21T00:00:00+03:00"},
-                    "organizer": {"self": true}
-                }
-            ]
-        }
-        """#.utf8)
-
-        let events = try decodeGoogleCalendarEvents(
-            from: data,
-            accountID: "account-1",
-            calendarID: "calendar-1"
+    func testOutOfOfficeEventDoesNotCreateProtection() async {
+        let (account, calendar) = makeTestAccountAndCalendar()
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let outOfOffice = CalendarEvent(
+            id: "out-of-office-event",
+            title: "Out of office",
+            startDate: now,
+            endDate: now.addingTimeInterval(24 * 60 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id,
+            eventType: .outOfOffice
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [outOfOffice],
+            now: now
         )
 
-        XCTAssertEqual(events.count, 1)
-        XCTAssertFalse(events[0].isEligibleForProtection)
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertFalse(flow.isStrongAlertPresented)
+        XCTAssertNil(flow.strongAlertCommitment)
+        XCTAssertNil(flow.earlyReminderCommitment)
     }
 
     func testPauseForOneHourSuppressesCurrentAndFutureProtectionAndShowsExpiration() async {
@@ -3046,6 +3049,39 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertTrue(flow.confirmProtection())
         await settleScheduledRefreshes()
         await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertFalse(flow.isStrongAlertPresented)
+        XCTAssertNil(flow.strongAlertCommitment)
+    }
+
+    func testReconnectingConfirmedAccountDoesNotShowPastUntrackedCommitmentAsOverdue() async {
+        let (account, calendar) = makeTestAccountAndCalendar()
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(-10 * 60),
+            endDate: now.addingTimeInterval(50 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let connector = MutableTestGoogleCalendarConnector(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: []
+        )
+        let flow = makeMutableFlow(connector: connector, now: now)
+
+        await flow.connectGoogleAccount()
+        flow.setCalendarSelected(true, calendarID: calendar.id)
+        XCTAssertTrue(flow.confirmProtection())
+        await settleScheduledRefreshes()
+        await flow.refreshCommitmentProtection(at: now)
+
+        connector.events = [commitment]
+        await flow.connectGoogleAccount()
 
         XCTAssertFalse(flow.isStrongAlertPresented)
         XCTAssertNil(flow.strongAlertCommitment)

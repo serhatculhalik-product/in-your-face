@@ -78,8 +78,12 @@ public struct CalendarEvent: Codable, Equatable, Identifiable, Sendable {
         self.eventType = eventType
     }
 
+    public var isProtectionTrackable: Bool {
+        eventType != .outOfOffice && !isAllDay && startDate != nil && endDate != nil
+    }
+
     public var isEligibleForProtection: Bool {
-        isAccepted && eventType != .outOfOffice && !isAllDay && startDate != nil && endDate != nil
+        isAccepted && isProtectionTrackable
     }
 }
 
@@ -335,6 +339,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
     private static let blockingModeEnabledKey = "commitment-protection.blocking-mode-enabled"
     private static let earlyReminderLeadTimeKey = "commitment-protection.early-reminder-lead-time"
     private static let strongAlertRepeatIntervalKey = "commitment-protection.strong-alert-repeat-interval"
+    private static let freshEventsSchemaVersion = 1
     private static let coverageFreshnessInterval: TimeInterval = 15 * 60
     private struct AccountRecord {
         var connection: GoogleCalendarConnection
@@ -410,7 +415,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
     private var strongAlertEventCalendarID: String?
     private var strongAlertEventAccountID: String?
     private var strongAlertNextPresentationDate: Date?
-    private var newlySelectedCalendarIDs: Set<CalendarSelectionIdentity> = []
+    private var newlySelectedCalendars: Set<CalendarSelectionIdentity> = []
     private var shouldSuppressUntrackedPastOccurrencesOnNextRefresh = false
     private var monitoringTask: Task<Void, Never>?
     private var refreshGeneration = 0
@@ -445,6 +450,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
         let isProtectionConfirmed: Bool
         let lastSuccessfulRefreshAt: Date?
         let lastFreshEvents: [CalendarEvent]
+        let lastFreshEventsSchemaVersion: Int?
     }
 
     private struct SavedConfiguration: Codable {
@@ -520,7 +526,8 @@ public final class CommitmentProtectionFlow: ObservableObject {
                             forKey: .isProtectionConfirmed
                         ) ?? false,
                         lastSuccessfulRefreshAt: nil,
-                        lastFreshEvents: []
+                        lastFreshEvents: [],
+                        lastFreshEventsSchemaVersion: nil
                     )
                 ]
             }
@@ -779,6 +786,9 @@ public final class CommitmentProtectionFlow: ObservableObject {
         do {
             let connection = try await calendarConnector.connect()
             let existingRecord = accountRecords[connection.account.id]
+            if existingRecord?.isProtectionConfirmed == true {
+                shouldSuppressUntrackedPastOccurrencesOnNextRefresh = true
+            }
             accountRecords[connection.account.id] = AccountRecord(
                 connection: connection,
                 selectedCalendarIDs: existingRecord?.selectedCalendarIDs.intersection(
@@ -849,7 +859,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
         )
         accountRecords.removeValue(forKey: accountID)
         unverifiedAccountIDs.remove(accountID)
-        newlySelectedCalendarIDs = newlySelectedCalendarIDs.filter { $0.accountID != accountID }
+        newlySelectedCalendars = newlySelectedCalendars.filter { $0.accountID != accountID }
 
         if decisionCommitment?.accountID == accountID {
             clearLocalDecision()
@@ -903,10 +913,12 @@ public final class CommitmentProtectionFlow: ObservableObject {
                     isProtectionConfirmed: savedAccount.isProtectionConfirmed,
                     connectionState: .connected,
                     lastSuccessfulRefreshAt: savedAccount.lastSuccessfulRefreshAt,
-                    lastFreshEvents: savedAccount.lastFreshEvents.filter { event in
-                        event.accountID == connection.account.id &&
-                            connection.calendars.contains { calendar in calendar.id == event.calendarID }
-                    }
+                    lastFreshEvents: savedAccount.lastFreshEventsSchemaVersion == Self.freshEventsSchemaVersion
+                        ? savedAccount.lastFreshEvents.filter { event in
+                            event.accountID == connection.account.id &&
+                                connection.calendars.contains { calendar in calendar.id == event.calendarID }
+                        }
+                        : []
                 )
             } catch {
                 guard !savedAccount.account.id.isEmpty else { continue }
@@ -919,10 +931,12 @@ public final class CommitmentProtectionFlow: ObservableObject {
                     isProtectionConfirmed: savedAccount.isProtectionConfirmed,
                     connectionState: .failed(error.localizedDescription),
                     lastSuccessfulRefreshAt: savedAccount.lastSuccessfulRefreshAt,
-                    lastFreshEvents: savedAccount.lastFreshEvents.filter { event in
-                        event.accountID == savedAccount.account.id &&
-                            savedAccount.calendars.contains { calendar in calendar.id == event.calendarID }
-                    }
+                    lastFreshEvents: savedAccount.lastFreshEventsSchemaVersion == Self.freshEventsSchemaVersion
+                        ? savedAccount.lastFreshEvents.filter { event in
+                            event.accountID == savedAccount.account.id &&
+                                savedAccount.calendars.contains { calendar in calendar.id == event.calendarID }
+                        }
+                        : []
                 )
             }
         }
@@ -953,14 +967,14 @@ public final class CommitmentProtectionFlow: ObservableObject {
             record.selectedCalendarIDs.insert(calendarID)
             record.isProtectionConfirmed = false
             if !wasAlreadySelected && wasProtectionConfirmed {
-                newlySelectedCalendarIDs.insert(
+                newlySelectedCalendars.insert(
                     CalendarSelectionIdentity(calendarID: calendarID, accountID: accountID)
                 )
             }
         } else {
             record.selectedCalendarIDs.remove(calendarID)
             record.lastFreshEvents.removeAll { $0.calendarID == calendarID }
-            newlySelectedCalendarIDs.remove(
+            newlySelectedCalendars.remove(
                 CalendarSelectionIdentity(calendarID: calendarID, accountID: accountID)
             )
             if record.selectedCalendarIDs.isEmpty {
@@ -1169,9 +1183,9 @@ public final class CommitmentProtectionFlow: ObservableObject {
             let wasUnavailable = record.connectionState != .connected ||
                 unverifiedAccountIDs.contains(accountID)
             let previouslyTrackedOccurrences = Set(record.lastFreshEvents.map(OccurrenceIdentity.init))
-            let newlySelectedCalendars = Set(record.selectedCalendars.map {
+            let selectedNewCalendars = Set(record.selectedCalendars.map {
                 CalendarSelectionIdentity(calendarID: $0.id, accountID: accountID)
-            }).intersection(newlySelectedCalendarIDs)
+            }).intersection(newlySelectedCalendars)
             do {
                 var freshEvents: [CalendarEvent] = []
                 for calendar in record.selectedCalendars {
@@ -1190,7 +1204,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
                 }
                 let eventsToSuppress = protectionEvents.filter { event in
                     shouldSuppressUntrackedPastOccurrencesOnNextRefresh ||
-                        newlySelectedCalendars.contains(
+                        selectedNewCalendars.contains(
                             CalendarSelectionIdentity(calendarID: event.calendarID, accountID: event.accountID)
                         )
                 }
@@ -1204,7 +1218,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
                 record.lastFreshEvents = protectionEvents
                 accountRecords[accountID] = record
                 unverifiedAccountIDs.remove(accountID)
-                newlySelectedCalendarIDs.subtract(newlySelectedCalendars)
+                newlySelectedCalendars.subtract(selectedNewCalendars)
                 events += freshEvents
                 if wasUnavailable {
                     recordActivity(
@@ -1672,9 +1686,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
     private func recordAcceptanceMutations(in events: [CalendarEvent], at currentDate: Date) {
         let trackedEvents = events.filter { event in
-            guard event.eventType != .outOfOffice,
-                  !event.isAllDay,
-                  event.startDate != nil,
+            guard event.isProtectionTrackable,
                   let endDate = event.endDate else {
                 return false
             }
@@ -2088,7 +2100,8 @@ public final class CommitmentProtectionFlow: ObservableObject {
                     selectedCalendarIDs: record.selectedCalendarIDs.sorted(),
                     isProtectionConfirmed: record.isProtectionConfirmed,
                     lastSuccessfulRefreshAt: record.lastSuccessfulRefreshAt,
-                    lastFreshEvents: record.lastFreshEvents
+                    lastFreshEvents: record.lastFreshEvents,
+                    lastFreshEventsSchemaVersion: Self.freshEventsSchemaVersion
                 )
             }.sorted { $0.account.id < $1.account.id },
             decisionOccurrence: decisionOccurrence.map(SavedOccurrence.init),
