@@ -924,9 +924,9 @@ private struct EarlyReminderView: View {
 
     var body: some View {
         VStack(spacing: 18) {
-            Label("Early Reminder", systemImage: "bell.fill")
-                .font(.headline)
             if let commitment = flow.earlyReminderCommitment {
+                Label("Early Reminder", systemImage: "bell.fill")
+                    .font(.headline)
                 if flow.isEarlyReminderUnverified {
                     Label("Unverified Reminder", systemImage: "questionmark.circle")
                         .font(.subheadline.weight(.semibold))
@@ -975,8 +975,6 @@ private struct EarlyReminderView: View {
                     .buttonStyle(.bordered)
                     .accessibilityHint("Stop Early Reminder and Strong Alert for this commitment occurrence without changing Google Calendar.")
                 }
-            } else {
-                EmptyView()
             }
         }
         .padding(28)

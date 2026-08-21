@@ -35,6 +35,10 @@ public struct GoogleCalendarConnection: Codable, Equatable, Sendable {
     }
 }
 
+public enum CalendarEventType: String, Codable, Equatable, Sendable {
+    case outOfOffice
+}
+
 public struct CalendarEvent: Codable, Equatable, Identifiable, Sendable {
     public let id: String
     public let title: String
@@ -46,6 +50,7 @@ public struct CalendarEvent: Codable, Equatable, Identifiable, Sendable {
     public let calendarID: String
     public let accountID: String
     public let recognizedMeetingLink: URL?
+    public let eventType: CalendarEventType?
 
     public init(
         id: String,
@@ -57,7 +62,8 @@ public struct CalendarEvent: Codable, Equatable, Identifiable, Sendable {
         isAccepted: Bool,
         calendarID: String,
         accountID: String,
-        recognizedMeetingLink: URL? = nil
+        recognizedMeetingLink: URL? = nil,
+        eventType: CalendarEventType? = nil
     ) {
         self.id = id
         self.title = title
@@ -69,10 +75,11 @@ public struct CalendarEvent: Codable, Equatable, Identifiable, Sendable {
         self.calendarID = calendarID
         self.accountID = accountID
         self.recognizedMeetingLink = recognizedMeetingLink
+        self.eventType = eventType
     }
 
     public var isEligibleForProtection: Bool {
-        isAccepted && !isAllDay && startDate != nil && endDate != nil
+        isAccepted && eventType != .outOfOffice && !isAllDay && startDate != nil && endDate != nil
     }
 }
 
@@ -386,10 +393,16 @@ public final class CommitmentProtectionFlow: ObservableObject {
         }
     }
 
+    private struct CalendarSelectionIdentity: Hashable, Sendable {
+        let calendarID: String
+        let accountID: String
+    }
+
     private var snoozedOccurrence: OccurrenceIdentity?
     private var snoozedUntil: Date?
     private var observedUnacceptedOccurrences: Set<OccurrenceIdentity> = []
     private var suppressedPostStartAcceptanceOccurrences: Set<OccurrenceIdentity> = []
+    private var suppressedUntrackedPastOccurrences: Set<OccurrenceIdentity> = []
     private var decisionOccurrence: OccurrenceIdentity?
     private var lastActionOccurrence: OccurrenceIdentity?
     private var strongAlertEventID: String?
@@ -397,6 +410,8 @@ public final class CommitmentProtectionFlow: ObservableObject {
     private var strongAlertEventCalendarID: String?
     private var strongAlertEventAccountID: String?
     private var strongAlertNextPresentationDate: Date?
+    private var newlySelectedCalendarIDs: Set<CalendarSelectionIdentity> = []
+    private var shouldSuppressUntrackedPastOccurrencesOnNextRefresh = false
     private var monitoringTask: Task<Void, Never>?
     private var refreshGeneration = 0
 
@@ -441,6 +456,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
         let pauseUntil: Date?
         let observedUnacceptedOccurrences: [SavedOccurrence]
         let suppressedPostStartAcceptanceOccurrences: [SavedOccurrence]
+        let suppressedUntrackedPastOccurrences: [SavedOccurrence]
 
         private enum CodingKeys: String, CodingKey {
             case accounts
@@ -451,6 +467,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
             case pauseUntil
             case observedUnacceptedOccurrences
             case suppressedPostStartAcceptanceOccurrences
+            case suppressedUntrackedPastOccurrences
         }
 
         private enum LegacyCodingKeys: String, CodingKey {
@@ -467,7 +484,8 @@ public final class CommitmentProtectionFlow: ObservableObject {
             snoozedUntil: Date?,
             pauseUntil: Date?,
             observedUnacceptedOccurrences: [SavedOccurrence],
-            suppressedPostStartAcceptanceOccurrences: [SavedOccurrence]
+            suppressedPostStartAcceptanceOccurrences: [SavedOccurrence],
+            suppressedUntrackedPastOccurrences: [SavedOccurrence]
         ) {
             self.accounts = accounts
             self.decisionOccurrence = decisionOccurrence
@@ -477,6 +495,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
             self.pauseUntil = pauseUntil
             self.observedUnacceptedOccurrences = observedUnacceptedOccurrences
             self.suppressedPostStartAcceptanceOccurrences = suppressedPostStartAcceptanceOccurrences
+            self.suppressedUntrackedPastOccurrences = suppressedUntrackedPastOccurrences
         }
 
         init(from decoder: Decoder) throws {
@@ -520,6 +539,10 @@ public final class CommitmentProtectionFlow: ObservableObject {
             suppressedPostStartAcceptanceOccurrences = try container.decodeIfPresent(
                 [SavedOccurrence].self,
                 forKey: .suppressedPostStartAcceptanceOccurrences
+            ) ?? []
+            suppressedUntrackedPastOccurrences = try container.decodeIfPresent(
+                [SavedOccurrence].self,
+                forKey: .suppressedUntrackedPastOccurrences
             ) ?? []
         }
     }
@@ -826,6 +849,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
         )
         accountRecords.removeValue(forKey: accountID)
         unverifiedAccountIDs.remove(accountID)
+        newlySelectedCalendarIDs = newlySelectedCalendarIDs.filter { $0.accountID != accountID }
 
         if decisionCommitment?.accountID == accountID {
             clearLocalDecision()
@@ -909,6 +933,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
         saveActivityLog()
         saveConfiguration()
         if !accountRecords.isEmpty {
+            shouldSuppressUntrackedPastOccurrencesOnNextRefresh = true
             await refreshCommitmentProtection()
         }
     }
@@ -923,11 +948,21 @@ public final class CommitmentProtectionFlow: ObservableObject {
               record.connection.calendars.contains(where: { $0.id == calendarID }) else { return }
 
         if isSelected {
+            let wasAlreadySelected = record.selectedCalendarIDs.contains(calendarID)
+            let wasProtectionConfirmed = record.isProtectionConfirmed
             record.selectedCalendarIDs.insert(calendarID)
             record.isProtectionConfirmed = false
+            if !wasAlreadySelected && wasProtectionConfirmed {
+                newlySelectedCalendarIDs.insert(
+                    CalendarSelectionIdentity(calendarID: calendarID, accountID: accountID)
+                )
+            }
         } else {
             record.selectedCalendarIDs.remove(calendarID)
             record.lastFreshEvents.removeAll { $0.calendarID == calendarID }
+            newlySelectedCalendarIDs.remove(
+                CalendarSelectionIdentity(calendarID: calendarID, accountID: accountID)
+            )
             if record.selectedCalendarIDs.isEmpty {
                 record.isProtectionConfirmed = false
             }
@@ -1127,11 +1162,16 @@ public final class CommitmentProtectionFlow: ObservableObject {
         let startDate = Calendar.current.startOfDay(for: currentDate)
         let endDate = currentDate.addingTimeInterval(24 * 60 * 60)
         var events: [CalendarEvent] = []
+        var didRefreshAllConfiguredAccounts = true
 
         for accountID in configuredAccountIDs {
             guard var record = accountRecords[accountID] else { continue }
             let wasUnavailable = record.connectionState != .connected ||
                 unverifiedAccountIDs.contains(accountID)
+            let previouslyTrackedOccurrences = Set(record.lastFreshEvents.map(OccurrenceIdentity.init))
+            let newlySelectedCalendars = Set(record.selectedCalendars.map {
+                CalendarSelectionIdentity(calendarID: $0.id, accountID: accountID)
+            }).intersection(newlySelectedCalendarIDs)
             do {
                 var freshEvents: [CalendarEvent] = []
                 for calendar in record.selectedCalendars {
@@ -1148,11 +1188,23 @@ public final class CommitmentProtectionFlow: ObservableObject {
                     event.isEligibleForProtection &&
                         (event.endDate ?? .distantPast) > currentDate
                 }
+                let eventsToSuppress = protectionEvents.filter { event in
+                    shouldSuppressUntrackedPastOccurrencesOnNextRefresh ||
+                        newlySelectedCalendars.contains(
+                            CalendarSelectionIdentity(calendarID: event.calendarID, accountID: event.accountID)
+                        )
+                }
+                suppressUntrackedPastOccurrences(
+                    in: eventsToSuppress,
+                    previouslyTracked: previouslyTrackedOccurrences,
+                    at: currentDate
+                )
                 record.connectionState = .connected
                 record.lastSuccessfulRefreshAt = currentDate
                 record.lastFreshEvents = protectionEvents
                 accountRecords[accountID] = record
                 unverifiedAccountIDs.remove(accountID)
+                newlySelectedCalendarIDs.subtract(newlySelectedCalendars)
                 events += freshEvents
                 if wasUnavailable {
                     recordActivity(
@@ -1166,6 +1218,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
                 }
             } catch {
                 guard generation == refreshGeneration else { return }
+                didRefreshAllConfiguredAccounts = false
                 let wasAlreadyUnavailable = record.connectionState == .failed(error.localizedDescription) ||
                     unverifiedAccountIDs.contains(accountID)
                 record.connectionState = .failed(error.localizedDescription)
@@ -1188,6 +1241,9 @@ public final class CommitmentProtectionFlow: ObservableObject {
         }
 
         guard generation == refreshGeneration else { return }
+        if didRefreshAllConfiguredAccounts {
+            shouldSuppressUntrackedPastOccurrencesOnNextRefresh = false
+        }
         syncCoverageAndActiveAccountProjection()
         migrateLegacyActivityCalendarContext(with: events)
         reconcileCalendarSnapshot(events, at: currentDate)
@@ -1616,7 +1672,8 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
     private func recordAcceptanceMutations(in events: [CalendarEvent], at currentDate: Date) {
         let trackedEvents = events.filter { event in
-            guard !event.isAllDay,
+            guard event.eventType != .outOfOffice,
+                  !event.isAllDay,
                   event.startDate != nil,
                   let endDate = event.endDate else {
                 return false
@@ -1634,6 +1691,11 @@ public final class CommitmentProtectionFlow: ObservableObject {
         let retainedSuppressedOccurrences = suppressedPostStartAcceptanceOccurrences.intersection(trackedOccurrences)
         if retainedSuppressedOccurrences != suppressedPostStartAcceptanceOccurrences {
             suppressedPostStartAcceptanceOccurrences = retainedSuppressedOccurrences
+            didChange = true
+        }
+        let retainedUntrackedPastOccurrences = suppressedUntrackedPastOccurrences.intersection(trackedOccurrences)
+        if retainedUntrackedPastOccurrences != suppressedUntrackedPastOccurrences {
+            suppressedUntrackedPastOccurrences = retainedUntrackedPastOccurrences
             didChange = true
         }
 
@@ -1657,6 +1719,27 @@ public final class CommitmentProtectionFlow: ObservableObject {
                     didChange = true
                 }
             }
+        }
+
+        if didChange {
+            saveConfiguration()
+        }
+    }
+
+    private func suppressUntrackedPastOccurrences(
+        in events: [CalendarEvent],
+        previouslyTracked: Set<OccurrenceIdentity>,
+        at date: Date
+    ) {
+        var didChange = false
+        for event in events {
+            guard let startDate = event.startDate,
+                  startDate <= date,
+                  !previouslyTracked.contains(OccurrenceIdentity(event)),
+                  suppressedUntrackedPastOccurrences.insert(OccurrenceIdentity(event)).inserted else {
+                continue
+            }
+            didChange = true
         }
 
         if didChange {
@@ -1751,7 +1834,8 @@ public final class CommitmentProtectionFlow: ObservableObject {
     private func isProtectionAvailable(for commitment: CalendarEvent, at date: Date) -> Bool {
         !isDecisionActive(commitment) &&
             !isSnoozed(commitment, at: date) &&
-            !suppressedPostStartAcceptanceOccurrences.contains(OccurrenceIdentity(commitment))
+            !suppressedPostStartAcceptanceOccurrences.contains(OccurrenceIdentity(commitment)) &&
+            !suppressedUntrackedPastOccurrences.contains(OccurrenceIdentity(commitment))
     }
 
     private func restoreDisplayedProtection(for commitment: CalendarEvent, at date: Date) {
@@ -1985,6 +2069,9 @@ public final class CommitmentProtectionFlow: ObservableObject {
         suppressedPostStartAcceptanceOccurrences = Set(
             configuration.suppressedPostStartAcceptanceOccurrences.map(\.identity)
         )
+        suppressedUntrackedPastOccurrences = Set(
+            configuration.suppressedUntrackedPastOccurrences.map(\.identity)
+        )
     }
 
     private func saveConfiguration() {
@@ -2010,7 +2097,8 @@ public final class CommitmentProtectionFlow: ObservableObject {
             snoozedUntil: snoozedUntil,
             pauseUntil: pauseUntil,
             observedUnacceptedOccurrences: observedUnacceptedOccurrences.map(SavedOccurrence.init),
-            suppressedPostStartAcceptanceOccurrences: suppressedPostStartAcceptanceOccurrences.map(SavedOccurrence.init)
+            suppressedPostStartAcceptanceOccurrences: suppressedPostStartAcceptanceOccurrences.map(SavedOccurrence.init),
+            suppressedUntrackedPastOccurrences: suppressedUntrackedPastOccurrences.map(SavedOccurrence.init)
         )
         guard let data = try? JSONEncoder().encode(configuration) else { return }
         stateStore.set(data, forKey: Self.stateKey)
@@ -2036,6 +2124,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
         pauseUntil = nil
         observedUnacceptedOccurrences = []
         suppressedPostStartAcceptanceOccurrences = []
+        suppressedUntrackedPastOccurrences = []
         clearLocalDecision()
         clearLastActionMessage()
     }

@@ -346,6 +346,7 @@ func decodeGoogleCalendarEvents(
         let isAllDay = item.start.date != nil
         let start = item.start.dateTime.flatMap(parseGoogleDate)
         let end = item.end.dateTime.flatMap(parseGoogleDate)
+        let eventType = item.eventType.flatMap(CalendarEventType.init(rawValue:))
         let isAccepted = item.attendees?.contains {
             $0.isSelf == true && $0.responseStatus == "accepted"
         } == true || item.organizer?.isSelf == true
@@ -360,7 +361,8 @@ func decodeGoogleCalendarEvents(
             isAccepted: isAccepted,
             calendarID: calendarID,
             accountID: accountID,
-            recognizedMeetingLink: recognizedMeetingLink(for: item)
+            recognizedMeetingLink: recognizedMeetingLink(for: item),
+            eventType: eventType
         )
     }
 }
@@ -464,6 +466,7 @@ private struct GoogleEventItem: Decodable, Sendable {
     let id: String?
     let summary: String?
     let status: String?
+    let eventType: String?
     let hangoutLink: String?
     let start: GoogleEventDateTime
     let end: GoogleEventDateTime

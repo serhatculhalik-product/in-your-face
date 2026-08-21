@@ -2162,6 +2162,32 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertFalse(events[2].isAccepted)
     }
 
+    func testGoogleOutOfOfficeEventIsNotEligibleForProtection() throws {
+        let data = Data(#"""
+        {
+            "items": [
+                {
+                    "id": "out-of-office-event",
+                    "summary": "Out of office",
+                    "eventType": "outOfOffice",
+                    "start": {"dateTime": "2026-08-20T00:00:00+03:00"},
+                    "end": {"dateTime": "2026-08-21T00:00:00+03:00"},
+                    "organizer": {"self": true}
+                }
+            ]
+        }
+        """#.utf8)
+
+        let events = try decodeGoogleCalendarEvents(
+            from: data,
+            accountID: "account-1",
+            calendarID: "calendar-1"
+        )
+
+        XCTAssertEqual(events.count, 1)
+        XCTAssertFalse(events[0].isEligibleForProtection)
+    }
+
     func testPauseForOneHourSuppressesCurrentAndFutureProtectionAndShowsExpiration() async {
         let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
         let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
@@ -2940,6 +2966,89 @@ final class CommitmentProtectionFlowTests: XCTestCase {
             relaunch.strongAlertTimingText(for: commitment, at: currentDate),
             "Overdue · started 5 min ago"
         )
+    }
+
+    func testRelaunchDoesNotShowOverdueForCommitmentFirstSeenAfterAppWasClosed() async {
+        let (account, calendar) = makeTestAccountAndCalendar()
+        let start = Date(timeIntervalSince1970: 1_000_000)
+        let currentDate = start
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: start.addingTimeInterval(-10 * 60),
+            endDate: start.addingTimeInterval(50 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let connection = GoogleCalendarConnection(account: account, calendars: [calendar])
+        let connector = MutableTestGoogleCalendarConnector(connection: connection, events: [])
+        let suiteName = "CommitmentProtectionFlowTests.relaunchUntrackedOverdue.\(UUID().uuidString)"
+        let stateStore = UserDefaults(suiteName: suiteName)!
+        defer { stateStore.removePersistentDomain(forName: suiteName) }
+
+        let firstLaunch = CommitmentProtectionFlow(
+            calendarConnector: connector,
+            launchAtLogin: TestLaunchAtLoginController(),
+            stateStore: stateStore,
+            now: { currentDate }
+        )
+        await activateProtection(for: firstLaunch, calendarID: calendar.id)
+
+        connector.events = [commitment]
+        let relaunch = CommitmentProtectionFlow(
+            calendarConnector: connector,
+            launchAtLogin: TestLaunchAtLoginController(),
+            stateStore: stateStore,
+            now: { currentDate }
+        )
+        await relaunch.restoreSavedConnection()
+
+        XCTAssertFalse(relaunch.isStrongAlertPresented)
+        XCTAssertNil(relaunch.strongAlertCommitment)
+    }
+
+    func testNewlySelectedCalendarDoesNotShowPastAcceptedCommitmentAsOverdue() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let firstCalendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let newCalendar = CalendarOption(id: "calendar-2", name: "Personal", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Personal appointment",
+            startDate: now.addingTimeInterval(-10 * 60),
+            endDate: now.addingTimeInterval(50 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: newCalendar.id,
+            accountID: account.id
+        )
+        let connector = MutableTestGoogleCalendarConnector(
+            connection: GoogleCalendarConnection(
+                account: account,
+                calendars: [firstCalendar, newCalendar]
+            ),
+            events: []
+        )
+        let flow = makeMutableFlow(connector: connector, now: now)
+
+        await flow.connectGoogleAccount()
+        flow.setCalendarSelected(true, calendarID: firstCalendar.id)
+        XCTAssertTrue(flow.confirmProtection())
+        await settleScheduledRefreshes()
+        await flow.refreshCommitmentProtection(at: now)
+
+        connector.events = [commitment]
+        flow.setCalendarSelected(true, calendarID: newCalendar.id)
+        XCTAssertTrue(flow.confirmProtection())
+        await settleScheduledRefreshes()
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertFalse(flow.isStrongAlertPresented)
+        XCTAssertNil(flow.strongAlertCommitment)
     }
 
     func testRelaunchRespectsPersistedPauseUntilAnOngoingCommitmentResumes() async {
