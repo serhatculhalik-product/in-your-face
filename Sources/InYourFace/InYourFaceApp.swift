@@ -726,7 +726,12 @@ private struct StrongAlertContentView: View {
                         secondaryAction: {
                             requestStopReminders(for: commitment)
                         },
-                        secondaryActionKeyboardShortcut: "s"
+                        secondaryActionKeyboardShortcut: "s",
+                        tertiaryActionTitle: "Got it",
+                        tertiaryAction: {
+                            flow.closeStrongAlertSurface()
+                            announceActionResult(flow.lastActionMessage)
+                        }
                     )
                 }
             } else {
@@ -1555,6 +1560,8 @@ private struct StrongAlertView: View {
     var secondaryActionTitle: String? = nil
     var secondaryAction: (() -> Void)? = nil
     var secondaryActionKeyboardShortcut: KeyEquivalent = "h"
+    var tertiaryActionTitle: String? = nil
+    var tertiaryAction: (() -> Void)? = nil
 
     var body: some View {
         VStack(spacing: 20) {
@@ -1579,6 +1586,13 @@ private struct StrongAlertView: View {
                     .buttonStyle(.bordered)
                     .accessibilityLabel(secondaryActionTitle)
                     .accessibilityHint("Stop Early Reminder and Strong Alert for this commitment occurrence without changing Google Calendar.")
+            }
+            if let tertiaryActionTitle, let tertiaryAction {
+                Button(tertiaryActionTitle, action: tertiaryAction)
+                    .keyboardShortcut("g")
+                    .buttonStyle(.bordered)
+                    .accessibilityLabel(tertiaryActionTitle)
+                    .accessibilityHint("Close this Strong Alert. Protection remains active and it will repeat after the configured interval.")
             }
         }
         .padding(32)
