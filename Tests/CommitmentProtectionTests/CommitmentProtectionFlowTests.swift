@@ -3054,7 +3054,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertNil(flow.strongAlertCommitment)
     }
 
-    func testReconnectingConfirmedAccountDoesNotShowPastCommitmentAsOverdue() async {
+    func testReconnectingConnectedAccountDoesNotShowPastCommitmentAsOverdue() async {
         let (account, calendar) = makeTestAccountAndCalendar()
         let now = Date(timeIntervalSince1970: 1_000_000)
         let commitment = CalendarEvent(

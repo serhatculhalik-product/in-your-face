@@ -1030,7 +1030,9 @@ private struct EarlyReminderView: View {
                     verificationLabel: flow.isEarlyReminderUnverified ? "Unverified Reminder" : nil
                 ),
                 reopen: {
-                    openWindow(id: "early-reminder")
+                    openEarlyReminderIfNeeded(flow: flow) {
+                        openWindow(id: "early-reminder")
+                    }
                 },
                 clear: {
                     let didApply = flow.clearEarlyReminder(for: commitment)
@@ -1070,7 +1072,9 @@ private struct EarlyReminderView: View {
                         verificationLabel: flow.isEarlyReminderUnverified ? "Unverified Reminder" : nil
                     ),
                     reopen: {
-                        openWindow(id: "early-reminder")
+                        openEarlyReminderIfNeeded(flow: flow) {
+                            openWindow(id: "early-reminder")
+                        }
                     },
                     clear: {
                         let didApply = flow.clearEarlyReminder(for: commitment)
@@ -1132,8 +1136,10 @@ private struct EarlyReminderView: View {
         EarlyReminderWindowController.shared.prepareForProgrammaticClose()
         dismiss()
         EarlyReminderWindowController.shared.close()
-        if reopenIfNeeded, flow.earlyReminderCommitment != nil {
-            openWindow(id: "early-reminder")
+        if reopenIfNeeded {
+            openEarlyReminderIfNeeded(flow: flow) {
+                openWindow(id: "early-reminder")
+            }
         }
     }
 }
