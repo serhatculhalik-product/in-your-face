@@ -111,6 +111,44 @@ final class StrongAlertDisplayPlanTests: XCTestCase {
         XCTAssertFalse(lifecycle.requiresActivation)
     }
 
+    func testEarlyReminderLifecycleKeepsVisualFallbackAcrossBarrierAvailabilityChanges() {
+        var lifecycle = AlertPresentationLifecycle()
+        _ = lifecycle.present(
+            surface: .earlyReminderNormal,
+            displayCount: 1,
+            primaryIndex: 0,
+            surfaceDiscovered: true
+        )
+
+        lifecycle.interactionBarrierAvailabilityChanged(false)
+        XCTAssertTrue(lifecycle.isPresented)
+        XCTAssertFalse(lifecycle.isInteractionBarrierAvailable)
+
+        lifecycle.interactionBarrierAvailabilityChanged(true)
+        XCTAssertTrue(lifecycle.isPresented)
+        XCTAssertTrue(lifecycle.isInteractionBarrierAvailable)
+
+        // A permission or event-tap loss returns to visual-only mode without
+        // changing the surface lifecycle or the persisted blocking preference.
+        lifecycle.interactionBarrierAvailabilityChanged(false)
+        XCTAssertTrue(lifecycle.isPresented)
+        XCTAssertFalse(lifecycle.isInteractionBarrierAvailable)
+
+        lifecycle.surfaceDisappeared()
+        XCTAssertFalse(lifecycle.isPresented)
+        XCTAssertFalse(lifecycle.isInteractionBarrierAvailable)
+        XCTAssertTrue(lifecycle.requiresSurfaceRecovery)
+
+        lifecycle.surfaceReappeared(displayCount: 1, primaryIndex: 0)
+        XCTAssertTrue(lifecycle.isPresented)
+        XCTAssertFalse(lifecycle.isInteractionBarrierAvailable)
+
+        lifecycle.close()
+        XCTAssertFalse(lifecycle.isPresented)
+        XCTAssertFalse(lifecycle.isInteractionBarrierAvailable)
+        XCTAssertNil(lifecycle.surface)
+    }
+
     func testStrongAlertLifecycleRecoversAfterTopologyChangeAndCleansUp() {
         var lifecycle = AlertPresentationLifecycle()
 

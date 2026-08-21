@@ -73,6 +73,7 @@ struct AlertPresentationLifecycle: Equatable, Sendable {
         requiresSurfaceCreation = true
         requiresSurfaceRecovery = true
         requiresActivation = false
+        isInteractionBarrierAvailable = false
     }
 
     mutating func surfaceReappeared(
