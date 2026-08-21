@@ -10,6 +10,7 @@ import SwiftUI
 @MainActor
 struct InYourFaceApp: App {
     @StateObject private var flow: CommitmentProtectionFlow
+    @StateObject private var availabilityMonitor: AppAvailabilityMonitor
 
     init() {
         let protectionFlow = CommitmentProtectionFlow(
@@ -21,10 +22,13 @@ struct InYourFaceApp: App {
             ),
             launchAtLogin: MacLaunchAtLoginController()
         )
+        let monitor = AppAvailabilityMonitor(flow: protectionFlow)
         _flow = StateObject(wrappedValue: protectionFlow)
+        _availabilityMonitor = StateObject(wrappedValue: monitor)
         Task {
             await protectionFlow.restoreSavedConnection()
             protectionFlow.startMonitoring()
+            monitor.start()
         }
     }
 
@@ -63,6 +67,53 @@ struct InYourFaceApp: App {
                 .environmentObject(flow)
         }
         .menuBarExtraStyle(.window)
+    }
+}
+
+@MainActor
+private final class AppAvailabilityMonitor: ObservableObject {
+    private let flow: CommitmentProtectionFlow
+    private var workspaceObservers: [NSObjectProtocol] = []
+    private var applicationObservers: [NSObjectProtocol] = []
+    private var isStarted = false
+
+    init(flow: CommitmentProtectionFlow) {
+        self.flow = flow
+    }
+
+    func start() {
+        guard !isStarted else { return }
+        isStarted = true
+
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        workspaceObservers = [
+            NSWorkspace.didWakeNotification,
+            NSWorkspace.sessionDidBecomeActiveNotification
+        ].map { notificationName in
+            workspaceCenter.addObserver(
+                forName: notificationName,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    await self?.flow.recoverProtection()
+                }
+            }
+        }
+
+        applicationObservers = [
+            NSApplication.didBecomeActiveNotification
+        ].map { notificationName in
+            NotificationCenter.default.addObserver(
+                forName: notificationName,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    await self?.flow.recoverProtection()
+                }
+            }
+        }
     }
 }
 

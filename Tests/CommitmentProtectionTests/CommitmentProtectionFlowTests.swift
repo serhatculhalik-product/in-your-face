@@ -2186,6 +2186,105 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         )
     }
 
+    func testRelaunchRecoversAnOngoingCommitmentAsAnOverdueStrongAlert() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let start = Date(timeIntervalSince1970: 1_000_000)
+        var currentDate = start
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: start.addingTimeInterval(10 * 60),
+            endDate: start.addingTimeInterval(70 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let connection = GoogleCalendarConnection(account: account, calendars: [calendar])
+        let connector = MutableTestGoogleCalendarConnector(connection: connection, events: [commitment])
+        let suiteName = "CommitmentProtectionFlowTests.recoveryRelaunch.\(UUID().uuidString)"
+        let stateStore = UserDefaults(suiteName: suiteName)!
+        defer { stateStore.removePersistentDomain(forName: suiteName) }
+
+        let firstLaunch = CommitmentProtectionFlow(
+            calendarConnector: connector,
+            launchAtLogin: TestLaunchAtLoginController(),
+            stateStore: stateStore,
+            now: { currentDate }
+        )
+        await activateProtection(for: firstLaunch, calendarID: calendar.id)
+        await firstLaunch.recoverProtection(at: start)
+
+        currentDate = start.addingTimeInterval(15 * 60)
+        let relaunch = CommitmentProtectionFlow(
+            calendarConnector: connector,
+            launchAtLogin: TestLaunchAtLoginController(),
+            stateStore: stateStore,
+            now: { currentDate }
+        )
+        await relaunch.restoreSavedConnection()
+
+        XCTAssertTrue(relaunch.isStrongAlertPresented)
+        XCTAssertEqual(relaunch.strongAlertCommitment, commitment)
+        XCTAssertEqual(
+            relaunch.strongAlertTimingText(for: commitment, at: currentDate),
+            "Overdue · started 5 min ago"
+        )
+    }
+
+    func testRelaunchRespectsPersistedPauseUntilAnOngoingCommitmentResumes() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let start = Date(timeIntervalSince1970: 1_000_000)
+        var currentDate = start
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: start.addingTimeInterval(-5 * 60),
+            endDate: start.addingTimeInterval(3 * 60 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let connection = GoogleCalendarConnection(account: account, calendars: [calendar])
+        let connector = MutableTestGoogleCalendarConnector(connection: connection, events: [commitment])
+        let suiteName = "CommitmentProtectionFlowTests.recoveryPause.\(UUID().uuidString)"
+        let stateStore = UserDefaults(suiteName: suiteName)!
+        defer { stateStore.removePersistentDomain(forName: suiteName) }
+
+        let firstLaunch = CommitmentProtectionFlow(
+            calendarConnector: connector,
+            launchAtLogin: TestLaunchAtLoginController(),
+            stateStore: stateStore,
+            now: { currentDate }
+        )
+        await activateProtection(for: firstLaunch, calendarID: calendar.id)
+        await firstLaunch.recoverProtection(at: start)
+        XCTAssertTrue(firstLaunch.pause(for: .oneHour, at: start))
+
+        currentDate = start.addingTimeInterval(30 * 60)
+        let relaunch = CommitmentProtectionFlow(
+            calendarConnector: connector,
+            launchAtLogin: TestLaunchAtLoginController(),
+            stateStore: stateStore,
+            now: { currentDate }
+        )
+        await relaunch.restoreSavedConnection()
+        XCTAssertTrue(relaunch.isPaused(at: currentDate))
+        XCTAssertFalse(relaunch.isStrongAlertPresented)
+
+        currentDate = start.addingTimeInterval(61 * 60)
+        await relaunch.recoverProtection()
+
+        XCTAssertFalse(relaunch.isPaused(at: currentDate))
+        XCTAssertTrue(relaunch.isStrongAlertPresented)
+        XCTAssertEqual(relaunch.strongAlertCommitment, commitment)
+    }
+
     func testRecoveryAfterUnavailablePeriodShowsOnlyPassiveMissedCommitmentAfterItEnded() async {
         let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
         let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
