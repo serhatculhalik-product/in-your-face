@@ -964,7 +964,7 @@ private struct EarlyReminderView: View {
                             .foregroundStyle(.secondary)
                         ForEach(conflict.commitments) { conflictCommitment in
                             Button("Make primary: \(conflictCommitment.title)") {
-                                if flow.selectPrimary(for: conflictCommitment) {
+                                if actions.selectPrimary(conflictCommitment) {
                                     announceActionResult(flow.lastActionMessage)
                                 }
                             }
@@ -1093,7 +1093,7 @@ private struct EarlyReminderView: View {
                     closeAfterAction(reopenIfNeeded: !didApply)
                 },
                 selectPrimary: { conflictCommitment in
-                    guard flow.selectPrimary(for: conflictCommitment) else { return }
+                    guard actions.selectPrimary(conflictCommitment) else { return }
                     announceActionResult(flow.lastActionMessage)
                     closeAfterAction(reopenIfNeeded: true)
                 }
@@ -1144,7 +1144,7 @@ private struct EarlyReminderView: View {
                         closeAfterAction(reopenIfNeeded: !didApply)
                     },
                     selectPrimary: { conflictCommitment in
-                        guard flow.selectPrimary(for: conflictCommitment) else { return }
+                        guard actions.selectPrimary(conflictCommitment) else { return }
                         announceActionResult(flow.lastActionMessage)
                         closeAfterAction(reopenIfNeeded: true)
                     }

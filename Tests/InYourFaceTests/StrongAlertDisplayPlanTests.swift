@@ -117,6 +117,45 @@ final class StrongAlertDisplayPlanTests: XCTestCase {
         XCTAssertFalse(lifecycle.requiresSurfaceRecovery)
     }
 
+    func testPresentationLifecycleModelsWindowDiscoveryAndFallbackRecovery() {
+        var lifecycle = AlertPresentationLifecycle()
+
+        XCTAssertNil(
+            lifecycle.present(
+                surface: .earlyReminderNormal,
+                displayCount: 1,
+                primaryIndex: 0,
+                surfaceDiscovered: false
+            )
+        )
+        XCTAssertTrue(lifecycle.requiresSurfaceCreation)
+        XCTAssertTrue(lifecycle.requiresSurfaceRecovery)
+
+        lifecycle.surfaceReappeared(displayCount: 1, primaryIndex: 0)
+        XCTAssertTrue(lifecycle.isPresented)
+        XCTAssertEqual(lifecycle.surface, .earlyReminderNormal)
+        XCTAssertTrue(lifecycle.requiresActivation)
+
+        lifecycle.markActivated()
+        lifecycle.surfaceDisappeared()
+        XCTAssertTrue(lifecycle.requiresSurfaceRecovery)
+
+        _ = lifecycle.present(
+            surface: .earlyReminderFallback,
+            displayCount: 1,
+            primaryIndex: 0,
+            surfaceDiscovered: true
+        )
+        XCTAssertEqual(lifecycle.surface, .earlyReminderFallback)
+        XCTAssertTrue(lifecycle.isPresented)
+        XCTAssertFalse(lifecycle.requiresSurfaceCreation)
+
+        lifecycle.close()
+        XCTAssertNil(lifecycle.surface)
+        XCTAssertEqual(lifecycle.availableDisplayCount, 0)
+        XCTAssertNil(lifecycle.primaryDisplayIndex)
+    }
+
     func testPresentationLifecycleRecoversDisappearedSurfacesAndCleansUp() {
         var lifecycle = AlertPresentationLifecycle()
         _ = lifecycle.present(
@@ -208,6 +247,10 @@ final class StrongAlertDisplayPlanTests: XCTestCase {
             dismiss: {
                 normalActions.append("dismiss")
                 return true
+            },
+            selectPrimary: { _ in
+                normalActions.append("select-primary")
+                return true
             }
         )
         let fallback = EarlyReminderActionHandlers(
@@ -222,22 +265,41 @@ final class StrongAlertDisplayPlanTests: XCTestCase {
             dismiss: {
                 fallbackActions.append("dismiss")
                 return true
+            },
+            selectPrimary: { _ in
+                fallbackActions.append("select-primary")
+                return true
             }
         )
 
+        let conflictCommitment = CalendarEvent(
+            id: "conflict-event",
+            title: "Conflict commitment",
+            startDate: Date(timeIntervalSince1970: 1_000_000),
+            endDate: Date(timeIntervalSince1970: 1_000_060),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: "calendar-1",
+            accountID: "account-1"
+        )
         let normalClear = normal.clear()
         let normalSnooze = normal.snooze(5)
         let normalDismiss = normal.dismiss()
+        let normalPrimary = normal.selectPrimary(conflictCommitment)
         let fallbackClear = fallback.clear()
         let fallbackSnooze = fallback.snooze(5)
         let fallbackDismiss = fallback.dismiss()
+        let fallbackPrimary = fallback.selectPrimary(conflictCommitment)
 
         XCTAssertTrue(normalClear)
         XCTAssertTrue(normalSnooze)
         XCTAssertTrue(normalDismiss)
+        XCTAssertTrue(normalPrimary)
         XCTAssertTrue(fallbackClear)
         XCTAssertTrue(fallbackSnooze)
         XCTAssertTrue(fallbackDismiss)
+        XCTAssertTrue(fallbackPrimary)
 
         XCTAssertEqual(normalActions, fallbackActions)
     }
@@ -288,6 +350,35 @@ final class StrongAlertDisplayPlanTests: XCTestCase {
         XCTAssertNil(normalDismiss.flow.earlyReminderCommitment)
         XCTAssertNil(fallbackDismiss.flow.earlyReminderCommitment)
         XCTAssertEqual(normalDismiss.flow.lastActionMessage, fallbackDismiss.flow.lastActionMessage)
+
+        let normalConflict = await makeEarlyReminderConflictTestFlow()
+        let fallbackConflict = await makeEarlyReminderConflictTestFlow()
+        let normalConflictActions = EarlyReminderActionHandlers.normal(
+            flow: normalConflict.flow,
+            commitment: normalConflict.primary
+        )
+        let fallbackConflictActions = EarlyReminderActionHandlers.fallback(
+            flow: fallbackConflict.flow,
+            commitment: fallbackConflict.primary
+        )
+
+        XCTAssertTrue(normalConflictActions.selectPrimary(normalConflict.secondary))
+        XCTAssertTrue(fallbackConflictActions.selectPrimary(fallbackConflict.secondary))
+        XCTAssertEqual(normalConflict.flow.lastActionMessage, "Primary commitment selected for this conflict.")
+        XCTAssertEqual(fallbackConflict.flow.lastActionMessage, "Primary commitment selected for this conflict.")
+        await settleScheduledRefreshes()
+        await normalConflict.flow.refreshCommitmentProtection(at: normalConflict.now)
+        await fallbackConflict.flow.refreshCommitmentProtection(at: fallbackConflict.now)
+
+        XCTAssertEqual(
+            normalConflict.flow.upcomingConflict?.primaryCommitment,
+            normalConflict.secondary
+        )
+        XCTAssertEqual(
+            fallbackConflict.flow.upcomingConflict?.primaryCommitment,
+            fallbackConflict.secondary
+        )
+        XCTAssertEqual(normalConflict.flow.lastActionMessage, fallbackConflict.flow.lastActionMessage)
     }
 
     func testEarlyReminderInteractionBarrierRestoresItsTrackedWindowState() {
@@ -427,13 +518,64 @@ private func makeEarlyReminderTestFlow() async -> (flow: CommitmentProtectionFlo
             events: [commitment]
         ),
         launchAtLogin: StaticLaunchAtLoginController(),
+        stateStore: UserDefaults(suiteName: "InYourFaceTests.\(UUID().uuidString)")!,
         now: { now }
     )
     await flow.connectGoogleAccount()
     flow.setCalendarSelected(true, calendarID: calendar.id)
     _ = flow.confirmProtection()
+    await settleScheduledRefreshes()
     await flow.refreshCommitmentProtection(at: now)
     return (flow, commitment)
+}
+
+@MainActor
+private func makeEarlyReminderConflictTestFlow() async -> (
+    flow: CommitmentProtectionFlow,
+    primary: CalendarEvent,
+    secondary: CalendarEvent,
+    now: Date
+) {
+    let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+    let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+    let now = Date(timeIntervalSince1970: 1_000_000)
+    let primary = CalendarEvent(
+        id: "primary-event",
+        title: "Primary review",
+        startDate: now.addingTimeInterval(5 * 60),
+        endDate: now.addingTimeInterval(65 * 60),
+        timeZoneIdentifier: nil,
+        isAllDay: false,
+        isAccepted: true,
+        calendarID: calendar.id,
+        accountID: account.id
+    )
+    let secondary = CalendarEvent(
+        id: "secondary-event",
+        title: "Secondary review",
+        startDate: primary.startDate,
+        endDate: now.addingTimeInterval(75 * 60),
+        timeZoneIdentifier: nil,
+        isAllDay: false,
+        isAccepted: true,
+        calendarID: calendar.id,
+        accountID: account.id
+    )
+    let flow = CommitmentProtectionFlow(
+        calendarConnector: StaticCalendarConnector(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [primary, secondary]
+        ),
+        launchAtLogin: StaticLaunchAtLoginController(),
+        stateStore: UserDefaults(suiteName: "InYourFaceTests.\(UUID().uuidString)")!,
+        now: { now }
+    )
+    await flow.connectGoogleAccount()
+    flow.setCalendarSelected(true, calendarID: calendar.id)
+    _ = flow.confirmProtection()
+    await settleScheduledRefreshes()
+    await flow.refreshCommitmentProtection(at: now)
+    return (flow, primary, secondary, now)
 }
 
 private struct StaticCalendarConnector: GoogleCalendarConnecting {
@@ -469,5 +611,11 @@ private final class StaticLaunchAtLoginController: LaunchAtLoginControlling {
 
     func enable() throws {
         isEnabled = true
+    }
+}
+
+private func settleScheduledRefreshes() async {
+    for _ in 0..<10 {
+        await Task.yield()
     }
 }

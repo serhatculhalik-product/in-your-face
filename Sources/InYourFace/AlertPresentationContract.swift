@@ -13,15 +13,9 @@ enum AlertPresentationActionSource: Equatable, Sendable {
 
 enum AlertPresentationSharingPolicy: Equatable, Sendable {
     case visibleDuringDisplaySharing
-    case privateDuringDisplaySharing
 
     var windowSharingType: NSWindow.SharingType {
-        switch self {
-        case .visibleDuringDisplaySharing:
-            return .readOnly
-        case .privateDuringDisplaySharing:
-            return .none
-        }
+        .readOnly
     }
 
     var remainsVisibleDuringDisplaySharing: Bool {
