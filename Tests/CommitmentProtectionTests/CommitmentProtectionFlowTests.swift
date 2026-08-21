@@ -2982,9 +2982,11 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         await settleScheduledRefreshes()
         await flow.refreshCommitmentProtection(at: now)
 
+        flow.setBlockingModeEnabled(true)
         flow.setBlockingAvailability(false)
 
         XCTAssertEqual(flow.status, .active)
+        XCTAssertTrue(flow.isBlockingModeEnabled)
         XCTAssertFalse(flow.isBlockingAvailable)
         XCTAssertEqual(flow.upcomingCommitment, commitment)
         XCTAssertEqual(flow.earlyReminderCommitment, commitment)
@@ -2992,6 +2994,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         flow.setBlockingAvailability(true)
 
         XCTAssertEqual(flow.status, .active)
+        XCTAssertTrue(flow.isBlockingModeEnabled)
     }
 
     func testOlderRefreshCannotRestoreACommitmentAfterANewerRefreshClearsIt() async {

@@ -149,6 +149,76 @@ final class StrongAlertDisplayPlanTests: XCTestCase {
         XCTAssertNil(lifecycle.surface)
     }
 
+    @MainActor
+    func testEarlyReminderActionHandlersKeepNormalAndFallbackCallbacksInParity() {
+        var normalActions: [String] = []
+        var fallbackActions: [String] = []
+        let normal = EarlyReminderActionHandlers(
+            clear: {
+                normalActions.append("clear")
+                return true
+            },
+            snooze: { minutes in
+                normalActions.append("snooze:\(minutes)")
+                return true
+            },
+            dismiss: {
+                normalActions.append("dismiss")
+                return true
+            }
+        )
+        let fallback = EarlyReminderActionHandlers(
+            clear: {
+                fallbackActions.append("clear")
+                return true
+            },
+            snooze: { minutes in
+                fallbackActions.append("snooze:\(minutes)")
+                return true
+            },
+            dismiss: {
+                fallbackActions.append("dismiss")
+                return true
+            }
+        )
+
+        let normalClear = normal.clear()
+        let normalSnooze = normal.snooze(5)
+        let normalDismiss = normal.dismiss()
+        let fallbackClear = fallback.clear()
+        let fallbackSnooze = fallback.snooze(5)
+        let fallbackDismiss = fallback.dismiss()
+
+        XCTAssertTrue(normalClear)
+        XCTAssertTrue(normalSnooze)
+        XCTAssertTrue(normalDismiss)
+        XCTAssertTrue(fallbackClear)
+        XCTAssertTrue(fallbackSnooze)
+        XCTAssertTrue(fallbackDismiss)
+
+        XCTAssertEqual(normalActions, fallbackActions)
+    }
+
+    func testEarlyReminderInteractionBarrierRestoresItsTrackedWindowState() {
+        var lifecycle = EarlyReminderInteractionBarrierLifecycle()
+
+        XCTAssertFalse(lifecycle.isActive)
+        XCTAssertFalse(lifecycle.restoresWindowInteraction)
+
+        lifecycle.activated(restoresWindowInteraction: true)
+        XCTAssertTrue(lifecycle.isActive)
+        XCTAssertTrue(lifecycle.restoresWindowInteraction)
+
+        lifecycle.deactivated()
+        XCTAssertFalse(lifecycle.isActive)
+        XCTAssertFalse(lifecycle.restoresWindowInteraction)
+
+        lifecycle.activated(restoresWindowInteraction: false)
+        lifecycle.deactivated()
+        XCTAssertFalse(lifecycle.isActive)
+        XCTAssertFalse(lifecycle.restoresWindowInteraction)
+    }
+
     func testStrongAlertLifecycleRecoversAfterTopologyChangeAndCleansUp() {
         var lifecycle = AlertPresentationLifecycle()
 

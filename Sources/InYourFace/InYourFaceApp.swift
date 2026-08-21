@@ -946,6 +946,7 @@ private struct EarlyReminderView: View {
     var body: some View {
         VStack(spacing: 18) {
             if let commitment = flow.earlyReminderCommitment {
+                let actions = EarlyReminderActionHandlers(flow: flow, commitment: commitment)
                 Label("Early Reminder", systemImage: "bell.fill")
                     .font(.headline)
                 if flow.isEarlyReminderUnverified {
@@ -997,7 +998,7 @@ private struct EarlyReminderView: View {
                 Menu("Snooze") {
                     ForEach(flow.snoozeOptionsMinutes, id: \.self) { minutes in
                         Button("\(minutes) minutes") {
-                            let didApply = flow.snoozeEarlyReminder(minutes: minutes, for: commitment)
+                            let didApply = actions.snooze(minutes)
                             if didApply {
                                 announceActionResult(flow.lastActionMessage)
                             }
@@ -1010,7 +1011,7 @@ private struct EarlyReminderView: View {
 
                 HStack(spacing: 10) {
                     Button("Got it") {
-                        let didApply = flow.clearEarlyReminder(for: commitment)
+                        let didApply = actions.clear()
                         if didApply {
                             announceActionResult(flow.lastActionMessage)
                         }
@@ -1053,6 +1054,7 @@ private struct EarlyReminderView: View {
                 EarlyReminderWindowController.shared.close()
                 return
             }
+            let actions = EarlyReminderActionHandlers(flow: flow, commitment: commitment)
             EarlyReminderWindowController.shared.present(
                 content: EarlyReminderFallbackContent(
                     title: commitment.title,
@@ -1066,7 +1068,7 @@ private struct EarlyReminderView: View {
                     }
                 },
                 clear: {
-                    let didApply = flow.clearEarlyReminder(for: commitment)
+                    let didApply = actions.clear()
                     if didApply {
                         announceActionResult(flow.lastActionMessage)
                     }
@@ -1074,14 +1076,14 @@ private struct EarlyReminderView: View {
                 },
                 canSnooze: flow.canSnoozeEarlyReminder,
                 snooze: { minutes in
-                    let didApply = flow.snoozeEarlyReminder(minutes: minutes, for: commitment)
+                    let didApply = actions.snooze(minutes)
                     if didApply {
                         announceActionResult(flow.lastActionMessage)
                     }
                     closeAfterAction(reopenIfNeeded: !didApply)
                 },
                 dismiss: {
-                    let didApply = flow.dismissCommitment(for: commitment)
+                    let didApply = actions.dismiss()
                     if didApply {
                         announceActionResult(flow.lastActionMessage)
                     }
@@ -1095,6 +1097,7 @@ private struct EarlyReminderView: View {
                 EarlyReminderWindowController.shared.close()
             } else {
                 guard let commitment = flow.earlyReminderCommitment else { return }
+                let actions = EarlyReminderActionHandlers(flow: flow, commitment: commitment)
                 EarlyReminderWindowController.shared.surfaceDidDisappear(
                     content: EarlyReminderFallbackContent(
                         title: commitment.title,
@@ -1108,7 +1111,7 @@ private struct EarlyReminderView: View {
                         }
                     },
                     clear: {
-                        let didApply = flow.clearEarlyReminder(for: commitment)
+                        let didApply = actions.clear()
                         if didApply {
                             announceActionResult(flow.lastActionMessage)
                         }
@@ -1116,14 +1119,14 @@ private struct EarlyReminderView: View {
                     },
                     canSnooze: flow.canSnoozeEarlyReminder,
                     snooze: { minutes in
-                        let didApply = flow.snoozeEarlyReminder(minutes: minutes, for: commitment)
+                        let didApply = actions.snooze(minutes)
                         if didApply {
                             announceActionResult(flow.lastActionMessage)
                         }
                         closeAfterAction(reopenIfNeeded: !didApply)
                     },
                     dismiss: {
-                        let didApply = flow.dismissCommitment(for: commitment)
+                        let didApply = actions.dismiss()
                         if didApply {
                             announceActionResult(flow.lastActionMessage)
                         }
@@ -1147,8 +1150,12 @@ private struct EarlyReminderView: View {
             isPresented: $isStopRemindersConfirmationPresented,
             onCancel: { pendingStopRemindersCommitment = nil },
             onConfirm: {
-                guard let pendingStopRemindersCommitment,
-                      flow.dismissCommitment(for: pendingStopRemindersCommitment) else {
+                guard let pendingStopRemindersCommitment else {
+                    self.pendingStopRemindersCommitment = nil
+                    return
+                }
+                let actions = EarlyReminderActionHandlers(flow: flow, commitment: pendingStopRemindersCommitment)
+                guard actions.dismiss() else {
                     self.pendingStopRemindersCommitment = nil
                     return
                 }
@@ -1745,7 +1752,8 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
     private var screenObserver: NSObjectProtocol?
     private var allowsWindowClose = false
     private var isPresented = false
-    private var isInteractionBarrierActive = false
+    private var interactionBarrierLifecycle = EarlyReminderInteractionBarrierLifecycle()
+    private var isInteractionBarrierActive: Bool { interactionBarrierLifecycle.isActive }
     private var blockingMode = EarlyReminderBlockingMode()
     private var lifecycle = AlertPresentationLifecycle()
     private let normalPresentationContract = AlertPresentationContract(variant: .earlyReminderNormal)
@@ -2205,7 +2213,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
                 }
             }
         }
-        isInteractionBarrierActive = true
+        interactionBarrierLifecycle.activated(restoresWindowInteraction: !blockedWindows.isEmpty)
         setInteractionBarrierAvailability(true)
         refreshFallbackPanelContent()
         return true
@@ -2260,7 +2268,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
             entry.window.ignoresMouseEvents = entry.wasIgnoringMouseEvents
         }
         blockedWindows.removeAll()
-        isInteractionBarrierActive = false
+        interactionBarrierLifecycle.deactivated()
         setInteractionBarrierAvailability(false)
     }
 
