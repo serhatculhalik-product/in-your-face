@@ -127,14 +127,14 @@ private struct SetupView: View {
         .onChange(of: flow.earlyReminderCommitment) { _, commitment in
             if commitment != nil {
                 openWindow(id: "early-reminder")
-            } else if flow.lastActionMessage == nil {
+            } else {
                 EarlyReminderWindowController.shared.close()
             }
         }
         .onChange(of: flow.isStrongAlertPresented) { _, isPresented in
             if isPresented {
                 openWindow(id: "strong-alert")
-            } else if flow.lastActionMessage == nil {
+            } else {
                 StrongAlertWindowController.shared.close()
             }
         }
@@ -438,9 +438,6 @@ private struct EarlyReminderView: View {
                     .font(.title3.weight(.semibold))
                 Text(flow.countdownText(for: commitment, at: Date()))
                     .foregroundStyle(.secondary)
-                if let actionResultMessage = flow.actionResultMessage(for: commitment) {
-                    ActionResultView(message: actionResultMessage)
-                }
                 if windowController.isGlobalInteractionBarrierAvailable {
                     Text("Protection stays active if you clear this reminder.")
                         .multilineTextAlignment(.center)
@@ -504,18 +501,14 @@ private struct EarlyReminderView: View {
                 .buttonStyle(.borderedProminent)
                 .accessibilityHint("Clear this surface while leaving protection active.")
             } else {
-                if let actionResultMessage = flow.lastActionMessage {
-                    ActionResultView(message: actionResultMessage)
-                } else {
-                    Text("No upcoming commitment needs an early reminder.")
-                        .foregroundStyle(.secondary)
-                }
+                Text("No upcoming commitment needs an early reminder.")
+                    .foregroundStyle(.secondary)
                 Button("Close") {
                     EarlyReminderWindowController.shared.close()
                 }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
-                .accessibilityLabel("Close action result")
+                .accessibilityLabel("Close")
             }
         }
         .padding(28)
@@ -603,11 +596,7 @@ private struct EarlyReminderView: View {
         .onChange(of: flow.earlyReminderCommitment) { _, commitment in
             if commitment == nil {
                 flow.setBlockingAvailability(true)
-                if flow.lastActionMessage == nil {
-                    EarlyReminderWindowController.shared.close()
-                } else {
-                    EarlyReminderWindowController.shared.stop()
-                }
+                EarlyReminderWindowController.shared.close()
             }
         }
         .onChange(of: windowController.isGlobalInteractionBarrierAvailable) { _, isAvailable in
@@ -634,7 +623,7 @@ private struct StrongAlertWindowView: View {
             .onChange(of: flow.isStrongAlertPresented) { _, isPresented in
                 if isPresented {
                     presentStrongAlertSurface()
-                } else if flow.lastActionMessage == nil {
+                } else {
                     StrongAlertWindowController.shared.close()
                 }
             }
@@ -662,7 +651,6 @@ private struct StrongAlertContentView: View {
                         title: commitment.title,
                         timing: flow.strongAlertTimingText(for: commitment, at: context.date),
                         detail: flow.strongAlertContextText(for: commitment),
-                        actionResultMessage: flow.actionResultMessage(for: commitment),
                         primaryActionTitle: commitment.recognizedMeetingLink == nil ? "Handled" : "Join",
                         primaryAction: {
                             if commitment.recognizedMeetingLink == nil {
@@ -690,23 +678,12 @@ private struct StrongAlertContentView: View {
                         }
                     )
                 }
-            } else if let actionResultMessage = flow.lastActionMessage {
+            } else {
                 VStack(spacing: 20) {
-                    Label("Action complete", systemImage: "checkmark.circle.fill")
-                        .font(.headline)
-                    ActionResultView(message: actionResultMessage)
-                    Button("Close") {
-                        StrongAlertWindowController.shared.close()
-                    }
-                    .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
-                    .accessibilityLabel("Close action result")
+                    Text("No commitment needs attention.")
+                        .foregroundStyle(.secondary)
                 }
                 .padding(32)
-            } else {
-                Text("No commitment needs attention.")
-                    .foregroundStyle(.secondary)
-                    .padding(32)
             }
         }
         .frame(minWidth: 460, minHeight: 330)
@@ -1505,7 +1482,6 @@ private struct StrongAlertView: View {
     let title: String
     let timing: String
     let detail: String
-    var actionResultMessage: String? = nil
     let primaryActionTitle: String
     let primaryAction: () -> Void
     var secondaryActionTitle: String? = nil
@@ -1526,9 +1502,6 @@ private struct StrongAlertView: View {
             Text(detail)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
-            if let actionResultMessage {
-                ActionResultView(message: actionResultMessage)
-            }
             Button(primaryActionTitle, action: primaryAction)
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
@@ -1557,24 +1530,6 @@ private struct StrongAlertView: View {
     }
 }
 
-private struct ActionResultView: View {
-    let message: String
-
-    var body: some View {
-        VStack(spacing: 4) {
-            Label("Action result", systemImage: "checkmark.circle.fill")
-                .font(.callout.weight(.semibold))
-            Text(message)
-                .font(.callout)
-                .multilineTextAlignment(.center)
-        }
-        .foregroundStyle(.secondary)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Action result")
-        .accessibilityValue(message)
-    }
-}
-
 @MainActor
 private func announceActionResult(_ message: String?) {
     guard let message else { return }
@@ -1588,21 +1543,6 @@ private func announceActionResult(_ message: String?) {
 private struct MenuBarContent: View {
     @EnvironmentObject private var flow: CommitmentProtectionFlow
     @Environment(\.openWindow) private var openWindow
-
-    private var displayedActionResultMessage: String? {
-        if let decisionCommitment = flow.decisionCommitment,
-           let message = flow.actionResultMessage(for: decisionCommitment) {
-            return message
-        }
-        if let strongAlertCommitment = flow.strongAlertCommitment,
-           let message = flow.actionResultMessage(for: strongAlertCommitment) {
-            return message
-        }
-        if let upcomingCommitment = flow.upcomingCommitment {
-            return flow.actionResultMessage(for: upcomingCommitment)
-        }
-        return nil
-    }
 
     var body: some View {
         TimelineView(.periodic(from: Date(), by: 1)) { context in
@@ -1657,11 +1597,6 @@ private struct MenuBarContent: View {
                     }
                     .accessibilityElement(children: .contain)
 
-                    Divider()
-                }
-
-                if let actionResultMessage = displayedActionResultMessage {
-                    ActionResultView(message: actionResultMessage)
                     Divider()
                 }
 
@@ -1723,14 +1658,14 @@ private struct MenuBarLabel: View {
         .onChange(of: flow.earlyReminderCommitment) { _, commitment in
             if commitment != nil {
                 openWindow(id: "early-reminder")
-            } else if flow.lastActionMessage == nil {
+            } else {
                 EarlyReminderWindowController.shared.close()
             }
         }
         .onChange(of: flow.isStrongAlertPresented) { _, isPresented in
             if isPresented {
                 openWindow(id: "strong-alert")
-            } else if flow.lastActionMessage == nil {
+            } else {
                 StrongAlertWindowController.shared.close()
             }
         }
