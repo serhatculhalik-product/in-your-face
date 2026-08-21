@@ -2775,6 +2775,51 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertNil(flow.earlyReminderCommitment)
     }
 
+    func testUnavailableRecoveryPreservesKnownOverdueAlertAndRecordsOneCoverageTransition() async {
+        let (account, calendar) = makeTestAccountAndCalendar()
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "known-ongoing-event",
+            title: "Known customer review",
+            startDate: now.addingTimeInterval(-10 * 60),
+            endDate: now.addingTimeInterval(50 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let connector = MutableTestGoogleCalendarConnector(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [commitment]
+        )
+        let flow = makeMutableFlow(connector: connector, now: now)
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+        connector.loadEventsError = TestCalendarLoadError.unavailable
+        await flow.recoverProtection(at: now)
+
+        XCTAssertEqual(flow.strongAlertCommitment, commitment)
+        XCTAssertTrue(flow.isStrongAlertPresented)
+        XCTAssertTrue(flow.isStrongAlertUnverified)
+        XCTAssertEqual(
+            flow.activityLog.filter { $0.kind == .coverageUnavailable }.count,
+            1
+        )
+
+        connector.loadEventsError = nil
+        await flow.recoverProtection(at: now)
+
+        XCTAssertEqual(flow.strongAlertCommitment, commitment)
+        XCTAssertTrue(flow.isStrongAlertPresented)
+        XCTAssertFalse(flow.isStrongAlertUnverified)
+        XCTAssertEqual(
+            flow.activityLog.filter { $0.kind == .coverageRestored }.count,
+            1
+        )
+    }
+
     func testMissingBlockingPermissionKeepsVisualEarlyReminderActive() async {
         let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
         let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
