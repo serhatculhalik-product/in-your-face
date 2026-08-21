@@ -65,6 +65,7 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         window.orderFrontRegardless()
+        lifecycle.markActivated()
     }
 
     func close() {
@@ -222,10 +223,12 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
             displayCount: screens.count,
             primaryIndex: primaryScreenIndex(in: screens, matching: primaryWindow?.screen ?? NSScreen.main)
         ) else {
+            isPresented = false
             closeAdditionalWindows()
             return
         }
         guard lifecycle.isPresented else {
+            isPresented = false
             closeAdditionalWindows()
             return
         }

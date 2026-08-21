@@ -1826,6 +1826,8 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
             surfaceDiscovered: true
         )
         guard displayPlan != nil, lifecycle.isPresented else {
+            stopBarrierRetryMonitoring()
+            deactivateInteractionBarrier()
             isPresented = false
             startScreenObservation()
             return
@@ -1844,6 +1846,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         if !barrierAvailable {
             window.orderFrontRegardless()
         }
+        lifecycle.markActivated()
     }
 
     func stop() {
@@ -1979,8 +1982,17 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
             displayCount: NSScreen.screens.count,
             primaryIndex: NSScreen.screens.firstIndex(where: { $0 === window?.screen })
         )
-        guard lifecycle.displayPlan != nil else { return }
+        guard lifecycle.displayPlan != nil else {
+            stopBarrierRetryMonitoring()
+            deactivateInteractionBarrier()
+            isPresented = false
+            return
+        }
         isPresented = lifecycle.isPresented
+        if blockingMode.shouldAttemptBlocking {
+            startBarrierRetryMonitoring()
+            _ = attemptBlockingMode()
+        }
         bringReminderToFront()
     }
 
@@ -2028,6 +2040,8 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
             surfaceDiscovered: true
         )
         guard displayPlan != nil, lifecycle.isPresented else {
+            stopBarrierRetryMonitoring()
+            deactivateInteractionBarrier()
             isPresented = false
             startScreenObservation()
             return
@@ -2046,6 +2060,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         if !barrierAvailable {
             panel.orderFrontRegardless()
         }
+        lifecycle.markActivated()
     }
 
     func openAccessibilitySettings() {
