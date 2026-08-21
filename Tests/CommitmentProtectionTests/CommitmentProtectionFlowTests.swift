@@ -2088,6 +2088,146 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertEqual(flow.missedCommitment, commitment)
     }
 
+    func testUnseenEndedCommitmentBecomesMissedAfterProtectionStarts() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(-20 * 60),
+            endDate: now.addingTimeInterval(-5 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [commitment],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+
+        XCTAssertEqual(flow.missedCommitment, commitment)
+    }
+
+    func testRescheduledCommitmentDoesNotBecomeMissedFromAnOldSnapshot() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let originalCommitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(-20 * 60),
+            endDate: now.addingTimeInterval(5 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let rescheduledCommitment = CalendarEvent(
+            id: originalCommitment.id,
+            title: originalCommitment.title,
+            startDate: now.addingTimeInterval(30 * 60),
+            endDate: now.addingTimeInterval(90 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let connector = MutableTestGoogleCalendarConnector(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [originalCommitment]
+        )
+        let flow = makeMutableFlow(connector: connector, now: now)
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        connector.events = [rescheduledCommitment]
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(10 * 60))
+
+        XCTAssertNil(flow.missedCommitment)
+        XCTAssertEqual(flow.upcomingCommitment, rescheduledCommitment)
+    }
+
+    func testRecoveryAfterUnavailablePeriodShowsOverdueStrongAlertForAnOngoingCommitment() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let start = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: start.addingTimeInterval(-10 * 60),
+            endDate: start.addingTimeInterval(50 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [commitment],
+            now: start
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.recoverProtection(at: start)
+
+        XCTAssertTrue(flow.isStrongAlertPresented)
+        XCTAssertEqual(flow.strongAlertCommitment, commitment)
+        XCTAssertEqual(
+            flow.strongAlertTimingText(for: commitment, at: start),
+            "Overdue · started 10 min ago"
+        )
+    }
+
+    func testMultipleCommitmentsEndingTogetherRemainIndividuallyAcknowledgeable() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let firstCommitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(-20 * 60),
+            endDate: now.addingTimeInterval(-5 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let secondCommitment = CalendarEvent(
+            id: "event-2",
+            title: "Design review",
+            startDate: now.addingTimeInterval(-30 * 60),
+            endDate: now.addingTimeInterval(-10 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [firstCommitment, secondCommitment],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+
+        XCTAssertEqual(
+            Set(flow.missedCommitments.map(\.id)),
+            Set([firstCommitment.id, secondCommitment.id])
+        )
+        XCTAssertTrue(flow.acknowledgeMissedCommitment(for: firstCommitment))
+        XCTAssertEqual(flow.missedCommitments, [secondCommitment])
+    }
+
     func testPauseExpiryAfterCommitmentEndsShowsPassiveMissedStatus() async {
         let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
         let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)

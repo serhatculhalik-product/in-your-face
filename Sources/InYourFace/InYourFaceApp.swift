@@ -482,25 +482,30 @@ private struct MissedCommitmentCard: View {
     @EnvironmentObject private var flow: CommitmentProtectionFlow
 
     var body: some View {
-        if let commitment = flow.missedCommitment {
+        if !flow.missedCommitments.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
                 Label("Missed Commitment", systemImage: "calendar.badge.exclamationmark")
                     .font(.headline)
-                Text(commitment.title)
-                    .font(.title3.weight(.semibold))
-                Text(flow.localStartTimeText(for: commitment))
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
                 Text("This passive status does not change Google Calendar.")
                     .foregroundStyle(.secondary)
-                Button("Acknowledge") {
-                    if flow.acknowledgeMissedCommitment() {
-                        announceActionResult(flow.lastActionMessage)
+
+                ForEach(Array(flow.missedCommitments.enumerated()), id: \.offset) { _, commitment in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(commitment.title)
+                            .font(.title3.weight(.semibold))
+                        Text(flow.localStartTimeText(for: commitment))
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        Button("Acknowledge") {
+                            if flow.acknowledgeMissedCommitment(for: commitment) {
+                                announceActionResult(flow.lastActionMessage)
+                            }
+                        }
+                        .keyboardShortcut("a")
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityHint("Clear the missed status without changing the Google Calendar event.")
                     }
                 }
-                .keyboardShortcut("a")
-                .buttonStyle(.borderedProminent)
-                .accessibilityHint("Clear the missed status without changing the Google Calendar event.")
             }
             .padding(20)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -929,6 +934,11 @@ private struct StrongAlertContentView: View {
                         tertiaryAction: {
                             flow.closeStrongAlertSurface()
                             announceActionResult(flow.lastActionMessage)
+                        },
+                        pauseAction: { duration in
+                            if flow.pause(for: duration) {
+                                announceActionResult(flow.lastActionMessage)
+                            }
                         }
                     )
                 }
@@ -1765,6 +1775,9 @@ private struct StrongAlertView: View {
     var secondaryActionKeyboardShortcut: KeyEquivalent = "h"
     var tertiaryActionTitle: String? = nil
     var tertiaryAction: (() -> Void)? = nil
+    var pauseAction: ((PauseDuration) -> Void)? = nil
+    @State private var customPauseExpiration = Date().addingTimeInterval(60 * 60)
+    @State private var isCustomPausePresented = false
 
     var body: some View {
         VStack(spacing: 20) {
@@ -1797,10 +1810,43 @@ private struct StrongAlertView: View {
                     .accessibilityLabel(tertiaryActionTitle)
                     .accessibilityHint("Close this Strong Alert. Protection remains active and it will repeat after the configured interval.")
             }
+            if let pauseAction {
+                Menu("Pause protection") {
+                    Button("Pause for 1 hour") {
+                        pauseAction(.oneHour)
+                    }
+                    Button("Pause until end of day") {
+                        pauseAction(.endOfDay)
+                    }
+                    Button("Pause until selected time") {
+                        isCustomPausePresented = true
+                    }
+                }
+                .keyboardShortcut("p")
+                .accessibilityHint("Suppress Early Reminder and Strong Alert until the selected expiration.")
+            }
         }
         .padding(32)
         .frame(minWidth: 460)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+        .sheet(isPresented: $isCustomPausePresented) {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Pause protection")
+                    .font(.headline)
+                DatePicker(
+                    "Expiration",
+                    selection: $customPauseExpiration,
+                    in: Date()...
+                )
+                Button("Pause until selected time") {
+                    pauseAction?(.custom(customPauseExpiration))
+                    isCustomPausePresented = false
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding(24)
+            .frame(minWidth: 320)
+        }
     }
 }
 
@@ -1883,23 +1929,27 @@ private struct MenuBarContent: View {
                     Divider()
                 }
 
-                if let missedCommitment = flow.missedCommitment {
+                if !flow.missedCommitments.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
                         Label("Missed Commitment", systemImage: "calendar.badge.exclamationmark")
                             .font(.headline)
-                        Text(missedCommitment.title)
-                            .lineLimit(2)
-                        Text(flow.localStartTimeText(for: missedCommitment))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Button("Acknowledge") {
-                            if flow.acknowledgeMissedCommitment() {
-                                announceActionResult(flow.lastActionMessage)
+                        ForEach(Array(flow.missedCommitments.enumerated()), id: \.offset) { _, commitment in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(commitment.title)
+                                    .lineLimit(2)
+                                Text(flow.localStartTimeText(for: commitment))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Button("Acknowledge") {
+                                    if flow.acknowledgeMissedCommitment(for: commitment) {
+                                        announceActionResult(flow.lastActionMessage)
+                                    }
+                                }
+                                .keyboardShortcut("a")
+                                .buttonStyle(.borderedProminent)
+                                .accessibilityHint("Clear the missed status without changing the Google Calendar event.")
                             }
                         }
-                        .keyboardShortcut("a")
-                        .buttonStyle(.borderedProminent)
-                        .accessibilityHint("Clear the missed status without changing the Google Calendar event.")
                     }
                     .accessibilityElement(children: .contain)
 
