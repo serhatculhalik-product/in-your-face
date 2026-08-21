@@ -744,6 +744,7 @@ private struct EarlyReminderView: View {
             windowController.setBlockingModeEnabled(flow.isBlockingModeEnabled)
             guard let commitment = flow.earlyReminderCommitment else {
                 flow.setBlockingAvailability(true)
+                EarlyReminderWindowController.shared.prepareForProgrammaticClose()
                 dismiss()
                 EarlyReminderWindowController.shared.close()
                 return
@@ -824,6 +825,7 @@ private struct EarlyReminderView: View {
         .onChange(of: flow.earlyReminderCommitment) { _, commitment in
             if commitment == nil {
                 flow.setBlockingAvailability(true)
+                EarlyReminderWindowController.shared.prepareForProgrammaticClose()
                 dismiss()
                 EarlyReminderWindowController.shared.close()
             }
@@ -852,6 +854,7 @@ private struct EarlyReminderView: View {
     }
 
     private func closeAfterAction(reopenIfNeeded: Bool = false) {
+        EarlyReminderWindowController.shared.prepareForProgrammaticClose()
         dismiss()
         EarlyReminderWindowController.shared.close()
         if reopenIfNeeded, flow.earlyReminderCommitment != nil {
@@ -1293,6 +1296,11 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         self.dismissCommitment = nil
         self.canSnoozeEarlyReminder = false
         allowsWindowClose = false
+    }
+
+    func prepareForProgrammaticClose() {
+        allowsWindowClose = true
+        window?.delegate = nil
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
