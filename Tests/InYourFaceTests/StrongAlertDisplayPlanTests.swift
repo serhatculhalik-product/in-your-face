@@ -75,6 +75,46 @@ final class StrongAlertDisplayPlanTests: XCTestCase {
         XCTAssertEqual(lifecycle.displayPlan?.allDisplayIndices, [0, 1, 2])
     }
 
+    func testPresentationLifecycleKeepsRecoveryUntilAChangedSurfaceIsRecreated() {
+        var lifecycle = AlertPresentationLifecycle()
+
+        _ = lifecycle.present(
+            surface: .strongAlert,
+            displayCount: 2,
+            primaryIndex: 1,
+            surfaceDiscovered: true
+        )
+        lifecycle.markActivated()
+
+        lifecycle.surfaceDisappeared()
+        lifecycle.applicationActivationChanged()
+
+        XCTAssertFalse(lifecycle.isPresented)
+        XCTAssertTrue(lifecycle.requiresSurfaceCreation)
+        XCTAssertTrue(lifecycle.requiresSurfaceRecovery)
+        XCTAssertFalse(lifecycle.requiresActivation)
+
+        let topologyPlan = lifecycle.displayTopologyChanged(displayCount: 3, primaryIndex: 2)
+        XCTAssertEqual(Set(topologyPlan?.allDisplayIndices ?? []), Set(0..<3))
+        XCTAssertFalse(lifecycle.isPresented)
+        XCTAssertTrue(lifecycle.requiresSurfaceCreation)
+        XCTAssertTrue(lifecycle.requiresSurfaceRecovery)
+
+        lifecycle.surfaceReappeared(displayCount: 3, primaryIndex: 2)
+
+        XCTAssertTrue(lifecycle.isPresented)
+        XCTAssertFalse(lifecycle.requiresSurfaceCreation)
+        XCTAssertFalse(lifecycle.requiresSurfaceRecovery)
+        XCTAssertTrue(lifecycle.requiresActivation)
+
+        lifecycle.markActivated()
+        lifecycle.close()
+
+        XCTAssertFalse(lifecycle.isPresented)
+        XCTAssertNil(lifecycle.surface)
+        XCTAssertFalse(lifecycle.requiresSurfaceRecovery)
+    }
+
     func testPresentationLifecycleRecoversDisappearedSurfacesAndCleansUp() {
         var lifecycle = AlertPresentationLifecycle()
         _ = lifecycle.present(
