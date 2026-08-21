@@ -2,6 +2,89 @@ import XCTest
 @testable import InYourFace
 
 final class StrongAlertDisplayPlanTests: XCTestCase {
+    func testPresentationLifecycleDoesNotPresentWithoutAUsableSurface() {
+        var lifecycle = AlertPresentationLifecycle()
+
+        XCTAssertNil(
+            lifecycle.present(
+                surface: .strongAlert,
+                displayCount: 0,
+                primaryIndex: nil,
+                surfaceDiscovered: true
+            )
+        )
+        XCTAssertFalse(lifecycle.isPresented)
+
+        XCTAssertNil(
+            lifecycle.present(
+                surface: .strongAlert,
+                displayCount: 1,
+                primaryIndex: 0,
+                surfaceDiscovered: false
+            )
+        )
+        XCTAssertTrue(lifecycle.requiresSurfaceCreation)
+        XCTAssertTrue(lifecycle.requiresSurfaceRecovery)
+    }
+
+    func testPresentationLifecycleTracksCoverageActivationAndTopologyChanges() {
+        var lifecycle = AlertPresentationLifecycle()
+
+        let initialPlan = lifecycle.present(
+            surface: .strongAlert,
+            displayCount: 2,
+            primaryIndex: 1,
+            surfaceDiscovered: true
+        )
+        XCTAssertEqual(initialPlan, StrongAlertDisplayPlan(displayCount: 2, primaryIndex: 1))
+        XCTAssertEqual(lifecycle.availableDisplayCount, 2)
+        XCTAssertEqual(lifecycle.primaryDisplayIndex, 1)
+        XCTAssertTrue(lifecycle.isPresented)
+        XCTAssertTrue(lifecycle.requiresActivation)
+
+        lifecycle.markActivated()
+        XCTAssertFalse(lifecycle.requiresActivation)
+
+        lifecycle.applicationBecameActive()
+        XCTAssertTrue(lifecycle.requiresActivation)
+
+        let changedPlan = lifecycle.displayTopologyChanged(displayCount: 3, primaryIndex: nil)
+        XCTAssertEqual(changedPlan, StrongAlertDisplayPlan(displayCount: 3, primaryIndex: nil))
+        XCTAssertEqual(lifecycle.displayPlan?.allDisplayIndices, [0, 1, 2])
+    }
+
+    func testPresentationLifecycleRecoversDisappearedSurfacesAndCleansUp() {
+        var lifecycle = AlertPresentationLifecycle()
+        _ = lifecycle.present(
+            surface: .earlyReminderFallback,
+            displayCount: 1,
+            primaryIndex: 0,
+            surfaceDiscovered: true
+        )
+
+        lifecycle.surfaceDisappeared()
+
+        XCTAssertFalse(lifecycle.isPresented)
+        XCTAssertTrue(lifecycle.requiresSurfaceCreation)
+        XCTAssertTrue(lifecycle.requiresSurfaceRecovery)
+
+        lifecycle.surfaceReappeared(displayCount: 1, primaryIndex: 0)
+
+        XCTAssertTrue(lifecycle.isPresented)
+        XCTAssertFalse(lifecycle.requiresSurfaceCreation)
+        XCTAssertFalse(lifecycle.requiresSurfaceRecovery)
+        XCTAssertTrue(lifecycle.requiresActivation)
+
+        lifecycle.close()
+
+        XCTAssertNil(lifecycle.surface)
+        XCTAssertFalse(lifecycle.isPresented)
+        XCTAssertNil(lifecycle.displayPlan)
+        XCTAssertFalse(lifecycle.requiresSurfaceCreation)
+        XCTAssertFalse(lifecycle.requiresSurfaceRecovery)
+        XCTAssertFalse(lifecycle.requiresActivation)
+    }
+
     func testAlertPresentationVariantsShareFlowActionsAndDisplaySharingVisibility() {
         let normal = AlertPresentationContract(variant: .earlyReminderNormal)
         let fallback = AlertPresentationContract(variant: .earlyReminderFallback)

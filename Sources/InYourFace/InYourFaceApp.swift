@@ -1746,6 +1746,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
     private var isPresented = false
     private var isInteractionBarrierActive = false
     private var blockingMode = EarlyReminderBlockingMode()
+    private var lifecycle = AlertPresentationLifecycle()
     private let normalPresentationContract = AlertPresentationContract(variant: .earlyReminderNormal)
     private let fallbackPresentationContract = AlertPresentationContract(variant: .earlyReminderFallback)
     @Published private(set) var isGlobalInteractionBarrierAvailable = false
@@ -1786,6 +1787,12 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         guard let window = NSApp.windows.first(where: {
             $0 !== fallbackPanel && $0.title == "Early Reminder"
         }) else {
+            _ = lifecycle.present(
+                surface: .earlyReminderNormal,
+                displayCount: NSScreen.screens.count,
+                primaryIndex: nil,
+                surfaceDiscovered: false
+            )
             DispatchQueue.main.async { [weak self] in
                 self?.present(
                     content: content,
@@ -1811,7 +1818,13 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         window.standardWindowButton(.miniaturizeButton)?.isEnabled = false
         window.standardWindowButton(.zoomButton)?.isEnabled = false
         window.isMovable = false
-        isPresented = true
+        _ = lifecycle.present(
+            surface: .earlyReminderNormal,
+            displayCount: NSScreen.screens.count,
+            primaryIndex: NSScreen.screens.firstIndex(where: { $0 === window.screen }),
+            surfaceDiscovered: true
+        )
+        isPresented = lifecycle.isPresented
         let barrierAvailable: Bool
         if blockingMode.shouldAttemptBlocking {
             startBarrierRetryMonitoring()
@@ -1830,6 +1843,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         stopBarrierRetryMonitoring()
         stopSurfaceRecoveryMonitoring()
         guard isPresented else { return }
+        lifecycle.surfaceDisappeared()
         deactivateInteractionBarrier()
         isPresented = false
         window?.standardWindowButton(.closeButton)?.isEnabled = true
@@ -1848,6 +1862,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         self.snoozeEarlyReminder = nil
         self.dismissCommitment = nil
         self.canSnoozeEarlyReminder = false
+        lifecycle.close()
         allowsWindowClose = false
     }
 
@@ -1858,6 +1873,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard !allowsWindowClose else { return true }
+        lifecycle.surfaceDisappeared()
         clearEarlyReminder?()
         return false
     }
@@ -1893,6 +1909,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         dismissCommitment = dismiss
         fallbackContent = content
         guard isPresented else {
+            lifecycle.surfaceDisappeared()
             startSurfaceRecoveryMonitoring()
             return
         }
@@ -1962,7 +1979,13 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         panel.center()
         fallbackPanel = panel
         window = panel
-        isPresented = true
+        _ = lifecycle.present(
+            surface: .earlyReminderFallback,
+            displayCount: NSScreen.screens.count,
+            primaryIndex: NSScreen.screens.firstIndex(where: { $0 === panel.screen }),
+            surfaceDiscovered: true
+        )
+        isPresented = lifecycle.isPresented
         let barrierAvailable: Bool
         if blockingMode.shouldAttemptBlocking {
             startBarrierRetryMonitoring()
@@ -2273,6 +2296,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         NSApp.activate(ignoringOtherApps: true)
         window?.orderFrontRegardless()
         window?.makeKey()
+        lifecycle.markActivated()
     }
 }
 
