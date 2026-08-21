@@ -34,7 +34,7 @@ struct AlertPresentationLifecycle: Equatable, Sendable {
         hasDiscoveredSurface = surfaceDiscovered
         requiresSurfaceCreation = !surfaceDiscovered
         requiresSurfaceRecovery = !surfaceDiscovered || displayPlan == nil
-        isPresented = surfaceDiscovered
+        isPresented = surfaceDiscovered && displayPlan != nil
         requiresActivation = isPresented
         return isPresented ? displayPlan : nil
     }

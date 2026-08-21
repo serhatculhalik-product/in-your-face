@@ -1918,6 +1918,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         }
         stopBarrierRetryMonitoring()
         deactivateInteractionBarrier()
+        lifecycle.surfaceDisappeared()
         isPresented = false
         window = nil
         startSurfaceRecoveryMonitoring()

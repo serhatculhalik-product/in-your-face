@@ -222,6 +222,10 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
             closeAdditionalWindows()
             return
         }
+        guard lifecycle.isPresented else {
+            closeAdditionalWindows()
+            return
+        }
         isPresented = lifecycle.isPresented
         closeAdditionalWindows()
         createAdditionalWindows(using: displayPlan)

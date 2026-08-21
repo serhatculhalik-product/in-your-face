@@ -13,8 +13,13 @@ final class StrongAlertDisplayPlanTests: XCTestCase {
                 surfaceDiscovered: true
             )
         )
-        XCTAssertTrue(lifecycle.isPresented)
+        XCTAssertFalse(lifecycle.isPresented)
         XCTAssertTrue(lifecycle.requiresSurfaceRecovery)
+
+        let recoveredPlan = lifecycle.displayTopologyChanged(displayCount: 1, primaryIndex: 0)
+        XCTAssertEqual(recoveredPlan?.primaryIndex, 0)
+        XCTAssertTrue(lifecycle.isPresented)
+        XCTAssertFalse(lifecycle.requiresSurfaceRecovery)
 
         XCTAssertNil(
             lifecycle.present(
@@ -147,9 +152,12 @@ final class StrongAlertDisplayPlanTests: XCTestCase {
 
     func testStrongAlertFallsBackToTheFirstDisplayWhenPrimaryIsUnavailable() {
         let plan = StrongAlertDisplayPlan(displayCount: 2, primaryIndex: nil)
+        let invalidPrimaryPlan = StrongAlertDisplayPlan(displayCount: 2, primaryIndex: 9)
 
         XCTAssertEqual(plan?.primaryIndex, 0)
         XCTAssertEqual(plan?.additionalIndices, [1])
+        XCTAssertEqual(invalidPrimaryPlan?.primaryIndex, 0)
+        XCTAssertEqual(invalidPrimaryPlan?.additionalIndices, [1])
     }
 
     func testStrongAlertRebuildsCoverageWhenDisplayTopologyChanges() {
