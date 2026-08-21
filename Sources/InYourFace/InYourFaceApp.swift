@@ -1746,6 +1746,8 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
     private var isPresented = false
     private var isInteractionBarrierActive = false
     private var blockingMode = EarlyReminderBlockingMode()
+    private let normalPresentationContract = AlertPresentationContract(variant: .earlyReminderNormal)
+    private let fallbackPresentationContract = AlertPresentationContract(variant: .earlyReminderFallback)
     @Published private(set) var isGlobalInteractionBarrierAvailable = false
 
     func present(
@@ -1804,7 +1806,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         window.hidesOnDeactivate = false
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         // Keep the reminder visible through full-display, window, and app sharing.
-        window.sharingType = .readOnly
+        window.sharingType = normalPresentationContract.remainsVisibleDuringDisplaySharing ? .readOnly : .none
         window.standardWindowButton(.closeButton)?.isEnabled = true
         window.standardWindowButton(.miniaturizeButton)?.isEnabled = false
         window.standardWindowButton(.zoomButton)?.isEnabled = false
@@ -1944,7 +1946,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         panel.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.sharingType = .readOnly
+        panel.sharingType = fallbackPresentationContract.remainsVisibleDuringDisplaySharing ? .readOnly : .none
         panel.isMovable = false
         panel.isReleasedWhenClosed = false
         panel.delegate = self

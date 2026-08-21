@@ -2,6 +2,24 @@ import XCTest
 @testable import InYourFace
 
 final class StrongAlertDisplayPlanTests: XCTestCase {
+    func testAlertPresentationVariantsShareFlowActionsAndDisplaySharingVisibility() {
+        let normal = AlertPresentationContract(variant: .earlyReminderNormal)
+        let fallback = AlertPresentationContract(variant: .earlyReminderFallback)
+        let strongAlert = AlertPresentationContract(variant: .strongAlert)
+        let conflict = AlertPresentationContract(variant: .strongAlertConflict)
+
+        XCTAssertEqual(normal.actionSource, fallback.actionSource)
+        XCTAssertEqual(strongAlert.actionSource, conflict.actionSource)
+        XCTAssertTrue(normal.preservesProtectionWhenSurfaceCloses)
+        XCTAssertTrue(fallback.preservesProtectionWhenSurfaceCloses)
+        XCTAssertTrue(strongAlert.preservesProtectionWhenSurfaceCloses)
+        XCTAssertTrue(conflict.preservesProtectionWhenSurfaceCloses)
+        XCTAssertTrue(normal.remainsVisibleDuringDisplaySharing)
+        XCTAssertTrue(fallback.remainsVisibleDuringDisplaySharing)
+        XCTAssertTrue(strongAlert.remainsVisibleDuringDisplaySharing)
+        XCTAssertTrue(conflict.remainsVisibleDuringDisplaySharing)
+    }
+
     func testStrongAlertCoversThePrimaryAndEveryAdditionalDisplay() {
         let plan = StrongAlertDisplayPlan(displayCount: 3, primaryIndex: 1)
 

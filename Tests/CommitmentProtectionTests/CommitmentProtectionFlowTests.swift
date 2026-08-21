@@ -1421,7 +1421,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertEqual(flow.strongAlertContextText(for: commitment), "Work · alex@example.com")
     }
 
-    func testIncidentalEarlyAndStrongSurfaceClearingLeavesExplicitActionPathActive() async {
+    func testNormalAndFallbackSurfaceClearingLeavesExplicitActionPathActive() async {
         let (account, calendar) = makeTestAccountAndCalendar()
         let now = Date(timeIntervalSince1970: 1_000_000)
         let meetingURL = URL(string: "https://meet.google.com/action-parity")!

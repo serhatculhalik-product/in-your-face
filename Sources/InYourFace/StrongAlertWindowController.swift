@@ -13,6 +13,7 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
     private var allowsWindowClose = false
     private var isPresented = false
     private var content: AnyView?
+    private let presentationContract = AlertPresentationContract(variant: .strongAlert)
 
     func present(
         content: AnyView,
@@ -83,7 +84,7 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
         window.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
         window.hidesOnDeactivate = false
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
-        window.sharingType = .readOnly
+        window.sharingType = presentationContract.remainsVisibleDuringDisplaySharing ? .readOnly : .none
         window.standardWindowButton(.miniaturizeButton)?.isEnabled = false
         window.standardWindowButton(.zoomButton)?.isEnabled = false
         window.isMovable = false
@@ -118,7 +119,7 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
             panel.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
             panel.hidesOnDeactivate = false
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
-            panel.sharingType = .readOnly
+            panel.sharingType = presentationContract.remainsVisibleDuringDisplaySharing ? .readOnly : .none
             panel.standardWindowButton(.closeButton)?.isHidden = true
             panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
             panel.standardWindowButton(.zoomButton)?.isHidden = true
