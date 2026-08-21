@@ -1966,6 +1966,36 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertEqual(connectedAccountEmails, [firstAccount.email, secondAccount.email])
     }
 
+    func testLegacyMissedActivityDoesNotEraseProtectionHistory() async throws {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let suiteName = "CommitmentProtectionFlowTests.legacyActivityLog.\(UUID().uuidString)"
+        let stateStore = UserDefaults(suiteName: suiteName)!
+        defer { stateStore.removePersistentDomain(forName: suiteName) }
+
+        let legacyActivity = ProtectionActivity(
+            occurredAt: now.addingTimeInterval(-60),
+            actor: .system,
+            kind: .missedCommitment,
+            title: "Missed Commitment",
+            detail: "Legacy activity entry."
+        )
+        let currentActivity = ProtectionActivity(
+            occurredAt: now,
+            actor: .user,
+            kind: .pauseStarted,
+            title: "Protection paused",
+            detail: "Protection paused for one hour."
+        )
+        stateStore.set(
+            try JSONEncoder().encode([legacyActivity, currentActivity]),
+            forKey: "commitment-protection.activity-log"
+        )
+
+        let flow = makeFlow(now: now, stateStore: stateStore)
+
+        XCTAssertEqual(flow.activityLog.map(\.kind), [.missedCommitment, .pauseStarted])
+    }
+
     func testActivityLogExpiresAtLocalDayBoundary() async {
         var calendar = Calendar.current
         calendar.timeZone = .current

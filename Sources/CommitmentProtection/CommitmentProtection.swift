@@ -132,6 +132,9 @@ public enum ProtectionActivityKind: String, Codable, Equatable, Sendable {
     case protectionRestored
     case pauseStarted
     case pauseEnded
+    // Kept for decoding activity logs written before the passive missed status was removed.
+    case missedCommitment
+    case missedCommitmentAcknowledged
     case coverageUnavailable
     case coverageRestored
 
