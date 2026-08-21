@@ -1,4 +1,5 @@
 import XCTest
+import CommitmentProtection
 @testable import InYourFace
 
 final class StrongAlertDisplayPlanTests: XCTestCase {
@@ -199,6 +200,51 @@ final class StrongAlertDisplayPlanTests: XCTestCase {
         XCTAssertEqual(normalActions, fallbackActions)
     }
 
+    @MainActor
+    func testEarlyReminderPresentationVariantsDelegateAllActionsToTheFlow() async {
+        let normalClear = await makeEarlyReminderTestFlow()
+        let fallbackClear = await makeEarlyReminderTestFlow()
+        let normalClearActions = EarlyReminderActionHandlers.normal(
+            flow: normalClear.flow,
+            commitment: normalClear.commitment
+        )
+        let fallbackClearActions = EarlyReminderActionHandlers.fallback(
+            flow: fallbackClear.flow,
+            commitment: fallbackClear.commitment
+        )
+        XCTAssertEqual(normalClearActions.clear(), fallbackClearActions.clear())
+        XCTAssertNil(normalClear.flow.earlyReminderCommitment)
+        XCTAssertNil(fallbackClear.flow.earlyReminderCommitment)
+
+        let normalSnooze = await makeEarlyReminderTestFlow()
+        let fallbackSnooze = await makeEarlyReminderTestFlow()
+        let normalSnoozeActions = EarlyReminderActionHandlers.normal(
+            flow: normalSnooze.flow,
+            commitment: normalSnooze.commitment
+        )
+        let fallbackSnoozeActions = EarlyReminderActionHandlers.fallback(
+            flow: fallbackSnooze.flow,
+            commitment: fallbackSnooze.commitment
+        )
+        XCTAssertEqual(normalSnoozeActions.snooze(5), fallbackSnoozeActions.snooze(5))
+        XCTAssertNil(normalSnooze.flow.earlyReminderCommitment)
+        XCTAssertNil(fallbackSnooze.flow.earlyReminderCommitment)
+
+        let normalDismiss = await makeEarlyReminderTestFlow()
+        let fallbackDismiss = await makeEarlyReminderTestFlow()
+        let normalDismissActions = EarlyReminderActionHandlers.normal(
+            flow: normalDismiss.flow,
+            commitment: normalDismiss.commitment
+        )
+        let fallbackDismissActions = EarlyReminderActionHandlers.fallback(
+            flow: fallbackDismiss.flow,
+            commitment: fallbackDismiss.commitment
+        )
+        XCTAssertEqual(normalDismissActions.dismiss(), fallbackDismissActions.dismiss())
+        XCTAssertNil(normalDismiss.flow.earlyReminderCommitment)
+        XCTAssertNil(fallbackDismiss.flow.earlyReminderCommitment)
+    }
+
     func testEarlyReminderInteractionBarrierRestoresItsTrackedWindowState() {
         var lifecycle = EarlyReminderInteractionBarrierLifecycle()
 
@@ -292,5 +338,72 @@ final class StrongAlertDisplayPlanTests: XCTestCase {
 
     func testStrongAlertHasNoDisplayPlanWhenNoDisplaysAreAvailable() {
         XCTAssertNil(StrongAlertDisplayPlan(displayCount: 0, primaryIndex: nil))
+    }
+}
+
+@MainActor
+private func makeEarlyReminderTestFlow() async -> (flow: CommitmentProtectionFlow, commitment: CalendarEvent) {
+    let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+    let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+    let now = Date(timeIntervalSince1970: 1_000_000)
+    let commitment = CalendarEvent(
+        id: "event-1",
+        title: "Customer review",
+        startDate: now.addingTimeInterval(10 * 60),
+        endDate: now.addingTimeInterval(70 * 60),
+        timeZoneIdentifier: nil,
+        isAllDay: false,
+        isAccepted: true,
+        calendarID: calendar.id,
+        accountID: account.id
+    )
+    let flow = CommitmentProtectionFlow(
+        calendarConnector: StaticCalendarConnector(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [commitment]
+        ),
+        launchAtLogin: StaticLaunchAtLoginController(),
+        now: { now }
+    )
+    await flow.connectGoogleAccount()
+    flow.setCalendarSelected(true, calendarID: calendar.id)
+    _ = flow.confirmProtection()
+    await flow.refreshCommitmentProtection(at: now)
+    return (flow, commitment)
+}
+
+private struct StaticCalendarConnector: GoogleCalendarConnecting {
+    let connection: GoogleCalendarConnection
+    let events: [CalendarEvent]
+
+    func connect() async throws -> GoogleCalendarConnection { connection }
+
+    func restore(accountID: String) async throws -> GoogleCalendarConnection? {
+        connection.account.id == accountID ? connection : nil
+    }
+
+    func disconnect(accountID: String) throws {}
+
+    func loadEvents(
+        accountID: String,
+        calendarID: String,
+        from startDate: Date,
+        to endDate: Date
+    ) async throws -> [CalendarEvent] {
+        events.filter {
+            $0.accountID == accountID &&
+                $0.calendarID == calendarID &&
+                ($0.startDate ?? .distantPast) < endDate &&
+                ($0.endDate ?? .distantFuture) > startDate
+        }
+    }
+}
+
+@MainActor
+private final class StaticLaunchAtLoginController: LaunchAtLoginControlling {
+    private(set) var isEnabled = false
+
+    func enable() throws {
+        isEnabled = true
     }
 }

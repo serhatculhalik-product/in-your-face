@@ -23,4 +23,12 @@ struct EarlyReminderActionHandlers {
             dismiss: { flow.dismissCommitment(for: commitment) }
         )
     }
+
+    static func normal(flow: CommitmentProtectionFlow, commitment: CalendarEvent) -> Self {
+        Self(flow: flow, commitment: commitment)
+    }
+
+    static func fallback(flow: CommitmentProtectionFlow, commitment: CalendarEvent) -> Self {
+        Self(flow: flow, commitment: commitment)
+    }
 }

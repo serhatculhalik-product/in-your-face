@@ -946,7 +946,7 @@ private struct EarlyReminderView: View {
     var body: some View {
         VStack(spacing: 18) {
             if let commitment = flow.earlyReminderCommitment {
-                let actions = EarlyReminderActionHandlers(flow: flow, commitment: commitment)
+                let actions = EarlyReminderActionHandlers.normal(flow: flow, commitment: commitment)
                 Label("Early Reminder", systemImage: "bell.fill")
                     .font(.headline)
                 if flow.isEarlyReminderUnverified {
@@ -1054,7 +1054,7 @@ private struct EarlyReminderView: View {
                 EarlyReminderWindowController.shared.close()
                 return
             }
-            let actions = EarlyReminderActionHandlers(flow: flow, commitment: commitment)
+            let actions = EarlyReminderActionHandlers.fallback(flow: flow, commitment: commitment)
             EarlyReminderWindowController.shared.present(
                 content: EarlyReminderFallbackContent(
                     title: commitment.title,
@@ -1097,7 +1097,7 @@ private struct EarlyReminderView: View {
                 EarlyReminderWindowController.shared.close()
             } else {
                 guard let commitment = flow.earlyReminderCommitment else { return }
-                let actions = EarlyReminderActionHandlers(flow: flow, commitment: commitment)
+                let actions = EarlyReminderActionHandlers.fallback(flow: flow, commitment: commitment)
                 EarlyReminderWindowController.shared.surfaceDidDisappear(
                     content: EarlyReminderFallbackContent(
                         title: commitment.title,
@@ -1154,7 +1154,10 @@ private struct EarlyReminderView: View {
                     self.pendingStopRemindersCommitment = nil
                     return
                 }
-                let actions = EarlyReminderActionHandlers(flow: flow, commitment: pendingStopRemindersCommitment)
+                let actions = EarlyReminderActionHandlers.normal(
+                    flow: flow,
+                    commitment: pendingStopRemindersCommitment
+                )
                 guard actions.dismiss() else {
                     self.pendingStopRemindersCommitment = nil
                     return
