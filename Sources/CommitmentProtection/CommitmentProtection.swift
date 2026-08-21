@@ -838,6 +838,10 @@ public final class CommitmentProtectionFlow: ObservableObject {
         await refreshCommitmentProtection(at: now())
     }
 
+    public func recoverProtection(at currentDate: Date? = nil) async {
+        await refreshCommitmentProtection(at: currentDate ?? now())
+    }
+
     public func refreshCommitmentProtection(at currentDate: Date) async {
         if pruneActivityLog(at: currentDate) {
             saveActivityLog()
@@ -1332,7 +1336,8 @@ public final class CommitmentProtectionFlow: ObservableObject {
         let existingOccurrences = Set(missedCommitments.map(OccurrenceIdentity.init))
         let endedCommitments = events
             .filter { commitment in
-                guard let endDate = commitment.endDate,
+                guard commitment.isEligibleForProtection,
+                      let endDate = commitment.endDate,
                       endDate <= currentDate,
                       currentDate < endOfLocalDay(for: endDate) else {
                     return false
