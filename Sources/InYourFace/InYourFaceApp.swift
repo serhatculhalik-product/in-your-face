@@ -736,7 +736,8 @@ private struct ProtectionActivityCard: View {
     private var calendarFilters: [CalendarFilter] {
         var filters: [String: CalendarFilter] = [:]
         for coverage in flow.accountCoverages {
-            for calendar in coverage.calendars {
+            let selectedCalendarIDs = flow.selectedCalendarIDs(for: coverage.account.id)
+            for calendar in coverage.calendars where selectedCalendarIDs.contains(calendar.id) {
                 let filter = CalendarFilter(
                     accountID: coverage.account.id,
                     accountEmail: coverage.account.email,
@@ -745,20 +746,6 @@ private struct ProtectionActivityCard: View {
                 )
                 filters[filter.id] = filter
             }
-        }
-
-        for activity in flow.activityLog {
-            guard let accountID = activity.accountID,
-                  let calendarID = activity.calendarID else {
-                continue
-            }
-            let filter = CalendarFilter(
-                accountID: accountID,
-                accountEmail: activity.accountEmail ?? accountID,
-                calendarID: calendarID,
-                calendarName: activity.calendarName ?? calendarID
-            )
-            filters[filter.id] = filters[filter.id] ?? filter
         }
 
         return filters.values.sorted {
