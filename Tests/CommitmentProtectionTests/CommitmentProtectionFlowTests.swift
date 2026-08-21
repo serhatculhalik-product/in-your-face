@@ -2186,6 +2186,92 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         )
     }
 
+    func testRecoveryAfterUnavailablePeriodShowsOnlyPassiveMissedCommitmentAfterItEnded() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let start = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: start.addingTimeInterval(-30 * 60),
+            endDate: start.addingTimeInterval(-5 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [commitment],
+            now: start
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.recoverProtection(at: start)
+
+        XCTAssertFalse(flow.isStrongAlertPresented)
+        XCTAssertNil(flow.strongAlertCommitment)
+        XCTAssertEqual(flow.missedCommitments, [commitment])
+    }
+
+    func testRecoveryUsesCurrentCalendarStateBeforeRecordingMissedCommitment() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let start = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: start.addingTimeInterval(-10 * 60),
+            endDate: start.addingTimeInterval(5 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let connector = MutableTestGoogleCalendarConnector(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [commitment]
+        )
+        let flow = makeMutableFlow(connector: connector, now: start)
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        connector.events = []
+        await flow.recoverProtection(at: start.addingTimeInterval(10 * 60))
+
+        XCTAssertTrue(flow.missedCommitments.isEmpty)
+        XCTAssertFalse(flow.isStrongAlertPresented)
+    }
+
+    func testRecoveryDoesNotRecordAnUnacceptedEventAsMissedCommitment() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let start = Date(timeIntervalSince1970: 1_000_000)
+        let unacceptedEvent = CalendarEvent(
+            id: "event-1",
+            title: "Optional review",
+            startDate: start.addingTimeInterval(-30 * 60),
+            endDate: start.addingTimeInterval(-5 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: false,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [unacceptedEvent],
+            now: start
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.recoverProtection(at: start)
+
+        XCTAssertTrue(flow.missedCommitments.isEmpty)
+        XCTAssertFalse(flow.isStrongAlertPresented)
+    }
+
     func testMultipleCommitmentsEndingTogetherRemainIndividuallyAcknowledgeable() async {
         let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
         let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
