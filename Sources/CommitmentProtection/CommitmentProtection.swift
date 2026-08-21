@@ -607,7 +607,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
     private var shouldSuppressUntrackedPastOccurrencesOnNextRefresh = false
     private var monitoringTask: Task<Void, Never>?
     private let refreshCoordinator = RefreshCoordinator()
-    var onRefreshRequestRouted: (@MainActor () -> Void)?
+    var onRecoveryRequestRouted: (@MainActor () -> Void)?
 
     private struct SavedOccurrence: Codable {
         let eventID: String
@@ -1398,7 +1398,9 @@ public final class CommitmentProtectionFlow: ObservableObject {
         at currentDate: Date,
         intent: RefreshCoordinator.Intent
     ) async {
-        onRefreshRequestRouted?()
+        if intent == .recovery {
+            onRecoveryRequestRouted?()
+        }
         await refreshCoordinator.submit(at: currentDate, intent: intent) { [weak self] request in
             guard let self else { return }
             await self.performRefreshCommitmentProtection(request)

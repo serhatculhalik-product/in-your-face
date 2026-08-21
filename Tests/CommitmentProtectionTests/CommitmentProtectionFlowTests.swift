@@ -2935,8 +2935,8 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         await activateProtection(for: flow, calendarID: calendar.id)
         let strongAlertShownBeforeBurst = flow.activityLog.filter { $0.kind == .strongAlertShown }.count
         let strongAlertRepeatedBeforeBurst = flow.activityLog.filter { $0.kind == .strongAlertRepeated }.count
-        let requestLatch = RefreshRequestLatch(expectedCount: 4)
-        flow.onRefreshRequestRouted = {
+        let requestLatch = RecoveryRequestLatch(expectedCount: 4)
+        flow.onRecoveryRequestRouted = {
             requestLatch.markRouted()
         }
         await state.holdNextLoad()
@@ -2946,7 +2946,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
             }
         }
         await state.waitForFirstLoadStart()
-        await requestLatch.waitForAllRequests()
+        await requestLatch.waitForAllRecoveryRequests()
         await state.releaseFirstLoad()
         for task in recoveryTasks {
             await task.value
@@ -4660,7 +4660,7 @@ private final class TestGoogleCalendarConnectorState: @unchecked Sendable {
 }
 
 @MainActor
-private final class RefreshRequestLatch {
+private final class RecoveryRequestLatch {
     private let expectedCount: Int
     private var routedCount = 0
     private var continuation: CheckedContinuation<Void, Never>?
@@ -4676,7 +4676,7 @@ private final class RefreshRequestLatch {
         continuation = nil
     }
 
-    func waitForAllRequests() async {
+    func waitForAllRecoveryRequests() async {
         guard routedCount < expectedCount else { return }
         await withCheckedContinuation { continuation in
             self.continuation = continuation
