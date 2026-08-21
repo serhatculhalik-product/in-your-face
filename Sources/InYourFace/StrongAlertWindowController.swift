@@ -106,7 +106,7 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
         window.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
         window.hidesOnDeactivate = false
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
-        window.sharingType = presentationContract.remainsVisibleDuringDisplaySharing ? .readOnly : .none
+        window.sharingType = presentationContract.sharingPolicy.windowSharingType
         window.standardWindowButton(.miniaturizeButton)?.isEnabled = false
         window.standardWindowButton(.zoomButton)?.isEnabled = false
         window.isMovable = false
@@ -135,7 +135,7 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
             panel.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
             panel.hidesOnDeactivate = false
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
-            panel.sharingType = presentationContract.remainsVisibleDuringDisplaySharing ? .readOnly : .none
+            panel.sharingType = presentationContract.sharingPolicy.windowSharingType
             panel.standardWindowButton(.closeButton)?.isHidden = true
             panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
             panel.standardWindowButton(.zoomButton)?.isHidden = true

@@ -1060,7 +1060,10 @@ private struct EarlyReminderView: View {
                     title: commitment.title,
                     timing: flow.localStartTimeText(for: commitment),
                     snoozeOptionsMinutes: flow.snoozeOptionsMinutes,
-                    verificationLabel: flow.isEarlyReminderUnverified ? "Unverified Reminder" : nil
+                    verificationLabel: flow.isEarlyReminderUnverified ? "Unverified Reminder" : nil,
+                    primaryConflictCommitments: flow.earlyReminderConflict?.requiresPrimarySelection == true
+                        ? flow.earlyReminderConflict?.commitments ?? []
+                        : []
                 ),
                 reopen: {
                     openEarlyReminderIfNeeded(flow: flow) {
@@ -1088,6 +1091,11 @@ private struct EarlyReminderView: View {
                         announceActionResult(flow.lastActionMessage)
                     }
                     closeAfterAction(reopenIfNeeded: !didApply)
+                },
+                selectPrimary: { conflictCommitment in
+                    guard flow.selectPrimary(for: conflictCommitment) else { return }
+                    announceActionResult(flow.lastActionMessage)
+                    closeAfterAction(reopenIfNeeded: true)
                 }
             )
         }
@@ -1103,7 +1111,10 @@ private struct EarlyReminderView: View {
                         title: commitment.title,
                         timing: flow.localStartTimeText(for: commitment),
                         snoozeOptionsMinutes: flow.snoozeOptionsMinutes,
-                        verificationLabel: flow.isEarlyReminderUnverified ? "Unverified Reminder" : nil
+                        verificationLabel: flow.isEarlyReminderUnverified ? "Unverified Reminder" : nil,
+                        primaryConflictCommitments: flow.earlyReminderConflict?.requiresPrimarySelection == true
+                            ? flow.earlyReminderConflict?.commitments ?? []
+                            : []
                     ),
                     reopen: {
                         openEarlyReminderIfNeeded(flow: flow) {
@@ -1131,6 +1142,11 @@ private struct EarlyReminderView: View {
                             announceActionResult(flow.lastActionMessage)
                         }
                         closeAfterAction(reopenIfNeeded: !didApply)
+                    },
+                    selectPrimary: { conflictCommitment in
+                        guard flow.selectPrimary(for: conflictCommitment) else { return }
+                        announceActionResult(flow.lastActionMessage)
+                        closeAfterAction(reopenIfNeeded: true)
                     }
                 )
             }
@@ -1522,6 +1538,7 @@ private struct EarlyReminderFallbackContent {
     let timing: String
     let snoozeOptionsMinutes: [Int]
     let verificationLabel: String?
+    let primaryConflictCommitments: [CalendarEvent]
 }
 
 private struct EarlyReminderFallbackView: View {
@@ -1530,6 +1547,7 @@ private struct EarlyReminderFallbackView: View {
     let clear: () -> Void
     let snooze: (Int) -> Void
     let dismiss: () -> Void
+    let selectPrimary: (CalendarEvent) -> Void
     @State private var isStopRemindersConfirmationPresented = false
 
     var body: some View {
@@ -1547,6 +1565,24 @@ private struct EarlyReminderFallbackView: View {
                 .multilineTextAlignment(.center)
             Text(content.timing)
                 .font(.title3.weight(.semibold))
+            if !content.primaryConflictCommitments.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Commitment Conflict", systemImage: "exclamationmark.triangle")
+                        .font(.subheadline.weight(.semibold))
+                    Text("These commitments start at the same time. Choose a primary commitment before the Strong Alert.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    ForEach(content.primaryConflictCommitments, id: \.id) { commitment in
+                        Button("Make primary: \(commitment.title)") {
+                            selectPrimary(commitment)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+                .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
+            }
             Text("Got it closes this reminder. Strong Alert will still appear when the commitment begins.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
@@ -1748,6 +1784,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
     private var clearEarlyReminder: (@MainActor () -> Void)?
     private var snoozeEarlyReminder: ((Int) -> Void)?
     private var dismissCommitment: (() -> Void)?
+    private var selectPrimaryCommitment: ((CalendarEvent) -> Void)?
     private var canSnoozeEarlyReminder = false
     private var fallbackContent: EarlyReminderFallbackContent?
     private var fallbackPanel: NSPanel?
@@ -1769,13 +1806,15 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         clear: @escaping @MainActor () -> Void,
         canSnooze: Bool,
         snooze: @escaping (Int) -> Void,
-        dismiss: @escaping () -> Void
+        dismiss: @escaping () -> Void,
+        selectPrimary: @escaping (CalendarEvent) -> Void
     ) {
         reopenSurface = reopen
         clearEarlyReminder = clear
         canSnoozeEarlyReminder = canSnooze
         snoozeEarlyReminder = snooze
         dismissCommitment = dismiss
+        selectPrimaryCommitment = selectPrimary
         fallbackContent = content
         if isPresented,
            let fallbackPanel,
@@ -1812,7 +1851,8 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
                     clear: clear,
                     canSnooze: canSnooze,
                     snooze: snooze,
-                    dismiss: dismiss
+                    dismiss: dismiss,
+                    selectPrimary: selectPrimary
                 )
             }
             return
@@ -1825,7 +1865,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         window.hidesOnDeactivate = false
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         // Keep the reminder visible through full-display, window, and app sharing.
-        window.sharingType = normalPresentationContract.remainsVisibleDuringDisplaySharing ? .readOnly : .none
+        window.sharingType = normalPresentationContract.sharingPolicy.windowSharingType
         window.standardWindowButton(.closeButton)?.isEnabled = true
         window.standardWindowButton(.miniaturizeButton)?.isEnabled = false
         window.standardWindowButton(.zoomButton)?.isEnabled = false
@@ -1883,6 +1923,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         self.clearEarlyReminder = nil
         self.snoozeEarlyReminder = nil
         self.dismissCommitment = nil
+        self.selectPrimaryCommitment = nil
         self.canSnoozeEarlyReminder = false
         lifecycle.close()
         allowsWindowClose = false
@@ -1922,13 +1963,15 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         clear: @escaping @MainActor () -> Void,
         canSnooze: Bool,
         snooze: @escaping (Int) -> Void,
-        dismiss: @escaping () -> Void
+        dismiss: @escaping () -> Void,
+        selectPrimary: @escaping (CalendarEvent) -> Void
     ) {
         reopenSurface = reopen
         clearEarlyReminder = clear
         canSnoozeEarlyReminder = canSnooze
         snoozeEarlyReminder = snooze
         dismissCommitment = dismiss
+        selectPrimaryCommitment = selectPrimary
         fallbackContent = content
         guard isPresented else {
             lifecycle.surfaceDisappeared()
@@ -2012,14 +2055,15 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
               let content = fallbackContent,
               let clearEarlyReminder,
               let snoozeEarlyReminder,
-              let dismissCommitment else { return }
+              let dismissCommitment,
+              let selectPrimaryCommitment else { return }
 
         let reopenSurface = self.reopenSurface
         stopSurfaceRecoveryMonitoring()
         self.reopenSurface = reopenSurface
 
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 430, height: 290),
+            contentRect: NSRect(x: 0, y: 0, width: 430, height: 420),
             styleMask: [.titled, .utilityWindow],
             backing: .buffered,
             defer: false
@@ -2028,7 +2072,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         panel.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.sharingType = fallbackPresentationContract.remainsVisibleDuringDisplaySharing ? .readOnly : .none
+        panel.sharingType = fallbackPresentationContract.sharingPolicy.windowSharingType
         panel.isMovable = false
         panel.isReleasedWhenClosed = false
         panel.delegate = self
@@ -2038,7 +2082,8 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
                 canSnooze: canSnoozeEarlyReminder,
                 clear: clearEarlyReminder,
                 snooze: snoozeEarlyReminder,
-                dismiss: dismissCommitment
+                dismiss: dismissCommitment,
+                selectPrimary: selectPrimaryCommitment
             )
         )
         panel.center()
@@ -2229,14 +2274,16 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
               let content = fallbackContent,
               let clearEarlyReminder,
               let snoozeEarlyReminder,
-              let dismissCommitment else { return }
+              let dismissCommitment,
+              let selectPrimaryCommitment else { return }
         panel.contentView = NSHostingView(
             rootView: EarlyReminderFallbackView(
                 content: content,
                 canSnooze: canSnoozeEarlyReminder,
                 clear: clearEarlyReminder,
                 snooze: snoozeEarlyReminder,
-                dismiss: dismissCommitment
+                dismiss: dismissCommitment,
+                selectPrimary: selectPrimaryCommitment
             )
         )
     }

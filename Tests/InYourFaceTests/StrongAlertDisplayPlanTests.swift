@@ -363,6 +363,14 @@ final class StrongAlertDisplayPlanTests: XCTestCase {
         XCTAssertTrue(fallback.remainsVisibleDuringDisplaySharing)
         XCTAssertTrue(strongAlert.remainsVisibleDuringDisplaySharing)
         XCTAssertTrue(conflict.remainsVisibleDuringDisplaySharing)
+        XCTAssertEqual(normal.sharingPolicy, .visibleDuringDisplaySharing)
+        XCTAssertEqual(fallback.sharingPolicy, .visibleDuringDisplaySharing)
+        XCTAssertEqual(strongAlert.sharingPolicy, .visibleDuringDisplaySharing)
+        XCTAssertEqual(conflict.sharingPolicy, .visibleDuringDisplaySharing)
+        XCTAssertEqual(normal.sharingPolicy.windowSharingType, .readOnly)
+        XCTAssertEqual(fallback.sharingPolicy.windowSharingType, .readOnly)
+        XCTAssertEqual(strongAlert.sharingPolicy.windowSharingType, .readOnly)
+        XCTAssertEqual(conflict.sharingPolicy.windowSharingType, .readOnly)
     }
 
     func testStrongAlertCoversThePrimaryAndEveryAdditionalDisplay() {
