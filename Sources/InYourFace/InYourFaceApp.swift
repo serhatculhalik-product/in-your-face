@@ -422,6 +422,7 @@ private struct TestAlertView: View {
 
 private struct EarlyReminderView: View {
     @EnvironmentObject private var flow: CommitmentProtectionFlow
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.openWindow) private var openWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var windowController = EarlyReminderWindowController.shared
@@ -460,6 +461,7 @@ private struct EarlyReminderView: View {
                     Button("Snooze 5 minutes") {
                         if flow.snoozeEarlyReminder(minutes: 5) {
                             announceActionResult(flow.lastActionMessage)
+                            closeAfterAction()
                         }
                     }
                     .keyboardShortcut("5")
@@ -468,6 +470,7 @@ private struct EarlyReminderView: View {
                     Button("Snooze 10 minutes") {
                         if flow.snoozeEarlyReminder(minutes: 10) {
                             announceActionResult(flow.lastActionMessage)
+                            closeAfterAction()
                         }
                     }
                     .keyboardShortcut("0")
@@ -478,6 +481,7 @@ private struct EarlyReminderView: View {
                     Button("Handled") {
                         if flow.handleCommitment(for: commitment) {
                             announceActionResult(flow.lastActionMessage)
+                            closeAfterAction()
                         }
                     }
                     .keyboardShortcut("h")
@@ -487,6 +491,7 @@ private struct EarlyReminderView: View {
                     Button("Dismiss Commitment") {
                         if flow.dismissCommitment(for: commitment) {
                             announceActionResult(flow.lastActionMessage)
+                            closeAfterAction()
                         }
                     }
                     .keyboardShortcut("d")
@@ -496,19 +501,13 @@ private struct EarlyReminderView: View {
                 Button("Clear Early Reminder") {
                     flow.clearEarlyReminder()
                     announceActionResult(flow.lastActionMessage)
+                    closeAfterAction()
                 }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
                 .accessibilityHint("Clear this surface while leaving protection active.")
             } else {
-                Text("No upcoming commitment needs an early reminder.")
-                    .foregroundStyle(.secondary)
-                Button("Close") {
-                    EarlyReminderWindowController.shared.close()
-                }
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
-                .accessibilityLabel("Close")
+                EmptyView()
             }
         }
         .padding(28)
@@ -521,7 +520,12 @@ private struct EarlyReminderView: View {
         }
         .onAppear {
             flow.setBlockingAvailability(false)
-            guard let commitment = flow.earlyReminderCommitment else { return }
+            guard let commitment = flow.earlyReminderCommitment else {
+                flow.setBlockingAvailability(true)
+                dismiss()
+                EarlyReminderWindowController.shared.close()
+                return
+            }
             EarlyReminderWindowController.shared.present(
                 content: EarlyReminderFallbackContent(
                     title: commitment.title,
@@ -533,21 +537,25 @@ private struct EarlyReminderView: View {
                 clear: {
                     flow.clearEarlyReminder()
                     announceActionResult(flow.lastActionMessage)
+                    closeAfterAction()
                 },
                 canSnooze: flow.canSnoozeEarlyReminder,
                 snooze: { minutes in
                     if flow.snoozeEarlyReminder(minutes: minutes) {
                         announceActionResult(flow.lastActionMessage)
+                        closeAfterAction()
                     }
                 },
                 handle: {
                     if flow.handleCommitment(for: commitment) {
                         announceActionResult(flow.lastActionMessage)
+                        closeAfterAction()
                     }
                 },
                 dismiss: {
                     if flow.dismissCommitment(for: commitment) {
                         announceActionResult(flow.lastActionMessage)
+                        closeAfterAction()
                     }
                 }
             )
@@ -596,12 +604,18 @@ private struct EarlyReminderView: View {
         .onChange(of: flow.earlyReminderCommitment) { _, commitment in
             if commitment == nil {
                 flow.setBlockingAvailability(true)
+                dismiss()
                 EarlyReminderWindowController.shared.close()
             }
         }
         .onChange(of: windowController.isGlobalInteractionBarrierAvailable) { _, isAvailable in
             flow.setBlockingAvailability(isAvailable)
         }
+    }
+
+    private func closeAfterAction() {
+        dismiss()
+        EarlyReminderWindowController.shared.close()
     }
 }
 
