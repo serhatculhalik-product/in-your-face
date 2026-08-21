@@ -1112,7 +1112,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
         }
         syncCoverageAndActiveAccountProjection()
         if !accountRecords.isEmpty {
-            Task { await refreshCommitmentProtection() }
+            scheduleOrdinaryRefresh()
         }
         return true
     }
@@ -1227,7 +1227,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
             account: record.connection.account,
             calendar: selectedCalendar
         )
-        Task { await refreshCommitmentProtection() }
+        scheduleOrdinaryRefresh()
     }
 
     @discardableResult
@@ -1252,7 +1252,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
             detail: "Protection is enabled for the selected calendars.",
             account: record.connection.account
         )
-        Task { await refreshCommitmentProtection() }
+        scheduleOrdinaryRefresh()
         return true
     }
 
@@ -1278,7 +1278,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
                 account: account
             )
         }
-        Task { await refreshCommitmentProtection() }
+        scheduleOrdinaryRefresh()
         return true
     }
 
@@ -1303,7 +1303,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
             title: "Early Reminder setting changed",
             detail: isEnabled ? "Early Reminder enabled." : "Early Reminder disabled."
         )
-        Task { await refreshCommitmentProtection() }
+        scheduleOrdinaryRefresh()
     }
 
     public func setBlockingModeEnabled(_ isEnabled: Bool) {
@@ -1336,7 +1336,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
             title: "Strong Alert setting changed",
             detail: "Strong Alert repeats every \(clampedMinutes) minute\(clampedMinutes == 1 ? "" : "s")."
         )
-        Task { await refreshCommitmentProtection() }
+        scheduleOrdinaryRefresh()
     }
 
     public func setEarlyReminderLeadTime(minutes: Int) {
@@ -1356,7 +1356,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
             title: "Early Reminder setting changed",
             detail: "Early Reminder lead time is \(clampedMinutes) minutes."
         )
-        Task { await refreshCommitmentProtection() }
+        scheduleOrdinaryRefresh()
     }
 
     public func startMonitoring() {
@@ -1385,6 +1385,12 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
     public func refreshCommitmentProtection(at currentDate: Date) async {
         await requestRefresh(at: currentDate, intent: .ordinary)
+    }
+
+    private func scheduleOrdinaryRefresh() {
+        Task { [weak self] in
+            await self?.refreshCommitmentProtection()
+        }
     }
 
     private func requestRefresh(
@@ -1602,7 +1608,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
             commitmentGroup: group
         )
         saveConfiguration()
-        Task { await refreshCommitmentProtection() }
+        scheduleOrdinaryRefresh()
         return true
     }
 
