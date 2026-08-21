@@ -6,6 +6,8 @@ import CoreGraphics
 import ServiceManagement
 import SwiftUI
 
+private let earlyReminderWindowIdentifier = NSUserInterfaceItemIdentifier("com.inyourface.early-reminder")
+
 @main
 @MainActor
 struct InYourFaceApp: App {
@@ -179,7 +181,7 @@ private struct SetupView: View {
         }
         .onChange(of: flow.earlyReminderCommitment) { _, commitment in
             guard commitment != nil else {
-                EarlyReminderWindowController.shared.close()
+                EarlyReminderWindowController.shared.closeWhenAvailable()
                 return
             }
             openEarlyReminderIfNeeded(flow: flow) {
@@ -207,15 +209,17 @@ private func openEarlyReminderIfNeeded(
     openWindow: @escaping () -> Void
 ) {
     guard flow.earlyReminderCommitment != nil else {
-        EarlyReminderWindowController.shared.close()
+        EarlyReminderWindowController.shared.closeWhenAvailable()
         return
     }
+    EarlyReminderWindowController.shared.cancelPendingCloseObservation()
     Task { @MainActor in
         await Task.yield()
         guard flow.earlyReminderCommitment != nil else {
-            EarlyReminderWindowController.shared.close()
+            EarlyReminderWindowController.shared.closeWhenAvailable()
             return
         }
+        EarlyReminderWindowController.shared.cancelPendingCloseObservation()
         openWindow()
     }
 }
@@ -976,6 +980,7 @@ private struct EarlyReminderView: View {
         }
         .padding(28)
         .frame(minWidth: 380, minHeight: 240)
+        .background(EarlyReminderWindowMarker())
         .accessibilityAddTraits(.isModal)
         .transaction { transaction in
             if reduceMotion {
@@ -988,7 +993,7 @@ private struct EarlyReminderView: View {
             guard let commitment = flow.earlyReminderCommitment else {
                 flow.setBlockingAvailability(true)
                 EarlyReminderWindowController.shared.prepareForProgrammaticClose()
-                EarlyReminderWindowController.shared.close()
+                EarlyReminderWindowController.shared.closeWhenAvailable()
                 dismiss()
                 return
             }
@@ -1040,7 +1045,7 @@ private struct EarlyReminderView: View {
         .onDisappear {
             if flow.earlyReminderCommitment == nil {
                 flow.setBlockingAvailability(true)
-                EarlyReminderWindowController.shared.close()
+                EarlyReminderWindowController.shared.closeWhenAvailable()
             } else {
                 guard let commitment = flow.earlyReminderCommitment else { return }
                 let actions = EarlyReminderActionHandlers.fallback(flow: flow, commitment: commitment)
@@ -1094,7 +1099,7 @@ private struct EarlyReminderView: View {
                 flow.setBlockingAvailability(true)
                 EarlyReminderWindowController.shared.prepareForProgrammaticClose()
                 dismiss()
-                EarlyReminderWindowController.shared.close()
+                EarlyReminderWindowController.shared.closeWhenAvailable()
             }
         }
         .onChange(of: windowController.isGlobalInteractionBarrierAvailable) { _, isAvailable in
@@ -1479,6 +1484,23 @@ private struct EarlyReminderFallbackContent {
     let primaryConflictCommitments: [CalendarEvent]
 }
 
+private struct EarlyReminderWindowMarker: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        NSView()
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        markWindow(nsView.window)
+        DispatchQueue.main.async {
+            markWindow(nsView.window)
+        }
+    }
+
+    private func markWindow(_ window: NSWindow?) {
+        window?.identifier = earlyReminderWindowIdentifier
+    }
+}
+
 private struct EarlyReminderFallbackView: View {
     let content: EarlyReminderFallbackContent
     let canSnooze: Bool
@@ -1726,6 +1748,8 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
     private var canSnoozeEarlyReminder = false
     private var fallbackContent: EarlyReminderFallbackContent?
     private var fallbackPanel: NSPanel?
+    private var pendingCloseObserver: NSObjectProtocol?
+    private var pendingCloseTask: Task<Void, Never>?
     private var surfaceRecoveryAttempts = 0
     private var screenObserver: NSObjectProtocol?
     private var allowsWindowClose = false
@@ -1747,6 +1771,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         dismiss: @escaping () -> Void,
         selectPrimary: @escaping (CalendarEvent) -> Void
     ) {
+        stopPendingCloseObservation()
         reopenSurface = reopen
         clearEarlyReminder = clear
         canSnoozeEarlyReminder = canSnooze
@@ -1756,9 +1781,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         fallbackContent = content
         if isPresented,
            let fallbackPanel,
-           let swiftUIWindow = NSApp.windows.first(where: {
-               $0 !== fallbackPanel && $0.title == "Early Reminder"
-           }) {
+           let swiftUIWindow = normalEarlyReminderWindow(excluding: fallbackPanel) {
             stopBarrierRetryMonitoring()
             deactivateInteractionBarrier()
             fallbackPanel.delegate = nil
@@ -1773,9 +1796,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
             return
         }
 
-        guard let window = NSApp.windows.first(where: {
-            $0 !== fallbackPanel && $0.title == "Early Reminder"
-        }) else {
+        guard let window = normalEarlyReminderWindow(excluding: fallbackPanel) else {
             _ = lifecycle.present(
                 surface: .earlyReminderNormal,
                 displayCount: NSScreen.screens.count,
@@ -1798,6 +1819,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
 
         stopSurfaceRecoveryMonitoring()
         self.window = window
+        window.identifier = earlyReminderWindowIdentifier
         window.delegate = self
         window.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
         window.hidesOnDeactivate = false
@@ -1849,9 +1871,10 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
     }
 
     func close() {
+        stopPendingCloseObservation()
         allowsWindowClose = true
         let trackedWindow = self.window
-        var windowsToClose = NSApp.windows.filter { $0.title == "Early Reminder" }
+        var windowsToClose = NSApp.windows.filter { $0.identifier == earlyReminderWindowIdentifier }
         if let trackedWindow {
             windowsToClose.append(trackedWindow)
         }
@@ -1876,6 +1899,34 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         self.canSnoozeEarlyReminder = false
         lifecycle.close()
         allowsWindowClose = false
+    }
+
+    func closeWhenAvailable() {
+        close()
+        closeUntrackedEarlyReminderWindows()
+        guard pendingCloseObserver == nil else { return }
+
+        pendingCloseObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let window = notification.object as? NSWindow else { return }
+            Task { @MainActor [weak self, weak window] in
+                guard let self, let window, window.title == "Early Reminder" else { return }
+                self.closeWindows([window])
+                self.stopPendingCloseObservation()
+            }
+        }
+        pendingCloseTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled else { return }
+            self?.stopPendingCloseObservation()
+        }
+    }
+
+    func cancelPendingCloseObservation() {
+        stopPendingCloseObservation()
     }
 
     func prepareForProgrammaticClose() {
@@ -1957,6 +2008,39 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         surfaceRecoveryTimer = nil
         surfaceRecoveryAttempts = 0
         reopenSurface = nil
+    }
+
+    private func normalEarlyReminderWindow(excluding excludedWindow: NSWindow?) -> NSWindow? {
+        NSApp.windows.first(where: {
+            $0 !== excludedWindow && $0.identifier == earlyReminderWindowIdentifier
+        }) ?? NSApp.windows.first(where: {
+            $0 !== excludedWindow && $0.title == "Early Reminder"
+        })
+    }
+
+    private func closeUntrackedEarlyReminderWindows() {
+        let windows = NSApp.windows.filter { window in
+            window.title == "Early Reminder" && window.identifier != earlyReminderWindowIdentifier
+        }
+        closeWindows(windows)
+    }
+
+    private func closeWindows(_ windows: [NSWindow]) {
+        var closedWindowIDs = Set<ObjectIdentifier>()
+        for window in windows {
+            guard closedWindowIDs.insert(ObjectIdentifier(window)).inserted else { continue }
+            window.delegate = nil
+            window.close()
+        }
+    }
+
+    private func stopPendingCloseObservation() {
+        pendingCloseTask?.cancel()
+        pendingCloseTask = nil
+        if let pendingCloseObserver {
+            NotificationCenter.default.removeObserver(pendingCloseObserver)
+            self.pendingCloseObserver = nil
+        }
     }
 
     private func startScreenObservation() {
