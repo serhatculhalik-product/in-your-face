@@ -90,6 +90,32 @@ final class StrongAlertDisplayPlanTests: XCTestCase {
         XCTAssertFalse(lifecycle.requiresActivation)
     }
 
+    func testStrongAlertLifecycleKeepsCoverageAcrossTopologyAndProgrammaticClose() {
+        var lifecycle = AlertPresentationLifecycle()
+
+        _ = lifecycle.present(
+            surface: .strongAlert,
+            displayCount: 1,
+            primaryIndex: 0,
+            surfaceDiscovered: true
+        )
+        lifecycle.markActivated()
+
+        let topologyPlan = lifecycle.displayTopologyChanged(displayCount: 3, primaryIndex: 2)
+        XCTAssertEqual(Set(topologyPlan?.allDisplayIndices ?? []), Set(0..<3))
+        XCTAssertTrue(lifecycle.isPresented)
+
+        lifecycle.surfaceDisappeared()
+        XCTAssertTrue(lifecycle.requiresSurfaceRecovery)
+
+        lifecycle.surfaceReappeared(displayCount: 3, primaryIndex: 2)
+        XCTAssertTrue(lifecycle.isPresented)
+
+        lifecycle.close()
+        XCTAssertFalse(lifecycle.isPresented)
+        XCTAssertNil(lifecycle.displayPlan)
+    }
+
     func testAlertPresentationVariantsShareFlowActionsAndDisplaySharingVisibility() {
         let normal = AlertPresentationContract(variant: .earlyReminderNormal)
         let fallback = AlertPresentationContract(variant: .earlyReminderFallback)
