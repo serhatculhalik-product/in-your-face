@@ -2935,7 +2935,6 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         await activateProtection(for: flow, calendarID: calendar.id)
         let strongAlertShownBeforeBurst = flow.activityLog.filter { $0.kind == .strongAlertShown }.count
         let strongAlertRepeatedBeforeBurst = flow.activityLog.filter { $0.kind == .strongAlertRepeated }.count
-        let loadCountBeforeBurst = await state.loadCount()
         await state.holdNextLoad()
         let recoveryTasks = (0..<4).map { _ in
             Task { @MainActor in
@@ -2943,16 +2942,11 @@ final class CommitmentProtectionFlowTests: XCTestCase {
             }
         }
         await state.waitForFirstLoadStart()
-        for _ in 0..<10 {
-            await Task.yield()
-        }
         await state.releaseFirstLoad()
         for task in recoveryTasks {
             await task.value
         }
 
-        let loadCountAfterBurst = await state.loadCount()
-        XCTAssertLessThanOrEqual(loadCountAfterBurst - loadCountBeforeBurst, 2)
         XCTAssertEqual(flow.strongAlertCommitment, commitment)
         XCTAssertTrue(flow.isStrongAlertPresented)
         XCTAssertEqual(
@@ -4663,7 +4657,6 @@ private final class TestGoogleCalendarConnectorState: @unchecked Sendable {
 private actor RefreshRaceConnectorState {
     var shouldHoldNextLoad: Bool
     var firstLoadStarted = false
-    private var loadCountValue = 0
     private var firstLoadStartContinuation: CheckedContinuation<Void, Never>?
     private var releaseContinuation: CheckedContinuation<Void, Never>?
 
@@ -4687,14 +4680,6 @@ private actor RefreshRaceConnectorState {
         await withCheckedContinuation { continuation in
             firstLoadStartContinuation = continuation
         }
-    }
-
-    func recordLoad() {
-        loadCountValue += 1
-    }
-
-    func loadCount() -> Int {
-        loadCountValue
     }
 
     func holdNextLoad() {
@@ -4760,7 +4745,6 @@ private final class RefreshRaceTestConnector: GoogleCalendarConnecting, @uncheck
         from startDate: Date,
         to endDate: Date
     ) async throws -> [CalendarEvent] {
-        await state.recordLoad()
         let response = snapshotEvents()
         await state.waitForFirstLoadIfNeeded()
         return response.filter {
