@@ -3145,6 +3145,9 @@ final class CommitmentProtectionFlowTests: XCTestCase {
 
         await activateProtection(for: flow, calendarID: calendar.id)
         XCTAssertEqual(flow.upcomingCommitment, originalCommitment)
+        flow.onRefreshRequestEnqueued = { _, _ in
+            Task { await state.recordRefreshRequest() }
+        }
 
         await state.holdNextLoad()
         let olderRefresh = Task { @MainActor in
@@ -3159,6 +3162,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         let recoveryRefresh = Task { @MainActor in
             await flow.recoverProtection(at: now.addingTimeInterval(2))
         }
+        await state.waitForRefreshRequests(count: 3)
         await state.releaseFirstLoad()
 
         await olderRefresh.value
@@ -4720,6 +4724,8 @@ private final class TestGoogleCalendarConnectorState: @unchecked Sendable {
 private actor RefreshRaceConnectorState {
     var shouldHoldNextLoad: Bool
     var firstLoadStarted = false
+    private var refreshRequestCount = 0
+    private var refreshRequestContinuation: CheckedContinuation<Void, Never>?
     private var firstLoadStartContinuation: CheckedContinuation<Void, Never>?
     private var releaseContinuation: CheckedContinuation<Void, Never>?
 
@@ -4742,6 +4748,21 @@ private actor RefreshRaceConnectorState {
         guard !firstLoadStarted else { return }
         await withCheckedContinuation { continuation in
             firstLoadStartContinuation = continuation
+        }
+    }
+
+    func recordRefreshRequest() {
+        refreshRequestCount += 1
+        if refreshRequestCount >= 3 {
+            refreshRequestContinuation?.resume()
+            refreshRequestContinuation = nil
+        }
+    }
+
+    func waitForRefreshRequests(count: Int) async {
+        guard refreshRequestCount < count else { return }
+        await withCheckedContinuation { continuation in
+            refreshRequestContinuation = continuation
         }
     }
 
