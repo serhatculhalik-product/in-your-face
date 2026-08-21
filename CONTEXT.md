@@ -51,7 +51,7 @@ _Avoid_: Overlap, double booking
 ## Reminder language
 
 **Early Reminder**:
-A visual reminder shown before a commitment starts. It can optionally stay in front of other app windows through Blocking Mode. Its global lead time ranges from five to thirty minutes and defaults to ten minutes; the reminder can also be turned off while Strong Alert protection remains active. The user can Snooze it for five minutes, choose Got it to close only the early surface, or Stop reminders to end protection for the current occurrence. Got it does not change protection at the commitment start; only an explicit stop action such as Handled or Dismiss does.
+A visual reminder shown before a commitment starts. It can optionally stay in front of other app windows through Blocking Mode. Its global lead time ranges from five to thirty minutes and defaults to ten minutes; the reminder can also be turned off while Strong Alert protection remains active. The user can Snooze it for five minutes, choose Got it to close only the early surface, or Stop reminders to end protection for the current occurrence. Got it does not change protection at the commitment start; Stop reminders does.
 _Avoid_: Warning, alert (when referring specifically to the early reminder)
 
 **Unverified Reminder**:
@@ -75,7 +75,7 @@ The primary action for an accepted event with a recognized meeting link. The use
 _Avoid_: Attend, launch, open link
 
 **Handled**:
-The acknowledgment that ends protection without changing the Google Calendar RSVP. It is primary for an accepted event without a recognized meeting link and secondary for any commitment the user handled elsewhere. The decision lasts through the current occurrence even if the calendar refreshes.
+An occurrence-local acknowledgment that ends protection without changing the Google Calendar RSVP. The current Strong Alert uses the single user-facing Stop reminders action for this outcome; the Handled decision remains available to existing domain and test-alert flows. The decision lasts through the current occurrence even if the calendar refreshes.
 _Avoid_: Complete, done
 
 **Dismiss**:

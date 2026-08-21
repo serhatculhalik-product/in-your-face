@@ -10,7 +10,7 @@ The user does not need another calendar view. They need a reliable, context-awar
 
 Provide a personal macOS utility that protects accepted, timed Google Calendar events from user-selected calendars across multiple Connected Accounts.
 
-The product can start with a visual Early Reminder, then presents a Strong Alert at the commitment’s start time. Optional Blocking Mode can keep the Early Reminder in front of other app windows. The Strong Alert offers the most direct next action—Join when a Recognized Meeting Link exists, or Handled otherwise—and repeats at a configurable Repeat Interval until the user takes an explicit action or the commitment reaches its scheduled end.
+The product can start with a visual Early Reminder, then presents a Strong Alert at the commitment’s start time. Optional Blocking Mode can keep the Early Reminder in front of other app windows. The Strong Alert offers the most direct next action—Join when a Recognized Meeting Link exists, or Stop reminders otherwise—and repeats at a configurable Repeat Interval until the user takes an explicit action or the commitment reaches its scheduled end.
 
 The experience is intentionally narrow: Google Calendar is the source of truth for calendar changes, the user chooses which calendars are protected, and the product never guesses which accepted event is important. Visual reminders remain visible during Full-Screen Sharing, window sharing, and app sharing so sharing cannot silently suppress the protection experience.
 
@@ -43,9 +43,9 @@ The experience is intentionally narrow: Google Calendar is the source of truth f
 25. As a user, I want the Strong Alert to show the commitment title, current timing state, relevant calendar or account, and the next action, so that I can act without searching.
 26. As a user, I want Join to be prominent when a Recognized Meeting Link exists, so that I can enter the commitment immediately.
 27. As a user, I want a Join click to count as joining for the reminder lifecycle, so that I am not repeatedly challenged to prove attendance.
-28. As a user, I want Handled available when no Recognized Meeting Link exists, so that physical or otherwise linkless commitments can stop protection cleanly.
-29. As a user, I want Handled available as a secondary action for any commitment, so that I can stop reminders when I joined from another device or app.
-30. As a user, I want Dismiss to stop protection for only the current Occurrence without changing my Google Calendar RSVP, so that I can skip one commitment without corrupting calendar intent.
+28. As a user, I want Stop reminders available when no Recognized Meeting Link exists, so that physical or otherwise linkless commitments can stop protection cleanly.
+29. As a user, I want Stop reminders available as a secondary action for linked commitments, so that I can stop reminders when I joined from another device or app or will skip the commitment.
+30. As a user, I want Stop reminders to stop protection for only the current Occurrence without changing my Google Calendar RSVP, so that I can skip one commitment without corrupting calendar intent.
 31. As a user, I want Restore Protection available after Dismiss or Handled until the Occurrence ends, so that I can reverse an accidental or changed decision.
 32. As a user, I want the Strong Alert to repeat at a configurable Repeat Interval after the commitment starts, so that an alert I cannot act on immediately does not disappear forever.
 33. As a user, I want the Repeat Interval configurable from one to five minutes, with one minute as the default, so that I can balance urgency and interruption.
@@ -99,12 +99,13 @@ The experience is intentionally narrow: Google Calendar is the source of truth f
 - Recurring events are handled by Occurrence. A rescheduled Occurrence receives a fresh protection decision.
 - Duplicate representations merge only when they share a Recognized Meeting Link and matching start time.
 - The Early Reminder is optional, global, configurable from five to thirty minutes when enabled, and defaults to ten minutes. Optional Blocking Mode can keep it in front of other app windows.
-- The Early Reminder exposes three user actions: Snooze for five minutes, Got it to close only the early surface, and Stop reminders to end protection for the current occurrence. Handled and Dismiss remain distinct domain decisions for the Strong Alert; the Early Reminder does not expose both variants.
+- The Early Reminder exposes three user actions: Snooze for five minutes, Got it to close only the early surface, and Stop reminders to end protection for the current occurrence.
+- Stop reminders requires confirmation and explains that no Early Reminder or Strong Alert will arrive for the commitment; Google Calendar RSVP is unchanged.
 - The Strong Alert is the start-time intervention. It takes over every available display, is calm but urgent, overrides macOS Focus modes, and exposes the next action.
 - The global Repeat Interval ranges from one to five minutes and defaults to one minute. Repetition remains enabled after start until Join, Handled, Dismiss, or scheduled end.
 - Join is prominent when a Recognized Meeting Link exists. A Join click ends protection for the reminder lifecycle; the product does not need to verify attendance.
-- Handled ends protection without changing Google Calendar. It is primary for linkless commitments and available as a secondary action for commitments handled elsewhere.
-- Dismiss and Handled are occurrence-local decisions that persist through calendar refreshes and can be reversed by Restore Protection. Rescheduling resets them.
+- Stop reminders ends protection without changing Google Calendar and records a Dismiss decision for the current occurrence. It is the only user-facing stop action in the Strong Alert.
+- Dismiss and Handled are occurrence-local decisions that persist through calendar refreshes and can be reversed by Restore Protection. Rescheduling resets them; Handled remains an internal/domain decision for compatibility with existing state and test-alert flows.
 - Snooze is available once per Occurrence before start, offers a five-minute choice, and is capped at the start time.
 - Clearing or closing an alert surface without an explicit action does not change protection.
 - Pause is a global, temporary escape hatch with one-hour, end-of-day, and custom-expiration choices. It immediately suppresses active and future protection; protection resumes according to the current commitment state when it expires.

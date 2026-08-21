@@ -628,7 +628,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
     }
 
     public var strongAlertPrimaryActionTitle: String {
-        strongAlertCommitment?.recognizedMeetingLink == nil ? "Handled elsewhere" : "Join"
+        strongAlertCommitment?.recognizedMeetingLink == nil ? "Stop reminders" : "Join"
     }
 
     @discardableResult

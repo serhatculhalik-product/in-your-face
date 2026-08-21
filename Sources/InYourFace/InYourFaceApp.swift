@@ -390,7 +390,7 @@ private struct StrongAlertSettingsCard: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Strong Alert")
                 .font(.headline)
-            Text("After a commitment starts, repeat the alert until you Join, choose Handled elsewhere, or it ends.")
+            Text("After a commitment starts, repeat the alert until you Join, stop reminders, or it ends.")
                 .foregroundStyle(.secondary)
 
             Stepper(
@@ -481,6 +481,8 @@ private struct EarlyReminderView: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var windowController = EarlyReminderWindowController.shared
+    @State private var isStopRemindersConfirmationPresented = false
+    @State private var pendingStopRemindersCommitment: CalendarEvent?
 
     var body: some View {
         VStack(spacing: 18) {
@@ -520,11 +522,7 @@ private struct EarlyReminderView: View {
                     .accessibilityHint("Close this early reminder while keeping the Strong Alert at the commitment start.")
 
                     Button("Stop reminders") {
-                        let didApply = flow.dismissCommitment(for: commitment)
-                        if didApply {
-                            announceActionResult(flow.lastActionMessage)
-                        }
-                        closeAfterAction(reopenIfNeeded: !didApply)
+                        requestStopReminders(for: commitment)
                     }
                     .keyboardShortcut("s")
                     .buttonStyle(.bordered)
@@ -632,6 +630,24 @@ private struct EarlyReminderView: View {
         .onChange(of: windowController.isGlobalInteractionBarrierAvailable) { _, isAvailable in
             flow.setBlockingAvailability(isAvailable)
         }
+        .stopRemindersConfirmation(
+            isPresented: $isStopRemindersConfirmationPresented,
+            onCancel: { pendingStopRemindersCommitment = nil },
+            onConfirm: {
+                guard let pendingStopRemindersCommitment,
+                      flow.dismissCommitment(for: pendingStopRemindersCommitment) else {
+                    self.pendingStopRemindersCommitment = nil
+                    return
+                }
+                announceActionResult(flow.lastActionMessage)
+                self.pendingStopRemindersCommitment = nil
+            }
+        )
+    }
+
+    private func requestStopReminders(for commitment: CalendarEvent) {
+        pendingStopRemindersCommitment = commitment
+        isStopRemindersConfirmationPresented = true
     }
 
     private func closeAfterAction(reopenIfNeeded: Bool = false) {
@@ -680,6 +696,8 @@ private struct StrongAlertWindowView: View {
 
 private struct StrongAlertContentView: View {
     @ObservedObject var flow: CommitmentProtectionFlow
+    @State private var isStopRemindersConfirmationPresented = false
+    @State private var pendingStopRemindersCommitment: CalendarEvent?
 
     var body: some View {
         Group {
@@ -689,31 +707,20 @@ private struct StrongAlertContentView: View {
                         title: commitment.title,
                         timing: flow.strongAlertTimingText(for: commitment, at: context.date),
                         detail: flow.strongAlertContextText(for: commitment),
-                        primaryActionTitle: commitment.recognizedMeetingLink == nil ? "Handled elsewhere" : "Join",
+                        primaryActionTitle: commitment.recognizedMeetingLink == nil ? "Stop reminders" : "Join",
                         primaryAction: {
                             if commitment.recognizedMeetingLink == nil {
-                                flow.handleStrongAlert()
+                                requestStopReminders(for: commitment)
                             } else if let meetingLink = flow.joinStrongAlert() {
                                 NSWorkspace.shared.open(meetingLink)
-                            }
-                            announceActionResult(flow.lastActionMessage)
-                        },
-                        secondaryActionTitle: commitment.recognizedMeetingLink == nil ? "Skip this commitment" : "Handled elsewhere",
-                        secondaryAction: {
-                            if commitment.recognizedMeetingLink == nil {
-                                flow.dismissCommitment()
-                            } else {
-                                flow.handleStrongAlert()
-                            }
-                            announceActionResult(flow.lastActionMessage)
-                        },
-                        secondaryActionKeyboardShortcut: commitment.recognizedMeetingLink == nil ? "d" : "h",
-                        tertiaryActionTitle: commitment.recognizedMeetingLink == nil ? nil : "Skip this commitment",
-                        tertiaryAction: {
-                            if flow.dismissCommitment() {
                                 announceActionResult(flow.lastActionMessage)
                             }
-                        }
+                        },
+                        secondaryActionTitle: commitment.recognizedMeetingLink == nil ? nil : "Stop reminders",
+                        secondaryAction: {
+                            requestStopReminders(for: commitment)
+                        },
+                        secondaryActionKeyboardShortcut: "s"
                     )
                 }
             } else {
@@ -725,6 +732,24 @@ private struct StrongAlertContentView: View {
             }
         }
         .frame(minWidth: 460, minHeight: 330)
+        .stopRemindersConfirmation(
+            isPresented: $isStopRemindersConfirmationPresented,
+            onCancel: { pendingStopRemindersCommitment = nil },
+            onConfirm: {
+                guard let pendingStopRemindersCommitment,
+                      flow.dismissCommitment(for: pendingStopRemindersCommitment) else {
+                    self.pendingStopRemindersCommitment = nil
+                    return
+                }
+                announceActionResult(flow.lastActionMessage)
+                self.pendingStopRemindersCommitment = nil
+            }
+        )
+    }
+
+    private func requestStopReminders(for commitment: CalendarEvent) {
+        pendingStopRemindersCommitment = commitment
+        isStopRemindersConfirmationPresented = true
     }
 }
 
@@ -739,6 +764,7 @@ private struct EarlyReminderFallbackView: View {
     let clear: () -> Void
     let snooze: (Int) -> Void
     let dismiss: () -> Void
+    @State private var isStopRemindersConfirmationPresented = false
 
     var body: some View {
         VStack(spacing: 16) {
@@ -761,7 +787,9 @@ private struct EarlyReminderFallbackView: View {
                     .keyboardShortcut("g")
                     .buttonStyle(.bordered)
                     .accessibilityHint("Close this early reminder while keeping the Strong Alert at the commitment start.")
-                Button("Stop reminders", action: dismiss)
+                Button("Stop reminders") {
+                    isStopRemindersConfirmationPresented = true
+                }
                     .keyboardShortcut("s")
                     .buttonStyle(.bordered)
                     .accessibilityHint("Stop Early Reminder and Strong Alert for this commitment occurrence without changing Google Calendar.")
@@ -769,6 +797,11 @@ private struct EarlyReminderFallbackView: View {
         }
         .padding(28)
         .frame(minWidth: 380)
+        .stopRemindersConfirmation(
+            isPresented: $isStopRemindersConfirmationPresented,
+            onCancel: {},
+            onConfirm: dismiss
+        )
     }
 }
 
@@ -1469,6 +1502,37 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
     }
 }
 
+private struct StopRemindersConfirmationModifier: ViewModifier {
+    @Binding var isPresented: Bool
+    let onCancel: () -> Void
+    let onConfirm: () -> Void
+
+    func body(content: Content) -> some View {
+        content.alert("Stop reminders for this commitment?", isPresented: $isPresented) {
+            Button("Keep reminders", role: .cancel, action: onCancel)
+            Button("Stop reminders", role: .destructive, action: onConfirm)
+        } message: {
+            Text("You will not receive an Early Reminder or Strong Alert when it starts. Your Google Calendar RSVP will not change.")
+        }
+    }
+}
+
+private extension View {
+    func stopRemindersConfirmation(
+        isPresented: Binding<Bool>,
+        onCancel: @escaping () -> Void,
+        onConfirm: @escaping () -> Void
+    ) -> some View {
+        modifier(
+            StopRemindersConfirmationModifier(
+                isPresented: isPresented,
+                onCancel: onCancel,
+                onConfirm: onConfirm
+            )
+        )
+    }
+}
+
 private struct StrongAlertView: View {
     let title: String
     let timing: String
@@ -1478,8 +1542,6 @@ private struct StrongAlertView: View {
     var secondaryActionTitle: String? = nil
     var secondaryAction: (() -> Void)? = nil
     var secondaryActionKeyboardShortcut: KeyEquivalent = "h"
-    var tertiaryActionTitle: String? = nil
-    var tertiaryAction: (() -> Void)? = nil
 
     var body: some View {
         VStack(spacing: 20) {
@@ -1503,16 +1565,7 @@ private struct StrongAlertView: View {
                     .keyboardShortcut(secondaryActionKeyboardShortcut)
                     .buttonStyle(.bordered)
                     .accessibilityLabel(secondaryActionTitle)
-                    .accessibilityHint(secondaryActionTitle == "Handled elsewhere"
-                        ? "Stop protection because you handled this commitment elsewhere."
-                        : "Stop protection for this occurrence without changing Google Calendar.")
-            }
-            if let tertiaryActionTitle, let tertiaryAction {
-                Button(tertiaryActionTitle, action: tertiaryAction)
-                    .keyboardShortcut("d")
-                    .buttonStyle(.bordered)
-                    .accessibilityLabel(tertiaryActionTitle)
-                    .accessibilityHint("Stop protection for this occurrence without changing Google Calendar.")
+                    .accessibilityHint("Stop Early Reminder and Strong Alert for this commitment occurrence without changing Google Calendar.")
             }
         }
         .padding(32)

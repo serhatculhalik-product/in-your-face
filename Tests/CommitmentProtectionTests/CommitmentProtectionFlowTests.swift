@@ -193,7 +193,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertFalse(flow.isStrongAlertPresented)
     }
 
-    func testStrongAlertUsesHandledWhenNoRecognizedMeetingLink() async {
+    func testStrongAlertUsesStopRemindersWhenNoRecognizedMeetingLink() async {
         let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
         let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
         let now = Date(timeIntervalSince1970: 1_000_000)
@@ -217,8 +217,8 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         await activateProtection(for: flow, calendarID: calendar.id)
         await flow.refreshCommitmentProtection(at: now)
 
-        XCTAssertEqual(flow.strongAlertPrimaryActionTitle, "Handled elsewhere")
-        flow.handleStrongAlert()
+        XCTAssertEqual(flow.strongAlertPrimaryActionTitle, "Stop reminders")
+        XCTAssertTrue(flow.dismissCommitment(at: now))
         XCTAssertNil(flow.strongAlertCommitment)
         XCTAssertFalse(flow.isStrongAlertPresented)
     }
