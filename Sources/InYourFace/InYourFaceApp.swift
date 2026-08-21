@@ -212,14 +212,14 @@ private func openEarlyReminderIfNeeded(
         EarlyReminderWindowController.shared.closeWhenAvailable()
         return
     }
-    EarlyReminderWindowController.shared.cancelPendingCloseObservation()
+    EarlyReminderWindowController.shared.cancelPendingClose()
     Task { @MainActor in
         await Task.yield()
         guard flow.earlyReminderCommitment != nil else {
             EarlyReminderWindowController.shared.closeWhenAvailable()
             return
         }
-        EarlyReminderWindowController.shared.cancelPendingCloseObservation()
+        EarlyReminderWindowController.shared.cancelPendingClose()
         openWindow()
     }
 }
@@ -1497,7 +1497,8 @@ private struct EarlyReminderWindowMarker: NSViewRepresentable {
     }
 
     private func markWindow(_ window: NSWindow?) {
-        window?.identifier = earlyReminderWindowIdentifier
+        guard let window else { return }
+        EarlyReminderWindowController.shared.registerNormalWindow(window)
     }
 }
 
@@ -1748,8 +1749,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
     private var canSnoozeEarlyReminder = false
     private var fallbackContent: EarlyReminderFallbackContent?
     private var fallbackPanel: NSPanel?
-    private var pendingCloseObserver: NSObjectProtocol?
-    private var pendingCloseTask: Task<Void, Never>?
+    private var shouldCloseWhenWindowAppears = false
     private var surfaceRecoveryAttempts = 0
     private var screenObserver: NSObjectProtocol?
     private var allowsWindowClose = false
@@ -1771,7 +1771,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         dismiss: @escaping () -> Void,
         selectPrimary: @escaping (CalendarEvent) -> Void
     ) {
-        stopPendingCloseObservation()
+        cancelPendingClose()
         reopenSurface = reopen
         clearEarlyReminder = clear
         canSnoozeEarlyReminder = canSnooze
@@ -1871,7 +1871,31 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
     }
 
     func close() {
-        stopPendingCloseObservation()
+        shouldCloseWhenWindowAppears = false
+        closeTrackedSurfaces()
+    }
+
+    func closeWhenAvailable() {
+        shouldCloseWhenWindowAppears = true
+        closeTrackedSurfaces()
+    }
+
+    func cancelPendingClose() {
+        shouldCloseWhenWindowAppears = false
+    }
+
+    func registerNormalWindow(_ window: NSWindow) {
+        guard window !== fallbackPanel else { return }
+        window.identifier = earlyReminderWindowIdentifier
+        guard !shouldCloseWhenWindowAppears else {
+            window.delegate = nil
+            window.close()
+            return
+        }
+        self.window = window
+    }
+
+    private func closeTrackedSurfaces() {
         allowsWindowClose = true
         let trackedWindow = self.window
         var windowsToClose = NSApp.windows.filter { $0.identifier == earlyReminderWindowIdentifier }
@@ -1883,12 +1907,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         }
         stop()
         stopScreenObservation()
-        var closedWindowIDs = Set<ObjectIdentifier>()
-        for window in windowsToClose {
-            guard closedWindowIDs.insert(ObjectIdentifier(window)).inserted else { continue }
-            window.delegate = nil
-            window.close()
-        }
+        closeWindows(windowsToClose)
         fallbackPanel = nil
         self.window = nil
         self.fallbackContent = nil
@@ -1899,34 +1918,6 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         self.canSnoozeEarlyReminder = false
         lifecycle.close()
         allowsWindowClose = false
-    }
-
-    func closeWhenAvailable() {
-        close()
-        closeUntrackedEarlyReminderWindows()
-        guard pendingCloseObserver == nil else { return }
-
-        pendingCloseObserver = NotificationCenter.default.addObserver(
-            forName: NSWindow.didBecomeKeyNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            guard let window = notification.object as? NSWindow else { return }
-            Task { @MainActor [weak self, weak window] in
-                guard let self, let window, window.title == "Early Reminder" else { return }
-                self.closeWindows([window])
-                self.stopPendingCloseObservation()
-            }
-        }
-        pendingCloseTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 500_000_000)
-            guard !Task.isCancelled else { return }
-            self?.stopPendingCloseObservation()
-        }
-    }
-
-    func cancelPendingCloseObservation() {
-        stopPendingCloseObservation()
     }
 
     func prepareForProgrammaticClose() {
@@ -2011,18 +2002,12 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
     }
 
     private func normalEarlyReminderWindow(excluding excludedWindow: NSWindow?) -> NSWindow? {
-        NSApp.windows.first(where: {
-            $0 !== excludedWindow && $0.identifier == earlyReminderWindowIdentifier
-        }) ?? NSApp.windows.first(where: {
-            $0 !== excludedWindow && $0.title == "Early Reminder"
-        })
-    }
-
-    private func closeUntrackedEarlyReminderWindows() {
-        let windows = NSApp.windows.filter { window in
-            window.title == "Early Reminder" && window.identifier != earlyReminderWindowIdentifier
+        if let window, window !== excludedWindow {
+            return window
         }
-        closeWindows(windows)
+        return NSApp.windows.first(where: {
+            $0 !== excludedWindow && $0.identifier == earlyReminderWindowIdentifier
+        })
     }
 
     private func closeWindows(_ windows: [NSWindow]) {
@@ -2031,15 +2016,6 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
             guard closedWindowIDs.insert(ObjectIdentifier(window)).inserted else { continue }
             window.delegate = nil
             window.close()
-        }
-    }
-
-    private func stopPendingCloseObservation() {
-        pendingCloseTask?.cancel()
-        pendingCloseTask = nil
-        if let pendingCloseObserver {
-            NotificationCenter.default.removeObserver(pendingCloseObserver)
-            self.pendingCloseObserver = nil
         }
     }
 
