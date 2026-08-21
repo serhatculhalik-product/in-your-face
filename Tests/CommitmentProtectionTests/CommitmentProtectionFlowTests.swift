@@ -983,6 +983,292 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertTrue(flow.isStrongAlertPresented)
     }
 
+    func testCancelingAProtectedCommitmentRemovesItsPendingProtection() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(10 * 60),
+            endDate: now.addingTimeInterval(70 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let connector = MutableTestGoogleCalendarConnector(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [commitment]
+        )
+        let suiteName = "CommitmentProtectionFlowTests.cancelled.\(UUID().uuidString)"
+        let stateStore = UserDefaults(suiteName: suiteName)!
+        defer { stateStore.removePersistentDomain(forName: suiteName) }
+        let flow = CommitmentProtectionFlow(
+            calendarConnector: connector,
+            launchAtLogin: TestLaunchAtLoginController(),
+            stateStore: stateStore,
+            now: { now }
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+        XCTAssertEqual(flow.earlyReminderCommitment, commitment)
+
+        connector.events = []
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(2 * 60))
+
+        XCTAssertNil(flow.upcomingCommitment)
+        XCTAssertNil(flow.earlyReminderCommitment)
+        XCTAssertNil(flow.strongAlertCommitment)
+        XCTAssertFalse(flow.isStrongAlertPresented)
+
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(10 * 60))
+
+        XCTAssertNil(flow.strongAlertCommitment)
+        XCTAssertFalse(flow.isStrongAlertPresented)
+    }
+
+    func testReschedulingACommitmentIntoItsActiveWindowShowsAnOverdueStrongAlert() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let originalCommitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(20 * 60),
+            endDate: now.addingTimeInterval(80 * 60),
+            timeZoneIdentifier: "Europe/Istanbul",
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let rescheduledCommitment = CalendarEvent(
+            id: originalCommitment.id,
+            title: originalCommitment.title,
+            startDate: now.addingTimeInterval(5 * 60),
+            endDate: now.addingTimeInterval(35 * 60),
+            timeZoneIdentifier: originalCommitment.timeZoneIdentifier,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let connector = MutableTestGoogleCalendarConnector(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [originalCommitment]
+        )
+        let flow = makeMutableFlow(connector: connector, now: now)
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(10 * 60))
+        XCTAssertEqual(flow.earlyReminderCommitment, originalCommitment)
+
+        connector.events = [rescheduledCommitment]
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(15 * 60))
+
+        XCTAssertNil(flow.upcomingCommitment)
+        XCTAssertEqual(flow.strongAlertCommitment, rescheduledCommitment)
+        XCTAssertTrue(flow.isStrongAlertPresented)
+        XCTAssertEqual(
+            flow.strongAlertTimingText(for: rescheduledCommitment, at: now.addingTimeInterval(15 * 60)),
+            "Overdue · started 10 min ago"
+        )
+    }
+
+    func testChangingTheMeetingLinkUpdatesTheJoinPathForAnActiveCommitment() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let oldLink = URL(string: "https://meet.google.com/old-link")!
+        let newLink = URL(string: "https://meet.google.com/new-link")!
+        let originalCommitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now,
+            endDate: now.addingTimeInterval(60 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id,
+            recognizedMeetingLink: oldLink
+        )
+        let updatedCommitment = CalendarEvent(
+            id: originalCommitment.id,
+            title: originalCommitment.title,
+            startDate: originalCommitment.startDate,
+            endDate: originalCommitment.endDate,
+            timeZoneIdentifier: originalCommitment.timeZoneIdentifier,
+            isAllDay: originalCommitment.isAllDay,
+            isAccepted: originalCommitment.isAccepted,
+            calendarID: originalCommitment.calendarID,
+            accountID: originalCommitment.accountID,
+            recognizedMeetingLink: newLink
+        )
+        let connector = MutableTestGoogleCalendarConnector(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [originalCommitment]
+        )
+        let flow = makeMutableFlow(connector: connector, now: now)
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+        XCTAssertEqual(flow.strongAlertCommitment?.recognizedMeetingLink, oldLink)
+
+        connector.events = [updatedCommitment]
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(1))
+
+        XCTAssertEqual(flow.strongAlertCommitment, updatedCommitment)
+        XCTAssertEqual(flow.joinStrongAlert(), newLink)
+    }
+
+    func testChangingACommitmentTimeZoneUpdatesTheDisplayedLocalTimeLabel() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let originalCommitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(10 * 60),
+            endDate: now.addingTimeInterval(70 * 60),
+            timeZoneIdentifier: "America/Los_Angeles",
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let updatedCommitment = CalendarEvent(
+            id: originalCommitment.id,
+            title: originalCommitment.title,
+            startDate: originalCommitment.startDate,
+            endDate: originalCommitment.endDate,
+            timeZoneIdentifier: "Asia/Tokyo",
+            isAllDay: originalCommitment.isAllDay,
+            isAccepted: originalCommitment.isAccepted,
+            calendarID: originalCommitment.calendarID,
+            accountID: originalCommitment.accountID
+        )
+        let connector = MutableTestGoogleCalendarConnector(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [originalCommitment]
+        )
+        let flow = makeMutableFlow(connector: connector, now: now)
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+        XCTAssertEqual(flow.earlyReminderCommitment, originalCommitment)
+
+        connector.events = [updatedCommitment]
+        await flow.refreshCommitmentProtection(at: now)
+
+        let updatedZoneLabel = TimeZone(identifier: "Asia/Tokyo")!.abbreviation(for: now.addingTimeInterval(10 * 60))!
+        XCTAssertEqual(flow.earlyReminderCommitment, updatedCommitment)
+        XCTAssertTrue(flow.localStartTimeText(for: updatedCommitment).contains(updatedZoneLabel))
+    }
+
+    func testRecurringOccurrenceMutationLeavesUnchangedOccurrencesProtected() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let firstOccurrence = CalendarEvent(
+            id: "series-occurrence-1",
+            title: "Weekly review",
+            startDate: now.addingTimeInterval(10 * 60),
+            endDate: now.addingTimeInterval(40 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let unchangedOccurrence = CalendarEvent(
+            id: "series-occurrence-2",
+            title: "Weekly review",
+            startDate: now.addingTimeInterval(20 * 60),
+            endDate: now.addingTimeInterval(50 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let rescheduledFirstOccurrence = CalendarEvent(
+            id: firstOccurrence.id,
+            title: firstOccurrence.title,
+            startDate: now.addingTimeInterval(30 * 60),
+            endDate: now.addingTimeInterval(60 * 60),
+            timeZoneIdentifier: firstOccurrence.timeZoneIdentifier,
+            isAllDay: firstOccurrence.isAllDay,
+            isAccepted: firstOccurrence.isAccepted,
+            calendarID: firstOccurrence.calendarID,
+            accountID: firstOccurrence.accountID
+        )
+        let connector = MutableTestGoogleCalendarConnector(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [firstOccurrence, unchangedOccurrence]
+        )
+        let flow = makeMutableFlow(connector: connector, now: now)
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+        XCTAssertEqual(flow.earlyReminderCommitment, firstOccurrence)
+
+        connector.events = [rescheduledFirstOccurrence, unchangedOccurrence]
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(10 * 60))
+
+        XCTAssertEqual(flow.upcomingCommitment, unchangedOccurrence)
+        XCTAssertEqual(flow.earlyReminderCommitment, unchangedOccurrence)
+    }
+
+    func testCommitmentAcceptedAfterItsStartShowsAnImmediateOverdueStrongAlert() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(-5 * 60),
+            endDate: now.addingTimeInterval(55 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let unacceptedCommitment = CalendarEvent(
+            id: commitment.id,
+            title: commitment.title,
+            startDate: commitment.startDate,
+            endDate: commitment.endDate,
+            timeZoneIdentifier: commitment.timeZoneIdentifier,
+            isAllDay: commitment.isAllDay,
+            isAccepted: false,
+            calendarID: commitment.calendarID,
+            accountID: commitment.accountID
+        )
+        let connector = MutableTestGoogleCalendarConnector(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [unacceptedCommitment]
+        )
+        let flow = makeMutableFlow(connector: connector, now: now)
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertNil(flow.strongAlertCommitment)
+        XCTAssertFalse(flow.isStrongAlertPresented)
+
+        connector.events = [commitment]
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertEqual(flow.strongAlertCommitment, commitment)
+        XCTAssertTrue(flow.isStrongAlertPresented)
+        XCTAssertEqual(flow.strongAlertTimingText(for: commitment, at: now), "Overdue · started 5 min ago")
+    }
+
     func testDismissedOccurrenceDoesNotSuppressItsRescheduledSuccessor() async {
         let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
         let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
@@ -1409,6 +1695,23 @@ final class CommitmentProtectionFlowTests: XCTestCase {
             calendarConnector: TestGoogleCalendarConnector(connection: connection, events: events),
             launchAtLogin: TestLaunchAtLoginController(),
             stateStore: stateStore ?? UserDefaults(suiteName: "CommitmentProtectionFlowTests.\(UUID().uuidString)")!,
+            now: { now }
+        )
+    }
+
+    private func makeMutableFlow(
+        connector: MutableTestGoogleCalendarConnector,
+        now: Date
+    ) -> CommitmentProtectionFlow {
+        let suiteName = "CommitmentProtectionFlowTests.mutable.\(UUID().uuidString)"
+        let stateStore = UserDefaults(suiteName: suiteName)!
+        addTeardownBlock {
+            stateStore.removePersistentDomain(forName: suiteName)
+        }
+        return CommitmentProtectionFlow(
+            calendarConnector: connector,
+            launchAtLogin: TestLaunchAtLoginController(),
+            stateStore: stateStore,
             now: { now }
         )
     }

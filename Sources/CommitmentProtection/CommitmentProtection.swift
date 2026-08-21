@@ -556,62 +556,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
             guard generation == refreshGeneration else { return }
             connectionState = .connected
 
-            let eligibleEvents = events
-                .filter { event in
-                    guard event.isEligibleForProtection,
-                          event.startDate != nil,
-                          let endDate = event.endDate else {
-                        return false
-                    }
-                    return endDate > currentDate
-                }
-                .sorted { left, right in
-                    guard let leftStart = left.startDate,
-                          let rightStart = right.startDate else {
-                        return left.id < right.id
-                    }
-                    return leftStart == rightStart ? left.id < right.id : leftStart < rightStart
-                }
-            updateLocalState(for: eligibleEvents, at: currentDate)
-            let nextCommitment = eligibleEvents.first(where: { event in
-                guard let startDate = event.startDate else { return false }
-                return startDate > currentDate
-            })
-            let activeCommitment = eligibleEvents.first(where: { event in
-                guard let startDate = event.startDate else { return false }
-                return startDate <= currentDate
-            })
-
-            upcomingCommitment = nextCommitment
-            if clearedEarlyReminderEventID != nextCommitment?.id ||
-                clearedEarlyReminderEventStartDate != nextCommitment?.startDate {
-                clearedEarlyReminderEventID = nil
-                clearedEarlyReminderEventStartDate = nil
-            }
-
-            if let activeCommitment, !isSnoozed(activeCommitment, at: currentDate) {
-                updateStrongAlert(for: activeCommitment, at: currentDate)
-            } else {
-                clearStrongAlertState()
-            }
-
-            guard isEarlyReminderEnabled else {
-                earlyReminderCommitment = nil
-                return
-            }
-
-            guard let nextCommitment,
-                  let startDate = nextCommitment.startDate,
-                  currentDate >= startDate.addingTimeInterval(-Double(earlyReminderLeadTimeMinutes) * 60),
-                  !(clearedEarlyReminderEventID == nextCommitment.id &&
-                    clearedEarlyReminderEventStartDate == startDate),
-                  !isDecisionActive(nextCommitment),
-                  !isSnoozed(nextCommitment, at: currentDate) else {
-                earlyReminderCommitment = nil
-                return
-            }
-
-            earlyReminderCommitment = nextCommitment
+            reconcileCalendarSnapshot(events, at: currentDate)
         } catch {
             guard generation == refreshGeneration else { return }
             clearDisplayedProtectionState()
@@ -869,6 +814,68 @@ public final class CommitmentProtectionFlow: ObservableObject {
         return [strongAlertCommitment, earlyReminderCommitment, upcomingCommitment]
             .compactMap { $0 }
             .contains { OccurrenceIdentity($0) == occurrence }
+    }
+
+    private func reconcileCalendarSnapshot(_ events: [CalendarEvent], at currentDate: Date) {
+        let eligibleEvents = events
+            .filter { event in
+                guard event.isEligibleForProtection,
+                      event.startDate != nil,
+                      let endDate = event.endDate else {
+                    return false
+                }
+                return endDate > currentDate
+            }
+            .sorted { left, right in
+                guard let leftStart = left.startDate,
+                      let rightStart = right.startDate else {
+                    return left.id < right.id
+                }
+                return leftStart == rightStart ? left.id < right.id : leftStart < rightStart
+            }
+
+        // A successful calendar refresh replaces the visible snapshot. This is what removes
+        // canceled commitments and updates changed occurrences, links, times, and time zones.
+        updateLocalState(for: eligibleEvents, at: currentDate)
+        let nextCommitment = eligibleEvents.first(where: { event in
+            guard let startDate = event.startDate else { return false }
+            return startDate > currentDate
+        })
+        let activeCommitment = eligibleEvents.first(where: { event in
+            guard let startDate = event.startDate else { return false }
+            return startDate <= currentDate
+        })
+
+        upcomingCommitment = nextCommitment
+        if clearedEarlyReminderEventID != nextCommitment?.id ||
+            clearedEarlyReminderEventStartDate != nextCommitment?.startDate {
+            clearedEarlyReminderEventID = nil
+            clearedEarlyReminderEventStartDate = nil
+        }
+
+        if let activeCommitment, !isSnoozed(activeCommitment, at: currentDate) {
+            updateStrongAlert(for: activeCommitment, at: currentDate)
+        } else {
+            clearStrongAlertState()
+        }
+
+        guard isEarlyReminderEnabled else {
+            earlyReminderCommitment = nil
+            return
+        }
+
+        guard let nextCommitment,
+              let startDate = nextCommitment.startDate,
+              currentDate >= startDate.addingTimeInterval(-Double(earlyReminderLeadTimeMinutes) * 60),
+              !(clearedEarlyReminderEventID == nextCommitment.id &&
+                clearedEarlyReminderEventStartDate == startDate),
+              !isDecisionActive(nextCommitment),
+              !isSnoozed(nextCommitment, at: currentDate) else {
+            earlyReminderCommitment = nil
+            return
+        }
+
+        earlyReminderCommitment = nextCommitment
     }
 
     private func recordDecision(
