@@ -489,6 +489,682 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertFalse(flow.isStrongAlertPresented)
     }
 
+    func testSharedMeetingLinkRepresentationsProduceOneProtectionLifecycle() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let workCalendar = CalendarOption(id: "calendar-work", name: "Work", accountID: account.id)
+        let personalCalendar = CalendarOption(id: "calendar-personal", name: "Personal", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let meetingURL = URL(string: "https://meet.google.com/shared-room")!
+        let workRepresentation = CalendarEvent(
+            id: "event-work",
+            title: "Customer review",
+            startDate: now,
+            endDate: now.addingTimeInterval(45 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: workCalendar.id,
+            accountID: account.id,
+            recognizedMeetingLink: meetingURL
+        )
+        let personalRepresentation = CalendarEvent(
+            id: "event-personal",
+            title: "Customer review (personal copy)",
+            startDate: now,
+            endDate: now.addingTimeInterval(60 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: personalCalendar.id,
+            accountID: account.id,
+            recognizedMeetingLink: meetingURL
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(
+                account: account,
+                calendars: [workCalendar, personalCalendar]
+            ),
+            events: [workRepresentation, personalRepresentation],
+            now: now
+        )
+
+        await flow.connectGoogleAccount()
+        flow.setCalendarSelected(true, calendarID: workCalendar.id)
+        flow.setCalendarSelected(true, calendarID: personalCalendar.id)
+        XCTAssertTrue(flow.confirmProtection())
+        await settleScheduledRefreshes()
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertEqual(flow.strongAlertCommitment?.recognizedMeetingLink, meetingURL)
+        XCTAssertTrue(flow.isStrongAlertPresented)
+        XCTAssertEqual(flow.joinStrongAlert(), meetingURL)
+
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(1))
+
+        XCTAssertNil(flow.strongAlertCommitment)
+        XCTAssertFalse(flow.isStrongAlertPresented)
+    }
+
+    func testMergedCommitmentProducesOneEarlyReminderLifecycle() async {
+        let (account, calendar) = makeTestAccountAndCalendar()
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let meetingURL = URL(string: "https://meet.google.com/shared-early-lifecycle")!
+        let firstRepresentation = CalendarEvent(
+            id: "event-a",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(5 * 60),
+            endDate: now.addingTimeInterval(60 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id,
+            recognizedMeetingLink: meetingURL
+        )
+        let secondRepresentation = CalendarEvent(
+            id: "event-b",
+            title: "Customer review copy",
+            startDate: firstRepresentation.startDate,
+            endDate: firstRepresentation.endDate,
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id,
+            recognizedMeetingLink: meetingURL
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [firstRepresentation, secondRepresentation],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(1))
+
+        XCTAssertEqual(flow.earlyReminderCommitment?.id, firstRepresentation.id)
+        XCTAssertEqual(
+            flow.activityLog.filter { $0.kind == .earlyReminderShown }.count,
+            1
+        )
+    }
+
+    func testDesignatedMeetingLinkIsPreferredForJoin() async {
+        let (account, calendar) = makeTestAccountAndCalendar()
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let primaryLink = URL(string: "https://meet.google.com/primary-room")!
+        let secondaryLink = URL(string: "https://zoom.us/j/123456789")!
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now,
+            endDate: now.addingTimeInterval(60 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id,
+            recognizedMeetingLinks: [
+                RecognizedMeetingLink(url: primaryLink, isPrimary: true),
+                RecognizedMeetingLink(url: secondaryLink, isPrimary: false)
+            ]
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [commitment],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertEqual(flow.strongAlertMeetingLinkOptions, [primaryLink, secondaryLink])
+        XCTAssertEqual(flow.joinStrongAlert(), primaryLink)
+    }
+
+    func testMultipleUndesignatedMeetingLinksCanBeChosenForJoin() async {
+        let (account, calendar) = makeTestAccountAndCalendar()
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let firstLink = URL(string: "https://zoom.us/j/123456789")!
+        let secondLink = URL(string: "https://teams.microsoft.com/l/meetup-join/abc")!
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now,
+            endDate: now.addingTimeInterval(60 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id,
+            recognizedMeetingLinks: [
+                RecognizedMeetingLink(url: firstLink, isPrimary: false),
+                RecognizedMeetingLink(url: secondLink, isPrimary: false)
+            ]
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [commitment],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertEqual(flow.strongAlertMeetingLinkOptions, [firstLink, secondLink])
+        XCTAssertEqual(flow.joinStrongAlert(using: secondLink), secondLink)
+        XCTAssertNil(flow.strongAlertCommitment)
+    }
+
+    func testSharedMeetingLinkCanMergeRepresentationsAcrossConnectedAccounts() async {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let firstAccount = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let firstCalendar = CalendarOption(id: "calendar-work", name: "Work", accountID: firstAccount.id)
+        let secondAccount = GoogleAccount(id: "account-2", email: "sam@example.com", displayName: "Sam")
+        let secondCalendar = CalendarOption(id: "calendar-personal", name: "Personal", accountID: secondAccount.id)
+        let meetingURL = URL(string: "https://meet.google.com/cross-account")!
+        let firstRepresentation = CalendarEvent(
+            id: "event-work",
+            title: "Customer review",
+            startDate: now,
+            endDate: now.addingTimeInterval(45 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: firstCalendar.id,
+            accountID: firstAccount.id,
+            recognizedMeetingLink: meetingURL
+        )
+        let secondRepresentation = CalendarEvent(
+            id: "event-personal",
+            title: "Customer review copy",
+            startDate: now,
+            endDate: now.addingTimeInterval(60 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: secondCalendar.id,
+            accountID: secondAccount.id,
+            recognizedMeetingLink: meetingURL
+        )
+        let connector = MultiAccountTestGoogleCalendarConnector(
+            connections: [
+                GoogleCalendarConnection(account: firstAccount, calendars: [firstCalendar]),
+                GoogleCalendarConnection(account: secondAccount, calendars: [secondCalendar])
+            ],
+            events: [firstRepresentation, secondRepresentation]
+        )
+        let flow = CommitmentProtectionFlow(
+            calendarConnector: connector,
+            launchAtLogin: TestLaunchAtLoginController(),
+            now: { now }
+        )
+
+        await flow.connectGoogleAccount()
+        flow.setCalendarSelected(true, calendarID: firstCalendar.id)
+        XCTAssertTrue(flow.confirmProtection())
+        await flow.connectGoogleAccount()
+        flow.setCalendarSelected(true, calendarID: secondCalendar.id)
+        XCTAssertTrue(flow.confirmProtection())
+        await settleScheduledRefreshes()
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertEqual(flow.strongAlertMeetingLinkOptions, [meetingURL])
+        XCTAssertEqual(flow.joinStrongAlert(), meetingURL)
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(1))
+        XCTAssertFalse(flow.isStrongAlertPresented)
+    }
+
+    func testEquivalentMeetingLinkRepresentationsMergeIntoOneCommitment() async {
+        let (account, calendar) = makeTestAccountAndCalendar()
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let firstLink = URL(string: "https://meet.google.com/normalized-room")!
+        let equivalentLink = URL(string: "HTTPS://MEET.GOOGLE.COM/normalized-room/")!
+        let firstRepresentation = CalendarEvent(
+            id: "event-a",
+            title: "Customer review",
+            startDate: now,
+            endDate: now.addingTimeInterval(45 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id,
+            recognizedMeetingLink: firstLink
+        )
+        let secondRepresentation = CalendarEvent(
+            id: "event-b",
+            title: "Customer review copy",
+            startDate: now,
+            endDate: now.addingTimeInterval(60 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id,
+            recognizedMeetingLink: equivalentLink
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [firstRepresentation, secondRepresentation],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertEqual(flow.strongAlertMeetingLinkOptions, [firstLink])
+        XCTAssertEqual(flow.joinStrongAlert(), firstLink)
+    }
+
+    func testConflictingDesignatedLinksRequireAnExplicitChoice() async {
+        let (account, calendar) = makeTestAccountAndCalendar()
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let firstLink = URL(string: "https://meet.google.com/first-room")!
+        let sharedLink = URL(string: "https://zoom.us/j/shared-room")!
+        let secondLink = URL(string: "https://teams.microsoft.com/l/meetup-join/second")!
+        let firstRepresentation = CalendarEvent(
+            id: "event-a",
+            title: "Customer review",
+            startDate: now,
+            endDate: now.addingTimeInterval(45 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id,
+            recognizedMeetingLinks: [
+                RecognizedMeetingLink(url: firstLink, isPrimary: true),
+                RecognizedMeetingLink(url: sharedLink, isPrimary: false)
+            ]
+        )
+        let secondRepresentation = CalendarEvent(
+            id: "event-b",
+            title: "Customer review copy",
+            startDate: now,
+            endDate: now.addingTimeInterval(60 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id,
+            recognizedMeetingLinks: [
+                RecognizedMeetingLink(url: secondLink, isPrimary: true),
+                RecognizedMeetingLink(url: sharedLink, isPrimary: false)
+            ]
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [firstRepresentation, secondRepresentation],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertNil(flow.strongAlertPrimaryMeetingLink)
+        XCTAssertEqual(flow.strongAlertPrimaryActionTitle, "Choose link")
+        XCTAssertNil(flow.joinStrongAlert())
+        XCTAssertEqual(flow.joinStrongAlert(using: secondLink), secondLink)
+    }
+
+    func testMergedReminderBecomesUnverifiedWhenAnySourceAccountIsStale() async {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let firstAccount = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let firstCalendar = CalendarOption(id: "calendar-work", name: "Work", accountID: firstAccount.id)
+        let secondAccount = GoogleAccount(id: "account-2", email: "sam@example.com", displayName: "Sam")
+        let secondCalendar = CalendarOption(id: "calendar-personal", name: "Personal", accountID: secondAccount.id)
+        let meetingURL = URL(string: "https://meet.google.com/shared-stale-room")!
+        let firstRepresentation = CalendarEvent(
+            id: "event-work",
+            title: "Customer review",
+            startDate: now,
+            endDate: now.addingTimeInterval(60 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: firstCalendar.id,
+            accountID: firstAccount.id,
+            recognizedMeetingLink: meetingURL
+        )
+        let secondRepresentation = CalendarEvent(
+            id: "event-personal",
+            title: "Customer review copy",
+            startDate: now,
+            endDate: now.addingTimeInterval(60 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: secondCalendar.id,
+            accountID: secondAccount.id,
+            recognizedMeetingLink: meetingURL
+        )
+        let connector = MultiAccountTestGoogleCalendarConnector(
+            connections: [
+                GoogleCalendarConnection(account: firstAccount, calendars: [firstCalendar]),
+                GoogleCalendarConnection(account: secondAccount, calendars: [secondCalendar])
+            ],
+            events: [firstRepresentation, secondRepresentation]
+        )
+        let flow = CommitmentProtectionFlow(
+            calendarConnector: connector,
+            launchAtLogin: TestLaunchAtLoginController(),
+            now: { now }
+        )
+
+        await flow.connectGoogleAccount()
+        await flow.connectGoogleAccount()
+        flow.setCalendarSelected(true, calendarID: firstCalendar.id, accountID: firstAccount.id)
+        flow.setCalendarSelected(true, calendarID: secondCalendar.id, accountID: secondAccount.id)
+        XCTAssertTrue(flow.confirmAllProtection())
+        await settleScheduledRefreshes()
+        await flow.refreshCommitmentProtection(at: now)
+        XCTAssertFalse(flow.isStrongAlertUnverified)
+
+        await connector.setFailingAccountIDs([secondAccount.id])
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(16 * 60))
+
+        XCTAssertTrue(flow.isStrongAlertPresented)
+        XCTAssertTrue(flow.isStrongAlertUnverified)
+        let strongAlertActivity = flow.activityLog.first { $0.kind == .strongAlertShown }
+        XCTAssertTrue(strongAlertActivity?.detail.contains(firstAccount.email) == true)
+        XCTAssertTrue(strongAlertActivity?.detail.contains(secondAccount.email) == true)
+    }
+
+    func testSimilarCommitmentsWithoutSharedMeetingLinkRemainSeparate() async {
+        let (account, calendar) = makeTestAccountAndCalendar()
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let firstCommitment = CalendarEvent(
+            id: "event-a",
+            title: "Customer review",
+            startDate: now,
+            endDate: now.addingTimeInterval(45 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let secondCommitment = CalendarEvent(
+            id: "event-b",
+            title: "Customer review",
+            startDate: now,
+            endDate: now.addingTimeInterval(60 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [firstCommitment, secondCommitment],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertEqual(flow.strongAlertCommitment?.id, firstCommitment.id)
+        XCTAssertTrue(flow.dismissCommitment(at: now))
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(1))
+
+        XCTAssertEqual(flow.strongAlertCommitment?.id, secondCommitment.id)
+        XCTAssertTrue(flow.isStrongAlertPresented)
+    }
+
+    func testSharedSecondaryMeetingLinkMergesRepresentationsAndOffersAllLinks() async {
+        let (account, calendar) = makeTestAccountAndCalendar()
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let firstLink = URL(string: "https://meet.google.com/first-room")!
+        let sharedLink = URL(string: "https://zoom.us/j/shared-room")!
+        let secondLink = URL(string: "https://teams.microsoft.com/l/meetup-join/second")!
+        let firstCommitment = CalendarEvent(
+            id: "event-a",
+            title: "Customer review",
+            startDate: now,
+            endDate: now.addingTimeInterval(45 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id,
+            recognizedMeetingLinks: [
+                RecognizedMeetingLink(url: firstLink, isPrimary: false),
+                RecognizedMeetingLink(url: sharedLink, isPrimary: false)
+            ]
+        )
+        let secondCommitment = CalendarEvent(
+            id: "event-b",
+            title: "Customer review copy",
+            startDate: now,
+            endDate: now.addingTimeInterval(60 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id,
+            recognizedMeetingLinks: [
+                RecognizedMeetingLink(url: sharedLink, isPrimary: false),
+                RecognizedMeetingLink(url: secondLink, isPrimary: false)
+            ]
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [firstCommitment, secondCommitment],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertEqual(flow.strongAlertMeetingLinkOptions, [firstLink, sharedLink, secondLink])
+        XCTAssertEqual(flow.joinStrongAlert(using: secondLink), secondLink)
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(1))
+        XCTAssertFalse(flow.isStrongAlertPresented)
+    }
+
+    func testMeetingLinkChainDoesNotMergeWithoutOneSharedLinkAcrossTheGroup() async {
+        let (account, calendar) = makeTestAccountAndCalendar()
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let firstLink = URL(string: "https://meet.google.com/first-chain-room")!
+        let bridgeLink = URL(string: "https://zoom.us/j/bridge-chain-room")!
+        let lastLink = URL(string: "https://teams.microsoft.com/l/last-chain-room")!
+        let firstRepresentation = CalendarEvent(
+            id: "event-a",
+            title: "Customer review",
+            startDate: now,
+            endDate: now.addingTimeInterval(60 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id,
+            recognizedMeetingLinks: [
+                RecognizedMeetingLink(url: firstLink, isPrimary: false),
+                RecognizedMeetingLink(url: bridgeLink, isPrimary: false)
+            ]
+        )
+        let bridgeRepresentation = CalendarEvent(
+            id: "event-b",
+            title: "Customer review copy",
+            startDate: now,
+            endDate: now.addingTimeInterval(60 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id,
+            recognizedMeetingLinks: [
+                RecognizedMeetingLink(url: bridgeLink, isPrimary: false),
+                RecognizedMeetingLink(url: lastLink, isPrimary: false)
+            ]
+        )
+        let lastRepresentation = CalendarEvent(
+            id: "event-c",
+            title: "Customer review third copy",
+            startDate: now,
+            endDate: now.addingTimeInterval(60 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id,
+            recognizedMeetingLink: lastLink
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [firstRepresentation, bridgeRepresentation, lastRepresentation],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+        XCTAssertEqual(flow.strongAlertMeetingLinkOptions, [firstLink, bridgeLink, lastLink])
+
+        XCTAssertTrue(flow.dismissCommitment(at: now))
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(1))
+
+        XCTAssertEqual(flow.strongAlertCommitment?.id, lastRepresentation.id)
+        XCTAssertTrue(flow.isStrongAlertPresented)
+    }
+
+    func testMeetingLinkFragmentsRemainDifferentRecognizedLinks() async {
+        let (account, calendar) = makeTestAccountAndCalendar()
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let firstLink = URL(string: "https://meet.google.com/same-room#first")!
+        let secondLink = URL(string: "https://meet.google.com/same-room#second")!
+        let firstRepresentation = CalendarEvent(
+            id: "event-a",
+            title: "Customer review",
+            startDate: now,
+            endDate: now.addingTimeInterval(60 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id,
+            recognizedMeetingLink: firstLink
+        )
+        let secondRepresentation = CalendarEvent(
+            id: "event-b",
+            title: "Customer review copy",
+            startDate: now,
+            endDate: now.addingTimeInterval(60 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id,
+            recognizedMeetingLink: secondLink
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [firstRepresentation, secondRepresentation],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertEqual(flow.strongAlertMeetingLinkOptions, [firstLink])
+        XCTAssertTrue(flow.dismissCommitment(at: now))
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(1))
+        XCTAssertEqual(flow.strongAlertMeetingLinkOptions, [secondLink])
+    }
+
+    func testClearedMergedEarlyReminderStaysClearedWhenOneRepresentationDisappears() async {
+        let (account, calendar) = makeTestAccountAndCalendar()
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let meetingURL = URL(string: "https://meet.google.com/early-shared-room")!
+        let firstRepresentation = CalendarEvent(
+            id: "event-a",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(5 * 60),
+            endDate: now.addingTimeInterval(60 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id,
+            recognizedMeetingLink: meetingURL
+        )
+        let secondRepresentation = CalendarEvent(
+            id: "event-b",
+            title: "Customer review copy",
+            startDate: firstRepresentation.startDate,
+            endDate: firstRepresentation.endDate,
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id,
+            recognizedMeetingLink: meetingURL
+        )
+        let connector = MutableTestGoogleCalendarConnector(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [firstRepresentation, secondRepresentation]
+        )
+        let flow = makeMutableFlow(connector: connector, now: now)
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+        flow.clearEarlyReminder()
+
+        connector.events = [secondRepresentation]
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(1))
+
+        XCTAssertNil(flow.earlyReminderCommitment)
+        XCTAssertEqual(flow.upcomingCommitment, secondRepresentation)
+    }
+
+    func testMergedDecisionSurvivesWhenOnlyAnotherRepresentationRemains() async {
+        let (account, calendar) = makeTestAccountAndCalendar()
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let meetingURL = URL(string: "https://meet.google.com/decision-shared-room")!
+        let firstRepresentation = CalendarEvent(
+            id: "event-a",
+            title: "Customer review",
+            startDate: now,
+            endDate: now.addingTimeInterval(60 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id,
+            recognizedMeetingLink: meetingURL
+        )
+        let secondRepresentation = CalendarEvent(
+            id: "event-b",
+            title: "Customer review copy",
+            startDate: now,
+            endDate: now.addingTimeInterval(60 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id,
+            recognizedMeetingLink: meetingURL
+        )
+        let connector = MutableTestGoogleCalendarConnector(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [firstRepresentation, secondRepresentation]
+        )
+        let flow = makeMutableFlow(connector: connector, now: now)
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+        XCTAssertTrue(flow.dismissCommitment(at: now))
+
+        connector.events = [secondRepresentation]
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(1))
+
+        XCTAssertEqual(flow.currentCommitmentDecision, .dismissed)
+        XCTAssertNil(flow.strongAlertCommitment)
+        XCTAssertFalse(flow.isStrongAlertPresented)
+    }
+
     func testStrongAlertTimingAndContextDescribeTheActiveCommitment() async {
         let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
         let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
@@ -2115,6 +2791,11 @@ final class CommitmentProtectionFlowTests: XCTestCase {
                     "id": "accepted-event",
                     "summary": "Accepted review",
                     "hangoutLink": "https://meet.google.com/abc-defg-hij",
+                    "conferenceData": {
+                        "entryPoints": [
+                            {"entryPointType": "video", "uri": "https://zoom.us/j/123456789"}
+                        ]
+                    },
                     "start": {
                         "dateTime": "2026-08-20T10:00:00+03:00",
                         "timeZone": "Europe/Istanbul"
@@ -2157,6 +2838,14 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertTrue(events[0].isAccepted)
         XCTAssertFalse(events[0].isAllDay)
         XCTAssertEqual(events[0].recognizedMeetingLink, URL(string: "https://meet.google.com/abc-defg-hij"))
+        XCTAssertEqual(
+            events[0].recognizedMeetingLinks.map(\.url),
+            [
+                URL(string: "https://meet.google.com/abc-defg-hij")!,
+                URL(string: "https://zoom.us/j/123456789")!
+            ]
+        )
+        XCTAssertEqual(events[0].primaryRecognizedMeetingLink, URL(string: "https://meet.google.com/abc-defg-hij"))
         XCTAssertTrue(events[1].isAllDay)
         XCTAssertTrue(events[1].isAccepted)
         XCTAssertFalse(events[2].isAccepted)

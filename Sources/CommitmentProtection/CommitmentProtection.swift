@@ -39,6 +39,18 @@ public enum CalendarEventType: String, Codable, Equatable, Sendable {
     case outOfOffice
 }
 
+public struct RecognizedMeetingLink: Codable, Equatable, Hashable, Identifiable, Sendable {
+    public let url: URL
+    public let isPrimary: Bool
+
+    public var id: String { url.absoluteString }
+
+    public init(url: URL, isPrimary: Bool) {
+        self.url = url
+        self.isPrimary = isPrimary
+    }
+}
+
 public struct CalendarEvent: Codable, Equatable, Identifiable, Sendable {
     public let id: String
     public let title: String
@@ -49,8 +61,16 @@ public struct CalendarEvent: Codable, Equatable, Identifiable, Sendable {
     public let isAccepted: Bool
     public let calendarID: String
     public let accountID: String
-    public let recognizedMeetingLink: URL?
+    public let recognizedMeetingLinks: [RecognizedMeetingLink]
     public let eventType: CalendarEventType?
+
+    public var recognizedMeetingLink: URL? {
+        primaryRecognizedMeetingLink ?? recognizedMeetingLinks.first?.url
+    }
+
+    public var primaryRecognizedMeetingLink: URL? {
+        recognizedMeetingLinks.first(where: \.isPrimary)?.url
+    }
 
     public init(
         id: String,
@@ -63,6 +83,7 @@ public struct CalendarEvent: Codable, Equatable, Identifiable, Sendable {
         calendarID: String,
         accountID: String,
         recognizedMeetingLink: URL? = nil,
+        recognizedMeetingLinks: [RecognizedMeetingLink] = [],
         eventType: CalendarEventType? = nil
     ) {
         self.id = id
@@ -74,8 +95,98 @@ public struct CalendarEvent: Codable, Equatable, Identifiable, Sendable {
         self.isAccepted = isAccepted
         self.calendarID = calendarID
         self.accountID = accountID
-        self.recognizedMeetingLink = recognizedMeetingLink
+        var links = recognizedMeetingLinks
+        if links.isEmpty, let recognizedMeetingLink {
+            links = [RecognizedMeetingLink(url: recognizedMeetingLink, isPrimary: false)]
+        } else if let recognizedMeetingLink,
+                  !links.contains(where: { $0.url == recognizedMeetingLink }) {
+            links.insert(RecognizedMeetingLink(url: recognizedMeetingLink, isPrimary: true), at: 0)
+        }
+        self.recognizedMeetingLinks = Self.deduplicatedMeetingLinks(links)
         self.eventType = eventType
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case title
+        case startDate
+        case endDate
+        case timeZoneIdentifier
+        case isAllDay
+        case isAccepted
+        case calendarID
+        case accountID
+        case recognizedMeetingLink
+        case recognizedMeetingLinks
+        case eventType
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        startDate = try container.decodeIfPresent(Date.self, forKey: .startDate)
+        endDate = try container.decodeIfPresent(Date.self, forKey: .endDate)
+        timeZoneIdentifier = try container.decodeIfPresent(String.self, forKey: .timeZoneIdentifier)
+        isAllDay = try container.decode(Bool.self, forKey: .isAllDay)
+        isAccepted = try container.decode(Bool.self, forKey: .isAccepted)
+        calendarID = try container.decode(String.self, forKey: .calendarID)
+        accountID = try container.decode(String.self, forKey: .accountID)
+        if let links = try container.decodeIfPresent([RecognizedMeetingLink].self, forKey: .recognizedMeetingLinks) {
+            recognizedMeetingLinks = Self.deduplicatedMeetingLinks(links)
+        } else if let legacyLink = try container.decodeIfPresent(URL.self, forKey: .recognizedMeetingLink) {
+            recognizedMeetingLinks = [RecognizedMeetingLink(url: legacyLink, isPrimary: false)]
+        } else {
+            recognizedMeetingLinks = []
+        }
+        eventType = try container.decodeIfPresent(CalendarEventType.self, forKey: .eventType)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(title, forKey: .title)
+        try container.encodeIfPresent(startDate, forKey: .startDate)
+        try container.encodeIfPresent(endDate, forKey: .endDate)
+        try container.encodeIfPresent(timeZoneIdentifier, forKey: .timeZoneIdentifier)
+        try container.encode(isAllDay, forKey: .isAllDay)
+        try container.encode(isAccepted, forKey: .isAccepted)
+        try container.encode(calendarID, forKey: .calendarID)
+        try container.encode(accountID, forKey: .accountID)
+        try container.encode(recognizedMeetingLinks, forKey: .recognizedMeetingLinks)
+        try container.encodeIfPresent(eventType, forKey: .eventType)
+    }
+
+    fileprivate static func normalizedMeetingLinkKey(_ url: URL) -> String {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return url.absoluteString
+        }
+
+        components.scheme = components.scheme?.lowercased()
+        components.host = components.host?.lowercased()
+        while components.path.count > 1 && components.path.hasSuffix("/") {
+            components.path.removeLast()
+        }
+        return components.string ?? url.absoluteString
+    }
+
+    fileprivate static func deduplicatedMeetingLinks(
+        _ links: [RecognizedMeetingLink]
+    ) -> [RecognizedMeetingLink] {
+        var deduplicated: [RecognizedMeetingLink] = []
+        for link in links {
+            let linkKey = normalizedMeetingLinkKey(link.url)
+            guard let existingIndex = deduplicated.firstIndex(where: {
+                normalizedMeetingLinkKey($0.url) == linkKey
+            }) else {
+                deduplicated.append(link)
+                continue
+            }
+            if link.isPrimary && !deduplicated[existingIndex].isPrimary {
+                deduplicated[existingIndex] = link
+            }
+        }
+        return deduplicated
     }
 
     public var hasProtectionWindow: Bool {
@@ -359,10 +470,9 @@ public final class CommitmentProtectionFlow: ObservableObject {
     private var unverifiedAccountIDs: Set<String> = []
     private var lastConnectionError: String?
     private var lastEvaluatedCoverageDate: Date?
-    private var clearedEarlyReminderEventID: String?
-    private var clearedEarlyReminderEventStartDate: Date?
-    private var clearedEarlyReminderEventCalendarID: String?
-    private var clearedEarlyReminderEventAccountID: String?
+    private var upcomingMergedCommitment: MergedCommitment?
+    private var earlyReminderMergedCommitment: MergedCommitment?
+    private var strongAlertMergedCommitment: MergedCommitment?
     private struct OccurrenceIdentity: Hashable, Sendable {
         let eventID: String
         let startDate: Date?
@@ -398,6 +508,52 @@ public final class CommitmentProtectionFlow: ObservableObject {
         }
     }
 
+    private struct MergedCommitment: Sendable {
+        let representations: [CalendarEvent]
+        let displayEvent: CalendarEvent
+        let endDate: Date
+
+        var meetingLinks: [RecognizedMeetingLink] {
+            CalendarEvent.deduplicatedMeetingLinks(
+                representations.flatMap(\.recognizedMeetingLinks)
+            )
+        }
+
+        var primaryMeetingLink: URL? {
+            let primaryLinks = meetingLinks.filter(\.isPrimary)
+            guard Set(primaryLinks.map { CalendarEvent.normalizedMeetingLinkKey($0.url) }).count <= 1 else {
+                return nil
+            }
+            return primaryLinks.first?.url
+        }
+
+        var sharedMeetingLinkKeys: Set<String> {
+            guard let firstRepresentation = representations.first else { return [] }
+            let firstKeys = Set(firstRepresentation.recognizedMeetingLinks.map {
+                CalendarEvent.normalizedMeetingLinkKey($0.url)
+            })
+            return representations.dropFirst().reduce(firstKeys) { sharedKeys, representation in
+                sharedKeys.intersection(
+                    representation.recognizedMeetingLinks.map {
+                        CalendarEvent.normalizedMeetingLinkKey($0.url)
+                    }
+                )
+            }
+        }
+
+        var occurrences: Set<OccurrenceIdentity> {
+            Set(representations.map(OccurrenceIdentity.init))
+        }
+
+        func contains(_ commitment: CalendarEvent) -> Bool {
+            occurrences.contains(OccurrenceIdentity(commitment))
+        }
+
+        func sharesOccurrence(with other: MergedCommitment) -> Bool {
+            !occurrences.isDisjoint(with: other.occurrences)
+        }
+    }
+
     private struct CalendarSelectionIdentity: Hashable, Sendable {
         let calendarID: String
         let accountID: String
@@ -405,15 +561,15 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
     private var snoozedOccurrence: OccurrenceIdentity?
     private var snoozedUntil: Date?
+    private var snoozedOccurrences: Set<OccurrenceIdentity> = []
     private var observedUnacceptedOccurrences: Set<OccurrenceIdentity> = []
     private var suppressedPostStartAcceptanceOccurrences: Set<OccurrenceIdentity> = []
     private var suppressedUntrackedPastOccurrences: Set<OccurrenceIdentity> = []
     private var decisionOccurrence: OccurrenceIdentity?
+    private var decisionOccurrences: Set<OccurrenceIdentity> = []
     private var lastActionOccurrence: OccurrenceIdentity?
-    private var strongAlertEventID: String?
-    private var strongAlertEventStartDate: Date?
-    private var strongAlertEventCalendarID: String?
-    private var strongAlertEventAccountID: String?
+    private var strongAlertOccurrences: Set<OccurrenceIdentity> = []
+    private var clearedEarlyReminderOccurrences: Set<OccurrenceIdentity> = []
     private var strongAlertNextPresentationDate: Date?
     private var newlySelectedCalendars: Set<CalendarSelectionIdentity> = []
     private var shouldSuppressUntrackedPastOccurrencesOnNextRefresh = false
@@ -456,8 +612,10 @@ public final class CommitmentProtectionFlow: ObservableObject {
     private struct SavedConfiguration: Codable {
         let accounts: [SavedAccountConfiguration]
         let decisionOccurrence: SavedOccurrence?
+        let decisionOccurrences: [SavedOccurrence]
         let currentCommitmentDecision: CommitmentProtectionDecision?
         let snoozedOccurrence: SavedOccurrence?
+        let snoozedOccurrences: [SavedOccurrence]
         let snoozedUntil: Date?
         let pauseUntil: Date?
         let observedUnacceptedOccurrences: [SavedOccurrence]
@@ -467,8 +625,10 @@ public final class CommitmentProtectionFlow: ObservableObject {
         private enum CodingKeys: String, CodingKey {
             case accounts
             case decisionOccurrence
+            case decisionOccurrences
             case currentCommitmentDecision
             case snoozedOccurrence
+            case snoozedOccurrences
             case snoozedUntil
             case pauseUntil
             case observedUnacceptedOccurrences
@@ -485,8 +645,10 @@ public final class CommitmentProtectionFlow: ObservableObject {
         init(
             accounts: [SavedAccountConfiguration],
             decisionOccurrence: SavedOccurrence?,
+            decisionOccurrences: [SavedOccurrence],
             currentCommitmentDecision: CommitmentProtectionDecision?,
             snoozedOccurrence: SavedOccurrence?,
+            snoozedOccurrences: [SavedOccurrence],
             snoozedUntil: Date?,
             pauseUntil: Date?,
             observedUnacceptedOccurrences: [SavedOccurrence],
@@ -495,8 +657,10 @@ public final class CommitmentProtectionFlow: ObservableObject {
         ) {
             self.accounts = accounts
             self.decisionOccurrence = decisionOccurrence
+            self.decisionOccurrences = decisionOccurrences
             self.currentCommitmentDecision = currentCommitmentDecision
             self.snoozedOccurrence = snoozedOccurrence
+            self.snoozedOccurrences = snoozedOccurrences
             self.snoozedUntil = snoozedUntil
             self.pauseUntil = pauseUntil
             self.observedUnacceptedOccurrences = observedUnacceptedOccurrences
@@ -532,11 +696,19 @@ public final class CommitmentProtectionFlow: ObservableObject {
                 ]
             }
             decisionOccurrence = try container.decodeIfPresent(SavedOccurrence.self, forKey: .decisionOccurrence)
+            decisionOccurrences = try container.decodeIfPresent(
+                [SavedOccurrence].self,
+                forKey: .decisionOccurrences
+            ) ?? []
             currentCommitmentDecision = try container.decodeIfPresent(
                 CommitmentProtectionDecision.self,
                 forKey: .currentCommitmentDecision
             )
             snoozedOccurrence = try container.decodeIfPresent(SavedOccurrence.self, forKey: .snoozedOccurrence)
+            snoozedOccurrences = try container.decodeIfPresent(
+                [SavedOccurrence].self,
+                forKey: .snoozedOccurrences
+            ) ?? []
             snoozedUntil = try container.decodeIfPresent(Date.self, forKey: .snoozedUntil)
             pauseUntil = try container.decodeIfPresent(Date.self, forKey: .pauseUntil)
             observedUnacceptedOccurrences = try container.decodeIfPresent(
@@ -1285,16 +1457,49 @@ public final class CommitmentProtectionFlow: ObservableObject {
     }
 
     public var strongAlertPrimaryActionTitle: String {
-        strongAlertCommitment?.recognizedMeetingLink == nil ? "Stop reminders" : "Join"
+        if strongAlertMeetingLinkOptions.isEmpty {
+            return "Stop reminders"
+        }
+        return strongAlertPrimaryMeetingLink == nil && strongAlertMeetingLinkOptions.count > 1
+            ? "Choose link"
+            : "Join"
+    }
+
+    public var strongAlertMeetingLinkOptions: [URL] {
+        if let strongAlertMergedCommitment {
+            return strongAlertMergedCommitment.meetingLinks.map(\.url)
+        }
+        return strongAlertCommitment?.recognizedMeetingLinks.map(\.url) ?? []
+    }
+
+    public var strongAlertPrimaryMeetingLink: URL? {
+        if let strongAlertMergedCommitment {
+            return strongAlertMergedCommitment.primaryMeetingLink
+        }
+        return strongAlertCommitment?.primaryRecognizedMeetingLink
     }
 
     @discardableResult
     public func joinStrongAlert() -> URL? {
-        guard let meetingLink = strongAlertCommitment?.recognizedMeetingLink else { return nil }
+        let options = strongAlertMeetingLinkOptions
+        let primaryLink = strongAlertPrimaryMeetingLink
+        guard primaryLink != nil || options.count <= 1 else { return nil }
+        let meetingLink = primaryLink ?? options.first
+        guard let meetingLink else { return nil }
+        return joinStrongAlert(using: meetingLink)
+    }
+
+    @discardableResult
+    public func joinStrongAlert(using meetingLink: URL) -> URL? {
+        let meetingLinkKey = CalendarEvent.normalizedMeetingLinkKey(meetingLink)
+        guard strongAlertMeetingLinkOptions.contains(where: {
+            CalendarEvent.normalizedMeetingLinkKey($0) == meetingLinkKey
+        }) else { return nil }
         guard let commitment = strongAlertCommitment else { return nil }
         recordDecision(
             .joined,
             for: commitment,
+            group: strongAlertMergedCommitment,
             message: "Joined. Protection ended for this occurrence."
         )
         return meetingLink
@@ -1330,13 +1535,14 @@ public final class CommitmentProtectionFlow: ObservableObject {
     @discardableResult
     public func dismissCommitment(for commitment: CalendarEvent, at date: Date? = nil) -> Bool {
         guard isActionable(commitment),
-              let endDate = commitment.endDate,
+              let endDate = mergedCommitment(containing: commitment)?.endDate ?? commitment.endDate,
               endDate > (date ?? now()) else {
             return false
         }
         recordDecision(
             .dismissed,
             for: commitment,
+            group: mergedCommitment(containing: commitment),
             message: "Dismissed for this occurrence. Protection is off until it ends."
         )
         return true
@@ -1347,10 +1553,13 @@ public final class CommitmentProtectionFlow: ObservableObject {
         let currentDate = date ?? now()
         guard currentCommitmentDecision?.isRestorable == true,
               let commitment = decisionCommitment,
-              let endDate = commitment.endDate,
-              endDate > currentDate else {
+              (currentMergedCommitment(containing: commitment, at: currentDate)?.endDate
+                ?? commitment.endDate
+                ?? .distantPast) > currentDate else {
             return false
         }
+        let group = currentMergedCommitment(containing: commitment, at: currentDate)
+            ?? makeMergedCommitment(from: [commitment])
 
         clearLocalDecision()
         lastActionMessage = "Protection restored for this occurrence."
@@ -1360,10 +1569,11 @@ public final class CommitmentProtectionFlow: ObservableObject {
             actor: .user,
             title: "Protection restored",
             detail: lastActionMessage ?? "Protection restored for this occurrence.",
-            commitment: commitment,
+            commitment: group.displayEvent,
+            commitmentGroup: group,
             at: currentDate
         )
-        restoreDisplayedProtection(for: commitment, at: currentDate)
+        restoreDisplayedProtection(for: group, at: currentDate)
         return true
     }
 
@@ -1377,16 +1587,20 @@ public final class CommitmentProtectionFlow: ObservableObject {
             return false
         }
 
+        let group = earlyReminderMergedCommitment
         let occurrence = OccurrenceIdentity(commitment)
-        guard snoozedOccurrence != occurrence else { return false }
+        let groupOccurrences = group?.occurrences ?? [occurrence]
+        guard snoozedOccurrences.isDisjoint(with: groupOccurrences) else { return false }
 
         snoozedOccurrence = occurrence
+        snoozedOccurrences = groupOccurrences
         let requestedSnoozeUntil = currentDate.addingTimeInterval(Double(minutes) * 60)
         let effectiveSnoozeUntil = min(
-            commitment.endDate ?? requestedSnoozeUntil,
+            group?.endDate ?? commitment.endDate ?? requestedSnoozeUntil,
             requestedSnoozeUntil
         )
         snoozedUntil = effectiveSnoozeUntil
+        earlyReminderMergedCommitment = nil
         earlyReminderCommitment = nil
         lastActionMessage = commitment.endDate == effectiveSnoozeUntil && requestedSnoozeUntil > effectiveSnoozeUntil
             ? "All reminders snoozed until the commitment ends. Protection remains active."
@@ -1398,6 +1612,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
             title: "Reminders snoozed",
             detail: lastActionMessage ?? "Reminders snoozed.",
             commitment: commitment,
+            commitmentGroup: group,
             at: currentDate
         )
         return true
@@ -1431,6 +1646,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
             title: "Strong Alert closed",
             detail: lastActionMessage ?? "Strong Alert closed.",
             commitment: commitment,
+            commitmentGroup: strongAlertMergedCommitment,
             at: date
         )
     }
@@ -1455,9 +1671,18 @@ public final class CommitmentProtectionFlow: ObservableObject {
     }
 
     public func strongAlertContextText(for commitment: CalendarEvent) -> String {
-        let calendarName = calendarName(for: commitment) ?? commitment.calendarID
-        let accountName = account(for: commitment)?.email ?? commitment.accountID
-        return "\(calendarName) · \(accountName)"
+        let group = strongAlertMergedCommitment ?? mergedCommitment(containing: commitment)
+        let representations = group?.representations ?? [commitment]
+        let contexts = representations.map { representation in
+            let calendarName = calendarName(for: representation) ?? representation.calendarID
+            let accountName = account(for: representation)?.email ?? representation.accountID
+            return "\(calendarName) · \(accountName)"
+        }
+        var uniqueContexts: [String] = []
+        for context in contexts where !uniqueContexts.contains(context) {
+            uniqueContexts.append(context)
+        }
+        return uniqueContexts.joined(separator: ", ")
     }
 
     public func clearEarlyReminder() {
@@ -1469,11 +1694,10 @@ public final class CommitmentProtectionFlow: ObservableObject {
     public func clearEarlyReminder(for commitment: CalendarEvent) -> Bool {
         guard isCurrentEarlyReminder(commitment),
               let earlyReminderCommitment else { return false }
-        clearedEarlyReminderEventID = earlyReminderCommitment.id
-        clearedEarlyReminderEventStartDate = earlyReminderCommitment.startDate
-        clearedEarlyReminderEventCalendarID = earlyReminderCommitment.calendarID
-        clearedEarlyReminderEventAccountID = earlyReminderCommitment.accountID
+        let group = earlyReminderMergedCommitment
+        clearedEarlyReminderOccurrences = group?.occurrences ?? [OccurrenceIdentity(earlyReminderCommitment)]
         self.earlyReminderCommitment = nil
+        earlyReminderMergedCommitment = nil
         lastActionMessage = "Early Reminder cleared. Protection remains active."
         lastActionOccurrence = OccurrenceIdentity(earlyReminderCommitment)
         recordActivity(
@@ -1481,7 +1705,8 @@ public final class CommitmentProtectionFlow: ObservableObject {
             actor: .user,
             title: "Early Reminder cleared",
             detail: lastActionMessage ?? "Early Reminder cleared.",
-            commitment: earlyReminderCommitment
+            commitment: earlyReminderCommitment,
+            commitmentGroup: group
         )
         return true
     }
@@ -1553,19 +1778,126 @@ public final class CommitmentProtectionFlow: ObservableObject {
     }
 
     private func handle(_ commitment: CalendarEvent, at date: Date) -> Bool {
-        guard let endDate = commitment.endDate, endDate > date else { return false }
+        let endDate = mergedCommitment(containing: commitment)?.endDate ?? commitment.endDate
+        guard let endDate, endDate > date else { return false }
         recordDecision(
             .handled,
             for: commitment,
+            group: mergedCommitment(containing: commitment),
             message: "Handled for this occurrence. Protection is off until it ends."
         )
         return true
     }
 
     private func isActionable(_ commitment: CalendarEvent) -> Bool {
-        return [strongAlertCommitment, earlyReminderCommitment, upcomingCommitment]
+        return [strongAlertMergedCommitment, earlyReminderMergedCommitment, upcomingMergedCommitment]
             .compactMap { $0 }
-            .contains { OccurrenceIdentity(commitment).matches($0) }
+            .contains { $0.contains(commitment) }
+    }
+
+    private func mergedCommitments(from events: [CalendarEvent]) -> [MergedCommitment] {
+        var groups: [MergedCommitment] = []
+
+        for event in events {
+            guard let startDate = event.startDate,
+                  !event.recognizedMeetingLinks.isEmpty else {
+                groups.append(makeMergedCommitment(from: [event]))
+                continue
+            }
+            let eventLinks = Set(event.recognizedMeetingLinks.map {
+                CalendarEvent.normalizedMeetingLinkKey($0.url)
+            })
+
+            if let index = groups.firstIndex(where: { group in
+                group.displayEvent.startDate == startDate &&
+                    !eventLinks.isDisjoint(with: group.sharedMeetingLinkKeys)
+            }) {
+                groups[index] = makeMergedCommitment(from: groups[index].representations + [event])
+            } else {
+                groups.append(makeMergedCommitment(from: [event]))
+            }
+        }
+
+        return groups.sorted { left, right in
+            guard let leftStart = left.displayEvent.startDate,
+                  let rightStart = right.displayEvent.startDate else {
+                return left.displayEvent.id < right.displayEvent.id
+            }
+            return leftStart == rightStart
+                ? left.displayEvent.id < right.displayEvent.id
+                : leftStart < rightStart
+        }
+    }
+
+    private func makeMergedCommitment(from representations: [CalendarEvent]) -> MergedCommitment {
+        let sortedRepresentations = representations.sorted { $0.id < $1.id }
+        let canonical = sortedRepresentations[0]
+        let endDate = sortedRepresentations.compactMap(\.endDate).max() ?? canonical.endDate ?? .distantPast
+        let meetingLinks = CalendarEvent.deduplicatedMeetingLinks(
+            sortedRepresentations.flatMap(\.recognizedMeetingLinks)
+        )
+        let displayEvent = CalendarEvent(
+            id: canonical.id,
+            title: canonical.title,
+            startDate: canonical.startDate,
+            endDate: endDate,
+            timeZoneIdentifier: canonical.timeZoneIdentifier,
+            isAllDay: canonical.isAllDay,
+            isAccepted: canonical.isAccepted,
+            calendarID: canonical.calendarID,
+            accountID: canonical.accountID,
+            recognizedMeetingLinks: meetingLinks,
+            eventType: canonical.eventType
+        )
+        return MergedCommitment(
+            representations: sortedRepresentations,
+            displayEvent: displayEvent,
+            endDate: endDate
+        )
+    }
+
+    private func mergedCommitment(containing commitment: CalendarEvent) -> MergedCommitment? {
+        [strongAlertMergedCommitment, earlyReminderMergedCommitment, upcomingMergedCommitment]
+            .compactMap { $0 }
+            .first { $0.contains(commitment) }
+    }
+
+    private func currentMergedCommitment(
+        containing commitment: CalendarEvent,
+        at date: Date
+    ) -> MergedCommitment? {
+        let currentEvents = accountRecords.values
+            .flatMap(\.lastFreshEvents)
+            .filter { event in
+                event.isEligibleForProtection &&
+                    (event.endDate ?? .distantPast) > date
+            }
+        return mergedCommitments(from: currentEvents).first { $0.contains(commitment) }
+    }
+
+    private func isUpcoming(_ commitment: MergedCommitment, at date: Date) -> Bool {
+        guard let startDate = commitment.displayEvent.startDate else { return false }
+        return startDate > date
+    }
+
+    private func isProtectionAvailable(for commitment: MergedCommitment, at date: Date) -> Bool {
+        guard !commitment.representations.contains(where: isDecisionActive) else {
+            return false
+        }
+        let allRepresentationsSuppressed = commitment.representations.allSatisfy {
+            suppressedPostStartAcceptanceOccurrences.contains(OccurrenceIdentity($0)) ||
+                suppressedUntrackedPastOccurrences.contains(OccurrenceIdentity($0))
+        }
+        return !allRepresentationsSuppressed && !isSnoozed(commitment, at: date)
+    }
+
+    private func isSnoozed(_ commitment: MergedCommitment, at date: Date) -> Bool {
+        guard let snoozedUntil, date < snoozedUntil else { return false }
+        return !snoozedOccurrences.isDisjoint(with: commitment.occurrences)
+    }
+
+    private func isCleared(_ commitment: MergedCommitment) -> Bool {
+        !clearedEarlyReminderOccurrences.isDisjoint(with: commitment.occurrences)
     }
 
     private func reconcileCalendarSnapshot(_ events: [CalendarEvent], at currentDate: Date) {
@@ -1592,33 +1924,26 @@ public final class CommitmentProtectionFlow: ObservableObject {
         // canceled commitments and updates changed occurrences, links, times, and time zones.
         updateLocalState(for: eligibleEvents, at: currentDate)
         saveConfiguration()
-        let nextCommitment = eligibleEvents.first {
+        let commitments = mergedCommitments(from: eligibleEvents)
+        let nextCommitment = commitments.first {
             isUpcoming($0, at: currentDate)
         }
-        let protectedEvents = isPaused(at: currentDate)
+        let protectedCommitments = isPaused(at: currentDate)
             ? []
-            : eligibleEvents.filter {
+            : commitments.filter {
                 isProtectionAvailable(for: $0, at: currentDate)
             }
-        let nextProtectedCommitment = protectedEvents.first {
+        let nextProtectedCommitment = protectedCommitments.first {
             isUpcoming($0, at: currentDate)
         }
-        let activeProtectedCommitment = protectedEvents.first {
+        let activeProtectedCommitment = protectedCommitments.first {
             !isUpcoming($0, at: currentDate)
         }
 
-        upcomingCommitment = nextCommitment
-        if let nextProtectedCommitment,
-           !(OccurrenceIdentity(
-                eventID: clearedEarlyReminderEventID ?? "",
-                startDate: clearedEarlyReminderEventStartDate,
-                calendarID: clearedEarlyReminderEventCalendarID,
-                accountID: clearedEarlyReminderEventAccountID
-           ).matches(nextProtectedCommitment)) {
-            clearedEarlyReminderEventID = nil
-            clearedEarlyReminderEventStartDate = nil
-            clearedEarlyReminderEventCalendarID = nil
-            clearedEarlyReminderEventAccountID = nil
+        upcomingMergedCommitment = nextCommitment
+        upcomingCommitment = nextCommitment?.displayEvent
+        if let nextProtectedCommitment, !isCleared(nextProtectedCommitment) {
+            clearedEarlyReminderOccurrences = []
         }
 
         if let activeProtectedCommitment {
@@ -1628,37 +1953,37 @@ public final class CommitmentProtectionFlow: ObservableObject {
         }
 
         if isPaused(at: currentDate) {
+            earlyReminderMergedCommitment = nil
             earlyReminderCommitment = nil
             return
         }
 
         guard isEarlyReminderEnabled else {
+            earlyReminderMergedCommitment = nil
             earlyReminderCommitment = nil
             return
         }
 
         guard let nextProtectedCommitment,
-              let startDate = nextProtectedCommitment.startDate,
+              let startDate = nextProtectedCommitment.displayEvent.startDate,
               currentDate >= startDate.addingTimeInterval(-Double(earlyReminderLeadTimeMinutes) * 60),
-              !(clearedEarlyReminderEventID == nextProtectedCommitment.id &&
-                clearedEarlyReminderEventStartDate == startDate &&
-                clearedEarlyReminderEventCalendarID == nextProtectedCommitment.calendarID &&
-                clearedEarlyReminderEventAccountID == nextProtectedCommitment.accountID) else {
+              !isCleared(nextProtectedCommitment) else {
+            earlyReminderMergedCommitment = nil
             earlyReminderCommitment = nil
             return
         }
 
-        let isNewEarlyReminder = earlyReminderCommitment.map {
-            !OccurrenceIdentity($0).matches(nextProtectedCommitment)
-        } ?? true
-        earlyReminderCommitment = nextProtectedCommitment
+        let isNewEarlyReminder = earlyReminderMergedCommitment?.sharesOccurrence(with: nextProtectedCommitment) != true
+        earlyReminderMergedCommitment = nextProtectedCommitment
+        earlyReminderCommitment = nextProtectedCommitment.displayEvent
         if isNewEarlyReminder {
             recordActivity(
                 .earlyReminderShown,
                 actor: .system,
                 title: "Early Reminder shown",
-                detail: "Protection is active for \(nextProtectedCommitment.title).",
-                commitment: nextProtectedCommitment,
+                detail: "Protection is active for \(nextProtectedCommitment.displayEvent.title).",
+                commitment: nextProtectedCommitment.displayEvent,
+                commitmentGroup: nextProtectedCommitment,
                 at: currentDate
             )
         }
@@ -1760,21 +2085,26 @@ public final class CommitmentProtectionFlow: ObservableObject {
     private func recordDecision(
         _ decision: CommitmentProtectionDecision,
         for commitment: CalendarEvent,
+        group: MergedCommitment? = nil,
         message: String
     ) {
+        let effectiveGroup = group ?? mergedCommitment(containing: commitment)
+        let occurrence = OccurrenceIdentity(commitment)
         decisionOccurrence = OccurrenceIdentity(commitment)
+        decisionOccurrences = effectiveGroup?.occurrences ?? [occurrence]
         currentCommitmentDecision = decision
-        decisionCommitment = commitment
-        if let earlyReminderCommitment,
-           decisionOccurrence?.matches(earlyReminderCommitment) == true {
+        decisionCommitment = effectiveGroup?.displayEvent ?? commitment
+        if let earlyReminderMergedCommitment,
+           effectiveGroup?.sharesOccurrence(with: earlyReminderMergedCommitment) == true {
+            self.earlyReminderMergedCommitment = nil
             self.earlyReminderCommitment = nil
         }
-        if let strongAlertCommitment,
-           decisionOccurrence?.matches(strongAlertCommitment) == true {
+        if let strongAlertMergedCommitment,
+           effectiveGroup?.sharesOccurrence(with: strongAlertMergedCommitment) == true {
             clearStrongAlertState()
         }
         lastActionMessage = message
-        lastActionOccurrence = OccurrenceIdentity(commitment)
+        lastActionOccurrence = occurrence
         let activityKind: ProtectionActivityKind
         switch decision {
         case .handled:
@@ -1789,7 +2119,8 @@ public final class CommitmentProtectionFlow: ObservableObject {
             actor: .user,
             title: activityKind.activityTitle,
             detail: message,
-            commitment: commitment
+            commitment: effectiveGroup?.displayEvent ?? commitment,
+            commitmentGroup: effectiveGroup
         )
     }
 
@@ -1799,8 +2130,13 @@ public final class CommitmentProtectionFlow: ObservableObject {
             clearLastActionMessage()
         }
 
-        if let decisionOccurrence {
-            if let matchingCommitment = eligibleEvents.first(where: { decisionOccurrence.matches($0) }) {
+        let activeDecisionOccurrences = decisionOccurrences.isEmpty
+            ? decisionOccurrence.map { [$0] } ?? []
+            : Array(decisionOccurrences)
+        if !activeDecisionOccurrences.isEmpty {
+            if let matchingCommitment = eligibleEvents.first(where: { event in
+                activeDecisionOccurrences.contains { occurrence in occurrence.matches(event) }
+            }) {
                 decisionCommitment = matchingCommitment
                 if matchingCommitment.endDate ?? .distantPast <= date {
                     clearLocalDecision()
@@ -1812,20 +2148,28 @@ public final class CommitmentProtectionFlow: ObservableObject {
             }
         }
 
-        if let snoozedOccurrence,
-           !eligibleEvents.contains(where: { snoozedOccurrence.matches($0) }) {
+        let activeSnoozedOccurrences = snoozedOccurrences.isEmpty
+            ? snoozedOccurrence.map { [$0] } ?? []
+            : Array(snoozedOccurrences)
+        if !activeSnoozedOccurrences.isEmpty,
+           !eligibleEvents.contains(where: { event in
+               activeSnoozedOccurrences.contains { $0.matches(event) }
+           }) {
             self.snoozedOccurrence = nil
+            snoozedOccurrences = []
             snoozedUntil = nil
             saveConfiguration()
         }
     }
 
     private func isSnoozed(_ commitment: CalendarEvent, at date: Date) -> Bool {
-        guard snoozedOccurrence?.matches(commitment) == true,
-              let snoozedUntil else {
+        guard let snoozedUntil, date < snoozedUntil else {
             return false
         }
-        return date < snoozedUntil
+        if !snoozedOccurrences.isEmpty {
+            return snoozedOccurrences.contains { $0.matches(commitment) }
+        }
+        return snoozedOccurrence?.matches(commitment) == true
     }
 
     private func isDecisionActive(_ commitment: CalendarEvent) -> Bool {
@@ -1833,7 +2177,11 @@ public final class CommitmentProtectionFlow: ObservableObject {
     }
 
     private func isDecisionActive(for occurrence: OccurrenceIdentity) -> Bool {
-        decisionOccurrence?.matches(occurrence) == true && currentCommitmentDecision != nil
+        guard currentCommitmentDecision != nil else { return false }
+        if !decisionOccurrences.isEmpty {
+            return decisionOccurrences.contains { $0.matches(occurrence) }
+        }
+        return decisionOccurrence?.matches(occurrence) == true
     }
 
     private func isUpcoming(_ commitment: CalendarEvent, at date: Date) -> Bool {
@@ -1849,9 +2197,13 @@ public final class CommitmentProtectionFlow: ObservableObject {
     }
 
     private func restoreDisplayedProtection(for commitment: CalendarEvent, at date: Date) {
-        guard let startDate = commitment.startDate,
-              let endDate = commitment.endDate,
-              endDate > date,
+        let group = mergedCommitment(containing: commitment) ?? makeMergedCommitment(from: [commitment])
+        restoreDisplayedProtection(for: group, at: date)
+    }
+
+    private func restoreDisplayedProtection(for commitment: MergedCommitment, at date: Date) {
+        guard let startDate = commitment.displayEvent.startDate,
+              commitment.endDate > date,
               !isSnoozed(commitment, at: date) else {
             return
         }
@@ -1859,32 +2211,30 @@ public final class CommitmentProtectionFlow: ObservableObject {
         if startDate > date {
             guard isEarlyReminderEnabled else { return }
             guard date >= startDate.addingTimeInterval(-Double(earlyReminderLeadTimeMinutes) * 60),
-                  !(clearedEarlyReminderEventID == commitment.id &&
-                    clearedEarlyReminderEventStartDate == startDate &&
-                    clearedEarlyReminderEventCalendarID == commitment.calendarID &&
-                    clearedEarlyReminderEventAccountID == commitment.accountID),
+                  !isCleared(commitment),
                   !isSnoozed(commitment, at: date) else {
                 return
             }
-            upcomingCommitment = commitment
-            earlyReminderCommitment = commitment
+            upcomingMergedCommitment = commitment
+            upcomingCommitment = commitment.displayEvent
+            earlyReminderMergedCommitment = commitment
+            earlyReminderCommitment = commitment.displayEvent
             recordActivity(
                 .earlyReminderShown,
                 actor: .system,
                 title: "Early Reminder shown",
-                detail: "Protection is active for \(commitment.title).",
-                commitment: commitment,
+                detail: "Protection is active for \(commitment.displayEvent.title).",
+                commitment: commitment.displayEvent,
+                commitmentGroup: commitment,
                 at: date
             )
             return
         }
 
-        strongAlertEventID = commitment.id
-        strongAlertEventStartDate = startDate
-        strongAlertEventCalendarID = commitment.calendarID
-        strongAlertEventAccountID = commitment.accountID
+        strongAlertMergedCommitment = commitment
+        strongAlertOccurrences = commitment.occurrences
         strongAlertNextPresentationDate = date
-        strongAlertCommitment = commitment
+        strongAlertCommitment = commitment.displayEvent
         isStrongAlertPresented = true
         strongAlertNextPresentationDate = date.addingTimeInterval(
             Double(strongAlertRepeatIntervalMinutes) * 60
@@ -1893,32 +2243,27 @@ public final class CommitmentProtectionFlow: ObservableObject {
             .strongAlertShown,
             actor: .system,
             title: "Strong Alert shown",
-            detail: "\(commitment.title) needs attention now.",
-            commitment: commitment,
+            detail: "\(commitment.displayEvent.title) needs attention now.",
+            commitment: commitment.displayEvent,
+            commitmentGroup: commitment,
             at: date
         )
     }
 
-    private func updateStrongAlert(for commitment: CalendarEvent, at date: Date) {
-        if decisionOccurrence?.matches(commitment) == true,
-           currentCommitmentDecision != nil {
+    private func updateStrongAlert(for commitment: MergedCommitment, at date: Date) {
+        if commitment.representations.contains(where: isDecisionActive) {
             clearStrongAlertState()
             return
         }
 
-        if strongAlertEventID != commitment.id ||
-            strongAlertEventStartDate != commitment.startDate ||
-            strongAlertEventCalendarID != commitment.calendarID ||
-            strongAlertEventAccountID != commitment.accountID {
-            strongAlertEventID = commitment.id
-            strongAlertEventStartDate = commitment.startDate
-            strongAlertEventCalendarID = commitment.calendarID
-            strongAlertEventAccountID = commitment.accountID
+        if strongAlertOccurrences.isEmpty || strongAlertOccurrences.isDisjoint(with: commitment.occurrences) {
+            strongAlertOccurrences = commitment.occurrences
             strongAlertNextPresentationDate = date
             isStrongAlertPresented = false
         }
 
-        strongAlertCommitment = commitment
+        strongAlertMergedCommitment = commitment
+        strongAlertCommitment = commitment.displayEvent
         guard let nextPresentationDate = strongAlertNextPresentationDate,
               date >= nextPresentationDate else {
             return
@@ -1938,9 +2283,10 @@ public final class CommitmentProtectionFlow: ObservableObject {
             actor: .system,
             title: activityKind.activityTitle,
             detail: wasPresented
-                ? "\(commitment.title) is still awaiting an explicit action."
-                : "\(commitment.title) needs attention now.",
-            commitment: commitment,
+                ? "\(commitment.displayEvent.title) is still awaiting an explicit action."
+                : "\(commitment.displayEvent.title) needs attention now.",
+            commitment: commitment.displayEvent,
+            commitmentGroup: commitment,
             at: date
         )
     }
@@ -2038,8 +2384,12 @@ public final class CommitmentProtectionFlow: ObservableObject {
         selectedCalendarIDs = record.selectedCalendarIDs
         connectionState = record.connectionState
         isProtectionConfirmed = record.isProtectionConfirmed
-        isEarlyReminderUnverified = earlyReminderCommitment.map(isUnverified) ?? false
-        isStrongAlertUnverified = strongAlertCommitment.map(isUnverified) ?? false
+        isEarlyReminderUnverified = earlyReminderMergedCommitment.map(isUnverified) ?? false
+        isStrongAlertUnverified = strongAlertMergedCommitment.map(isUnverified) ?? false
+    }
+
+    private func isUnverified(_ commitment: MergedCommitment) -> Bool {
+        commitment.representations.contains(where: isUnverified)
     }
 
     private func isUnverified(_ commitment: CalendarEvent) -> Bool {
@@ -2086,8 +2436,16 @@ public final class CommitmentProtectionFlow: ObservableObject {
     private func restoreLocalState(from configuration: SavedConfiguration) {
         decisionOccurrence = configuration.decisionOccurrence?.identity
         currentCommitmentDecision = configuration.currentCommitmentDecision
+        decisionOccurrences = Set(configuration.decisionOccurrences.map(\.identity))
+        if decisionOccurrences.isEmpty, let decisionOccurrence {
+            decisionOccurrences = [decisionOccurrence]
+        }
         snoozedOccurrence = configuration.snoozedOccurrence?.identity
         snoozedUntil = configuration.snoozedUntil
+        snoozedOccurrences = Set(configuration.snoozedOccurrences.map(\.identity))
+        if snoozedOccurrences.isEmpty, let snoozedOccurrence {
+            snoozedOccurrences = [snoozedOccurrence]
+        }
         pauseUntil = configuration.pauseUntil
         observedUnacceptedOccurrences = Set(configuration.observedUnacceptedOccurrences.map(\.identity))
         suppressedPostStartAcceptanceOccurrences = Set(
@@ -2117,8 +2475,10 @@ public final class CommitmentProtectionFlow: ObservableObject {
                 )
             }.sorted { $0.account.id < $1.account.id },
             decisionOccurrence: decisionOccurrence.map(SavedOccurrence.init),
+            decisionOccurrences: decisionOccurrences.map(SavedOccurrence.init),
             currentCommitmentDecision: currentCommitmentDecision,
             snoozedOccurrence: snoozedOccurrence.map(SavedOccurrence.init),
+            snoozedOccurrences: snoozedOccurrences.map(SavedOccurrence.init),
             snoozedUntil: snoozedUntil,
             pauseUntil: pauseUntil,
             observedUnacceptedOccurrences: observedUnacceptedOccurrences.map(SavedOccurrence.init),
@@ -2140,11 +2500,9 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
     private func clearProtectionState() {
         clearDisplayedProtectionState()
-        clearedEarlyReminderEventID = nil
-        clearedEarlyReminderEventStartDate = nil
-        clearedEarlyReminderEventCalendarID = nil
-        clearedEarlyReminderEventAccountID = nil
+        clearedEarlyReminderOccurrences = []
         snoozedOccurrence = nil
+        snoozedOccurrences = []
         snoozedUntil = nil
         pauseUntil = nil
         observedUnacceptedOccurrences = []
@@ -2156,7 +2514,9 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
     private func clearDisplayedProtectionState() {
         upcomingCommitment = nil
+        upcomingMergedCommitment = nil
         earlyReminderCommitment = nil
+        earlyReminderMergedCommitment = nil
         isEarlyReminderUnverified = false
         clearStrongAlertState()
     }
@@ -2164,10 +2524,8 @@ public final class CommitmentProtectionFlow: ObservableObject {
     private func clearStrongAlertState() {
         isStrongAlertPresented = false
         strongAlertCommitment = nil
-        strongAlertEventID = nil
-        strongAlertEventStartDate = nil
-        strongAlertEventCalendarID = nil
-        strongAlertEventAccountID = nil
+        strongAlertMergedCommitment = nil
+        strongAlertOccurrences = []
         strongAlertNextPresentationDate = nil
     }
 
@@ -2175,6 +2533,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
         currentCommitmentDecision = nil
         decisionCommitment = nil
         decisionOccurrence = nil
+        decisionOccurrences = []
     }
 
     private func clearLastActionMessage() {
@@ -2255,6 +2614,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
         title: String,
         detail: String,
         commitment: CalendarEvent? = nil,
+        commitmentGroup: MergedCommitment? = nil,
         account: GoogleAccount? = nil,
         calendar: CalendarOption? = nil,
         at date: Date? = nil
@@ -2264,6 +2624,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
             calendar.flatMap { accountRecords[$0.accountID]?.connection.account } ?? connectedAccount
         let activityCalendarID = calendar?.id ?? commitment?.calendarID
         let activityCalendarName = calendar?.name ?? commitment.flatMap { calendarName(for: $0) }
+        let contextualDetail = detail + activitySourceContext(for: commitmentGroup)
         _ = pruneActivityLog(at: occurredAt)
         activityLog.insert(
             ProtectionActivity(
@@ -2271,7 +2632,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
                 actor: actor,
                 kind: kind,
                 title: title,
-                detail: detail,
+                detail: contextualDetail,
                 commitmentTitle: commitment?.title,
                 commitmentID: commitment?.id,
                 commitmentStartDate: commitment?.startDate,
@@ -2284,6 +2645,21 @@ public final class CommitmentProtectionFlow: ObservableObject {
         )
         saveActivityLog()
         saveConfiguration()
+    }
+
+    private func activitySourceContext(for group: MergedCommitment?) -> String {
+        guard let group else { return "" }
+        var contexts: [String] = []
+        for representation in group.representations {
+            let calendarName = calendarName(for: representation) ?? representation.calendarID
+            let accountName = account(for: representation)?.email ?? representation.accountID
+            let context = "\(calendarName) · \(accountName)"
+            if !contexts.contains(context) {
+                contexts.append(context)
+            }
+        }
+        guard contexts.count > 1 else { return "" }
+        return " Sources: \(contexts.joined(separator: ", "))."
     }
 
     private func calendarName(for commitment: CalendarEvent) -> String? {

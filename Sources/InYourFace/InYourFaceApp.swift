@@ -1193,16 +1193,31 @@ private struct StrongAlertContentView: View {
                         timing: flow.strongAlertTimingText(for: commitment, at: context.date),
                         detail: flow.strongAlertContextText(for: commitment),
                         verificationLabel: flow.isStrongAlertUnverified ? "Unverified Reminder" : nil,
-                        primaryActionTitle: commitment.recognizedMeetingLink == nil ? "Stop reminders" : "Join",
+                        primaryActionTitle: flow.strongAlertPrimaryActionTitle,
                         primaryAction: {
-                            if commitment.recognizedMeetingLink == nil {
+                            if flow.strongAlertMeetingLinkOptions.isEmpty {
                                 requestStopReminders(for: commitment)
+                            } else if let primaryLink = flow.strongAlertPrimaryMeetingLink,
+                                      let meetingLink = flow.joinStrongAlert(using: primaryLink) {
+                                NSWorkspace.shared.open(meetingLink)
+                                announceActionResult(flow.lastActionMessage)
                             } else if let meetingLink = flow.joinStrongAlert() {
                                 NSWorkspace.shared.open(meetingLink)
                                 announceActionResult(flow.lastActionMessage)
                             }
                         },
-                        secondaryActionTitle: commitment.recognizedMeetingLink == nil ? nil : "Stop reminders",
+                        primaryActionChoices: flow.strongAlertPrimaryMeetingLink == nil &&
+                            flow.strongAlertMeetingLinkOptions.count > 1
+                            ? flow.strongAlertMeetingLinkOptions.enumerated().map { _, link in
+                                (meetingLinkChoiceTitle(for: link), {
+                                    if let meetingLink = flow.joinStrongAlert(using: link) {
+                                        NSWorkspace.shared.open(meetingLink)
+                                        announceActionResult(flow.lastActionMessage)
+                                    }
+                                })
+                            }
+                            : [],
+                        secondaryActionTitle: flow.strongAlertMeetingLinkOptions.isEmpty ? nil : "Stop reminders",
                         secondaryAction: {
                             requestStopReminders(for: commitment)
                         },
@@ -1246,6 +1261,15 @@ private struct StrongAlertContentView: View {
     private func requestStopReminders(for commitment: CalendarEvent) {
         pendingStopRemindersCommitment = commitment
         isStopRemindersConfirmationPresented = true
+    }
+
+    private func meetingLinkChoiceTitle(for link: URL) -> String {
+        let provider = link.host ?? "meeting link"
+        let path = link.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if path.isEmpty {
+            return "Join via \(provider)"
+        }
+        return "Join via \(provider) · \(path)"
     }
 }
 
@@ -2054,6 +2078,7 @@ private struct StrongAlertView: View {
     var verificationLabel: String? = nil
     let primaryActionTitle: String
     let primaryAction: () -> Void
+    var primaryActionChoices: [(String, () -> Void)] = []
     var secondaryActionTitle: String? = nil
     var secondaryAction: (() -> Void)? = nil
     var secondaryActionKeyboardShortcut: KeyEquivalent = "h"
@@ -2080,11 +2105,23 @@ private struct StrongAlertView: View {
             Text(detail)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
-            Button(primaryActionTitle, action: primaryAction)
+            if primaryActionChoices.isEmpty {
+                Button(primaryActionTitle, action: primaryAction)
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityLabel(primaryActionTitle)
+                    .accessibilityHint("Take the primary action for this commitment.")
+            } else {
+                Menu(primaryActionTitle) {
+                    ForEach(Array(primaryActionChoices.enumerated()), id: \.offset) { _, choice in
+                        Button(choice.0, action: choice.1)
+                    }
+                }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
                 .accessibilityLabel(primaryActionTitle)
-                .accessibilityHint("Take the primary action for this commitment.")
+                .accessibilityHint("Choose which Recognized Meeting Link to use for Join.")
+            }
             if let secondaryActionTitle, let secondaryAction {
                 Button(secondaryActionTitle, action: secondaryAction)
                     .keyboardShortcut(secondaryActionKeyboardShortcut)

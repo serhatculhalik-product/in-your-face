@@ -361,19 +361,28 @@ func decodeGoogleCalendarEvents(
             isAccepted: isAccepted,
             calendarID: calendarID,
             accountID: accountID,
-            recognizedMeetingLink: recognizedMeetingLink(for: item),
+            recognizedMeetingLinks: recognizedMeetingLinks(for: item),
             eventType: eventType
         )
     }
 }
 
-private func recognizedMeetingLink(for item: GoogleEventItem) -> URL? {
-    let candidates = [item.hangoutLink]
-        .compactMap { $0.flatMap(URL.init(string:)) }
-        + (item.conferenceData?.entryPoints ?? [])
-            .compactMap { $0.uri.flatMap(URL.init(string:)) }
+private func recognizedMeetingLinks(for item: GoogleEventItem) -> [RecognizedMeetingLink] {
+    var links: [RecognizedMeetingLink] = []
+    if let hangoutLink = item.hangoutLink.flatMap(URL.init(string:)),
+       isRecognizedMeetingLink(hangoutLink) {
+        links.append(RecognizedMeetingLink(url: hangoutLink, isPrimary: true))
+    }
 
-    return candidates.first(where: isRecognizedMeetingLink)
+    for entryPoint in item.conferenceData?.entryPoints ?? [] {
+        guard let url = entryPoint.uri.flatMap(URL.init(string:)),
+              isRecognizedMeetingLink(url),
+              !links.contains(where: { $0.url == url }) else {
+            continue
+        }
+        links.append(RecognizedMeetingLink(url: url, isPrimary: false))
+    }
+    return links
 }
 
 private func isRecognizedMeetingLink(_ url: URL) -> Bool {
