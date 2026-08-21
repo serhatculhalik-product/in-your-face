@@ -914,6 +914,231 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertTrue(flow.isStrongAlertPresented)
     }
 
+    func testCommitmentConflictExposesAnAutomaticPrimaryAndConflictList() async {
+        let (account, calendar) = makeTestAccountAndCalendar()
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let firstCommitment = CalendarEvent(
+            id: "event-a",
+            title: "First review",
+            startDate: now.addingTimeInterval(5 * 60),
+            endDate: now.addingTimeInterval(65 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let secondCommitment = CalendarEvent(
+            id: "event-b",
+            title: "Second review",
+            startDate: now.addingTimeInterval(15 * 60),
+            endDate: now.addingTimeInterval(75 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [firstCommitment, secondCommitment],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertEqual(flow.upcomingConflict?.commitments.map(\.id), [firstCommitment.id, secondCommitment.id])
+        XCTAssertEqual(flow.upcomingConflict?.primaryCommitment, firstCommitment)
+        XCTAssertEqual(flow.earlyReminderCommitment, firstCommitment)
+        XCTAssertEqual(flow.earlyReminderConflict?.commitments.count, 2)
+    }
+
+    func testCommitmentsTouchingAtAnEndBoundaryDoNotConflict() async {
+        let (account, calendar) = makeTestAccountAndCalendar()
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let firstCommitment = CalendarEvent(
+            id: "event-a",
+            title: "First review",
+            startDate: now.addingTimeInterval(5 * 60),
+            endDate: now.addingTimeInterval(15 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let secondCommitment = CalendarEvent(
+            id: "event-b",
+            title: "Second review",
+            startDate: firstCommitment.endDate,
+            endDate: now.addingTimeInterval(25 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [firstCommitment, secondCommitment],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertNil(flow.upcomingConflict)
+    }
+
+    func testSameStartConflictRemainsEqualAndExposesAllStrongAlertActions() async {
+        let (account, calendar) = makeTestAccountAndCalendar()
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let firstCommitment = CalendarEvent(
+            id: "event-a",
+            title: "First review",
+            startDate: now,
+            endDate: now.addingTimeInterval(60 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let secondCommitment = CalendarEvent(
+            id: "event-b",
+            title: "Second review",
+            startDate: now,
+            endDate: now.addingTimeInterval(90 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [firstCommitment, secondCommitment],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertTrue(flow.strongAlertConflict?.requiresPrimarySelection == true)
+        XCTAssertNil(flow.strongAlertConflict?.primaryCommitment)
+        XCTAssertEqual(flow.strongAlertActionCommitments.map(\.id), [firstCommitment.id, secondCommitment.id])
+
+        XCTAssertTrue(flow.dismissCommitment(for: firstCommitment, at: now))
+        XCTAssertEqual(flow.strongAlertCommitment, secondCommitment)
+        await settleScheduledRefreshes()
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(1))
+        XCTAssertEqual(flow.strongAlertCommitment, secondCommitment)
+        XCTAssertNil(flow.strongAlertConflict)
+
+        XCTAssertTrue(flow.dismissCommitment(for: secondCommitment, at: now.addingTimeInterval(1)))
+        await settleScheduledRefreshes()
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(2))
+        XCTAssertFalse(flow.isStrongAlertPresented)
+        XCTAssertNil(flow.strongAlertCommitment)
+    }
+
+    func testSameStartPrimarySelectionPersistsAcrossRefreshes() async {
+        let (account, calendar) = makeTestAccountAndCalendar()
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let firstCommitment = CalendarEvent(
+            id: "event-a",
+            title: "First review",
+            startDate: now.addingTimeInterval(5 * 60),
+            endDate: now.addingTimeInterval(65 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let secondCommitment = CalendarEvent(
+            id: "event-b",
+            title: "Second review",
+            startDate: firstCommitment.startDate,
+            endDate: now.addingTimeInterval(75 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [firstCommitment, secondCommitment],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+        XCTAssertTrue(flow.selectPrimary(for: secondCommitment))
+        await settleScheduledRefreshes()
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertEqual(flow.upcomingConflict?.primaryCommitment, secondCommitment)
+        XCTAssertEqual(flow.earlyReminderConflict?.primaryCommitment, secondCommitment)
+        XCTAssertEqual(flow.earlyReminderCommitment, secondCommitment)
+    }
+
+    func testSameStartPrimarySelectionSurvivesRelaunch() async {
+        let (account, calendar) = makeTestAccountAndCalendar()
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let firstCommitment = CalendarEvent(
+            id: "event-a",
+            title: "First review",
+            startDate: now.addingTimeInterval(5 * 60),
+            endDate: now.addingTimeInterval(65 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let secondCommitment = CalendarEvent(
+            id: "event-b",
+            title: "Second review",
+            startDate: firstCommitment.startDate,
+            endDate: now.addingTimeInterval(75 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let connection = GoogleCalendarConnection(account: account, calendars: [calendar])
+        let suiteName = "CommitmentProtectionFlowTests.conflictPrimaryPersistence.\(UUID().uuidString)"
+        let stateStore = UserDefaults(suiteName: suiteName)!
+        defer { stateStore.removePersistentDomain(forName: suiteName) }
+
+        let firstLaunch = CommitmentProtectionFlow(
+            calendarConnector: TestGoogleCalendarConnector(connection: connection, events: [firstCommitment, secondCommitment]),
+            launchAtLogin: TestLaunchAtLoginController(),
+            stateStore: stateStore,
+            now: { now }
+        )
+        await activateProtection(for: firstLaunch, calendarID: calendar.id)
+        await firstLaunch.refreshCommitmentProtection(at: now)
+        XCTAssertTrue(firstLaunch.selectPrimary(for: secondCommitment))
+        await firstLaunch.refreshCommitmentProtection(at: now)
+
+        let relaunch = CommitmentProtectionFlow(
+            calendarConnector: TestGoogleCalendarConnector(connection: connection, events: [firstCommitment, secondCommitment]),
+            launchAtLogin: TestLaunchAtLoginController(),
+            stateStore: stateStore,
+            now: { now }
+        )
+        await relaunch.restoreSavedConnection()
+
+        XCTAssertEqual(relaunch.upcomingConflict?.primaryCommitment, secondCommitment)
+        XCTAssertEqual(relaunch.earlyReminderConflict?.primaryCommitment, secondCommitment)
+        XCTAssertEqual(relaunch.earlyReminderCommitment, secondCommitment)
+    }
+
     func testSharedSecondaryMeetingLinkMergesRepresentationsAndOffersAllLinks() async {
         let (account, calendar) = makeTestAccountAndCalendar()
         let now = Date(timeIntervalSince1970: 1_000_000)

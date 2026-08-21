@@ -953,13 +953,44 @@ private struct EarlyReminderView: View {
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.orange)
                 }
-                Text(commitment.title)
-                    .font(.title2.bold())
-                    .multilineTextAlignment(.center)
-                Text(flow.localStartTimeText(for: commitment))
-                    .font(.title3.weight(.semibold))
-                Text(flow.countdownText(for: commitment, at: Date()))
-                    .foregroundStyle(.secondary)
+                if let conflict = flow.earlyReminderConflict,
+                   conflict.requiresPrimarySelection {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Commitment Conflict", systemImage: "exclamationmark.triangle")
+                            .font(.subheadline.weight(.semibold))
+                        Text("These commitments start at the same time. Choose a primary commitment before the Strong Alert.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        ForEach(conflict.commitments) { conflictCommitment in
+                            Button("Make primary: \(conflictCommitment.title)") {
+                                if flow.selectPrimary(for: conflictCommitment) {
+                                    announceActionResult(flow.lastActionMessage)
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
+                } else {
+                    Text(commitment.title)
+                        .font(.title2.bold())
+                        .multilineTextAlignment(.center)
+                    Text(flow.localStartTimeText(for: commitment))
+                        .font(.title3.weight(.semibold))
+                    Text(flow.countdownText(for: commitment, at: Date()))
+                        .foregroundStyle(.secondary)
+                    if let conflict = flow.earlyReminderConflict {
+                        let otherCommitments = conflict.commitments
+                            .filter { $0.id != conflict.primaryCommitment?.id }
+                            .map(\.title)
+                            .joined(separator: ", ")
+                        Text("Conflict includes: \(otherCommitments)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 Text("Got it closes this reminder. Strong Alert will still appear when the commitment begins.")
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
@@ -1186,53 +1217,68 @@ private struct StrongAlertContentView: View {
 
     var body: some View {
         Group {
-            if let commitment = flow.strongAlertCommitment {
+            if let conflict = flow.strongAlertConflict,
+               conflict.requiresPrimarySelection {
                 TimelineView(.periodic(from: Date(), by: 1)) { context in
-                    StrongAlertView(
-                        title: commitment.title,
-                        timing: flow.strongAlertTimingText(for: commitment, at: context.date),
-                        detail: flow.strongAlertContextText(for: commitment),
-                        verificationLabel: flow.isStrongAlertUnverified ? "Unverified Reminder" : nil,
-                        primaryActionTitle: flow.strongAlertPrimaryActionTitle,
-                        primaryAction: {
-                            if flow.strongAlertMeetingLinkOptions.isEmpty {
-                                requestStopReminders(for: commitment)
-                            } else if let primaryLink = flow.strongAlertPrimaryMeetingLink,
-                                      let meetingLink = flow.joinStrongAlert(using: primaryLink) {
-                                NSWorkspace.shared.open(meetingLink)
-                                announceActionResult(flow.lastActionMessage)
-                            } else if let meetingLink = flow.joinStrongAlert() {
-                                NSWorkspace.shared.open(meetingLink)
-                                announceActionResult(flow.lastActionMessage)
-                            }
-                        },
-                        primaryActionChoices: flow.strongAlertPrimaryMeetingLink == nil &&
-                            flow.strongAlertMeetingLinkOptions.count > 1
-                            ? flow.strongAlertMeetingLinkOptions.enumerated().map { _, link in
-                                (meetingLinkChoiceTitle(for: link), {
-                                    if let meetingLink = flow.joinStrongAlert(using: link) {
-                                        NSWorkspace.shared.open(meetingLink)
-                                        announceActionResult(flow.lastActionMessage)
-                                    }
-                                })
-                            }
-                            : [],
-                        secondaryActionTitle: flow.strongAlertMeetingLinkOptions.isEmpty ? nil : "Stop reminders",
-                        secondaryAction: {
-                            requestStopReminders(for: commitment)
-                        },
-                        secondaryActionKeyboardShortcut: "s",
-                        tertiaryActionTitle: "Got it",
-                        tertiaryAction: {
-                            flow.closeStrongAlertSurface()
-                            announceActionResult(flow.lastActionMessage)
-                        },
-                        pauseAction: { duration in
-                            if flow.pause(for: duration) {
-                                announceActionResult(flow.lastActionMessage)
-                            }
-                        }
+                    StrongAlertConflictContentView(
+                        flow: flow,
+                        conflict: conflict,
+                        date: context.date,
+                        requestStopReminders: requestStopReminders
                     )
+                }
+            } else if let commitment = flow.strongAlertCommitment {
+                TimelineView(.periodic(from: Date(), by: 1)) { context in
+                    VStack(spacing: 12) {
+                        StrongAlertView(
+                            title: commitment.title,
+                            timing: flow.strongAlertTimingText(for: commitment, at: context.date),
+                            detail: flow.strongAlertContextText(for: commitment),
+                            verificationLabel: flow.isStrongAlertUnverified ? "Unverified Reminder" : nil,
+                            primaryActionTitle: flow.strongAlertPrimaryActionTitle,
+                            primaryAction: {
+                                if flow.strongAlertMeetingLinkOptions.isEmpty {
+                                    requestStopReminders(for: commitment)
+                                } else if let primaryLink = flow.strongAlertPrimaryMeetingLink,
+                                          let meetingLink = flow.joinStrongAlert(using: primaryLink) {
+                                    NSWorkspace.shared.open(meetingLink)
+                                    announceActionResult(flow.lastActionMessage)
+                                } else if let meetingLink = flow.joinStrongAlert() {
+                                    NSWorkspace.shared.open(meetingLink)
+                                    announceActionResult(flow.lastActionMessage)
+                                }
+                            },
+                            primaryActionChoices: flow.strongAlertPrimaryMeetingLink == nil &&
+                                flow.strongAlertMeetingLinkOptions.count > 1
+                                ? flow.strongAlertMeetingLinkOptions.enumerated().map { _, link in
+                                    (meetingLinkChoiceTitle(for: link), {
+                                        if let meetingLink = flow.joinStrongAlert(using: link) {
+                                            NSWorkspace.shared.open(meetingLink)
+                                            announceActionResult(flow.lastActionMessage)
+                                        }
+                                    })
+                                }
+                                : [],
+                            secondaryActionTitle: flow.strongAlertMeetingLinkOptions.isEmpty ? nil : "Stop reminders",
+                            secondaryAction: {
+                                requestStopReminders(for: commitment)
+                            },
+                            secondaryActionKeyboardShortcut: "s",
+                            tertiaryActionTitle: "Got it",
+                            tertiaryAction: {
+                                flow.closeStrongAlertSurface()
+                                announceActionResult(flow.lastActionMessage)
+                            },
+                            pauseAction: { duration in
+                                if flow.pause(for: duration) {
+                                    announceActionResult(flow.lastActionMessage)
+                                }
+                            }
+                        )
+                        if let conflict = flow.strongAlertConflict {
+                            StrongAlertConflictSummaryView(flow: flow, conflict: conflict)
+                        }
+                    }
                 }
             } else {
                 VStack(spacing: 20) {
@@ -1261,6 +1307,194 @@ private struct StrongAlertContentView: View {
     private func requestStopReminders(for commitment: CalendarEvent) {
         pendingStopRemindersCommitment = commitment
         isStopRemindersConfirmationPresented = true
+    }
+
+    private func meetingLinkChoiceTitle(for link: URL) -> String {
+        let provider = link.host ?? "meeting link"
+        let path = link.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if path.isEmpty {
+            return "Join via \(provider)"
+        }
+        return "Join via \(provider) · \(path)"
+    }
+}
+
+private struct StrongAlertConflictSummaryView: View {
+    @ObservedObject var flow: CommitmentProtectionFlow
+    let conflict: CommitmentConflict
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Commitment Conflict", systemImage: "exclamationmark.triangle")
+                .font(.subheadline.weight(.semibold))
+            Text("Other commitments in this conflict remain visible while the primary commitment gets your attention.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            ForEach(Array(conflict.commitments.enumerated()), id: \.offset) { _, commitment in
+                HStack(spacing: 8) {
+                    if let primaryCommitment = conflict.primaryCommitment,
+                       primaryCommitment.id == commitment.id {
+                        Label("Primary", systemImage: "star.fill")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.orange)
+                    }
+                    Text(commitment.title)
+                        .lineLimit(2)
+                    Spacer(minLength: 8)
+                    Text(flow.localStartTimeText(for: commitment))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+private struct StrongAlertConflictContentView: View {
+    @ObservedObject var flow: CommitmentProtectionFlow
+    let conflict: CommitmentConflict
+    let date: Date
+    let requestStopReminders: (CalendarEvent) -> Void
+    @State private var customPauseExpiration = Date().addingTimeInterval(60 * 60)
+    @State private var isCustomPausePresented = false
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Label("Strong Alert", systemImage: "bell.and.waves.left.and.right.fill")
+                .font(.headline)
+            if flow.isStrongAlertUnverified {
+                Label("Unverified Reminder", systemImage: "questionmark.circle")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.orange)
+            }
+            Text("Choose a commitment")
+                .font(.title2.bold())
+            Text("These commitments start at the same time. Choose which one to make primary, or act on either one.")
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 12) {
+                ForEach(conflict.commitments) { commitment in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(commitment.title)
+                            .font(.headline)
+                        Text(flow.strongAlertTimingText(for: commitment, at: date))
+                            .font(.subheadline.weight(.semibold))
+                        Text(flow.strongAlertContextText(for: commitment))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        HStack(spacing: 8) {
+                            primaryAction(for: commitment)
+                            Button("Make primary") {
+                                if flow.selectPrimary(for: commitment) {
+                                    announceActionResult(flow.lastActionMessage)
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                            .accessibilityHint("Use this commitment as the primary choice for this conflict.")
+                        }
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
+                }
+            }
+
+            Button("Got it") {
+                flow.closeStrongAlertSurface()
+                announceActionResult(flow.lastActionMessage)
+            }
+            .keyboardShortcut("g")
+            .buttonStyle(.bordered)
+            .accessibilityHint("Close this Strong Alert. Protection remains active and it will repeat after the configured interval.")
+
+            if let pauseAction = pauseAction {
+                Menu("Pause protection") {
+                    Button("Pause for 1 hour") {
+                        pauseAction(.oneHour)
+                    }
+                    Button("Pause until end of day") {
+                        pauseAction(.endOfDay)
+                    }
+                    Button("Pause until selected time") {
+                        isCustomPausePresented = true
+                    }
+                }
+                .keyboardShortcut("p")
+                .accessibilityHint("Suppress Early Reminder and Strong Alert until the selected expiration.")
+            }
+        }
+        .padding(28)
+        .frame(minWidth: 560)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+        .sheet(isPresented: $isCustomPausePresented) {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Pause protection")
+                    .font(.headline)
+                DatePicker(
+                    "Expiration",
+                    selection: $customPauseExpiration,
+                    in: Date()...
+                )
+                .environment(\.locale, Locale(identifier: "tr_TR"))
+                Button("Pause until selected time") {
+                    pauseAction?(.custom(customPauseExpiration))
+                    isCustomPausePresented = false
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding(24)
+            .frame(minWidth: 320)
+        }
+    }
+
+    @ViewBuilder
+    private func primaryAction(for commitment: CalendarEvent) -> some View {
+        let links = flow.strongAlertMeetingLinkOptions(for: commitment)
+        if links.isEmpty {
+            Button("Stop reminders") {
+                requestStopReminders(commitment)
+            }
+            .buttonStyle(.borderedProminent)
+        } else if let primaryLink = flow.strongAlertPrimaryMeetingLink(for: commitment) {
+            Button("Join") {
+                if let meetingLink = flow.joinStrongAlert(for: commitment, using: primaryLink) {
+                    NSWorkspace.shared.open(meetingLink)
+                    announceActionResult(flow.lastActionMessage)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+        } else {
+            Menu("Choose link") {
+                ForEach(links, id: \.absoluteString) { link in
+                    Button(meetingLinkChoiceTitle(for: link)) {
+                        if let meetingLink = flow.joinStrongAlert(for: commitment, using: link) {
+                            NSWorkspace.shared.open(meetingLink)
+                            announceActionResult(flow.lastActionMessage)
+                        }
+                    }
+                }
+            }
+            .buttonStyle(.borderedProminent)
+        }
+
+        if !links.isEmpty {
+            Button("Stop reminders") {
+                requestStopReminders(commitment)
+            }
+            .buttonStyle(.bordered)
+        }
+    }
+
+    private var pauseAction: ((PauseDuration) -> Void)? {
+        { duration in
+            if flow.pause(for: duration) {
+                announceActionResult(flow.lastActionMessage)
+            }
+        }
     }
 
     private func meetingLinkChoiceTitle(for link: URL) -> String {
@@ -2187,6 +2421,40 @@ private func announceActionResult(_ message: String?) {
     )
 }
 
+private struct MenuBarConflictView: View {
+    @ObservedObject var flow: CommitmentProtectionFlow
+    let conflict: CommitmentConflict
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("Commitment Conflict", systemImage: "exclamationmark.triangle")
+                .font(.subheadline.weight(.semibold))
+            if conflict.requiresPrimarySelection {
+                Text("Choose which commitment is primary:")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ForEach(conflict.commitments) { commitment in
+                    Button("Make primary: \(commitment.title)") {
+                        if flow.selectPrimary(for: commitment) {
+                            announceActionResult(flow.lastActionMessage)
+                        }
+                    }
+                }
+            } else {
+                let otherCommitments = conflict.commitments
+                    .filter { $0.id != conflict.primaryCommitment?.id }
+                    .map(\.title)
+                    .joined(separator: ", ")
+                Text("Conflict includes: \(otherCommitments)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 4)
+    }
+}
+
 private struct MenuBarContent: View {
     @EnvironmentObject private var flow: CommitmentProtectionFlow
     @Environment(\.openWindow) private var openWindow
@@ -2216,6 +2484,16 @@ private struct MenuBarContent: View {
                         .keyboardShortcut("r")
                     }
 
+                    if let conflict = flow.strongAlertConflict ?? flow.upcomingConflict {
+                        MenuBarConflictView(flow: flow, conflict: conflict)
+                    }
+
+                    Divider()
+                }
+
+                if flow.upcomingCommitment == nil,
+                   let conflict = flow.strongAlertConflict {
+                    MenuBarConflictView(flow: flow, conflict: conflict)
                     Divider()
                 }
 
