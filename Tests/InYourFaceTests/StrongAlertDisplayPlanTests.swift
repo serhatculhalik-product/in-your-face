@@ -75,6 +75,11 @@ final class StrongAlertDisplayPlanTests: XCTestCase {
         XCTAssertFalse(lifecycle.requiresSurfaceRecovery)
         XCTAssertTrue(lifecycle.requiresActivation)
 
+        lifecycle.interactionBarrierAvailabilityChanged(true)
+        XCTAssertTrue(lifecycle.isInteractionBarrierAvailable)
+        lifecycle.interactionBarrierAvailabilityChanged(false)
+        XCTAssertFalse(lifecycle.isInteractionBarrierAvailable)
+
         lifecycle.close()
 
         XCTAssertNil(lifecycle.surface)

@@ -15,6 +15,7 @@ struct AlertPresentationLifecycle: Equatable, Sendable {
     private(set) var requiresSurfaceCreation = false
     private(set) var requiresSurfaceRecovery = false
     private(set) var requiresActivation = false
+    private(set) var isInteractionBarrierAvailable = false
 
     mutating func present(
         surface: AlertPresentationLifecycleSurface,
@@ -81,6 +82,10 @@ struct AlertPresentationLifecycle: Equatable, Sendable {
         requiresActivation = false
     }
 
+    mutating func interactionBarrierAvailabilityChanged(_ isAvailable: Bool) {
+        isInteractionBarrierAvailable = isAvailable
+    }
+
     mutating func close() {
         surface = nil
         isPresented = false
@@ -88,5 +93,6 @@ struct AlertPresentationLifecycle: Equatable, Sendable {
         requiresSurfaceCreation = false
         requiresSurfaceRecovery = false
         requiresActivation = false
+        isInteractionBarrierAvailable = false
     }
 }

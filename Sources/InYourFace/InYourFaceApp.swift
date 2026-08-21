@@ -2041,13 +2041,13 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
             for: window,
             isApplicationActive: NSApp.isActive
         ) else {
-            isGlobalInteractionBarrierAvailable = false
+            setInteractionBarrierAvailability(false)
             return false
         }
         guard let eventSource = CFMachPortCreateRunLoopSource(nil, eventTap, 0) else {
             CGEvent.tapEnable(tap: eventTap, enable: false)
             interactionGate.stop()
-            isGlobalInteractionBarrierAvailable = false
+            setInteractionBarrierAvailability(false)
             return false
         }
         if previousPresentationOptions == nil {
@@ -2143,7 +2143,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
             }
         }
         isInteractionBarrierActive = true
-        isGlobalInteractionBarrierAvailable = true
+        setInteractionBarrierAvailability(true)
         refreshFallbackPanelContent()
         return true
     }
@@ -2198,7 +2198,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         }
         blockedWindows.removeAll()
         isInteractionBarrierActive = false
-        isGlobalInteractionBarrierAvailable = false
+        setInteractionBarrierAvailability(false)
     }
 
     private func startBarrierRetryMonitoring() {
@@ -2208,6 +2208,11 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
                 self?.retryInteractionBarrierIfNeeded()
             }
         }
+    }
+
+    private func setInteractionBarrierAvailability(_ isAvailable: Bool) {
+        isGlobalInteractionBarrierAvailable = isAvailable
+        lifecycle.interactionBarrierAvailabilityChanged(isAvailable)
     }
 
     private func stopBarrierRetryMonitoring() {
