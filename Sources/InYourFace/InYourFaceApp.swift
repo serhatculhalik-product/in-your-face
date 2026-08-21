@@ -71,7 +71,7 @@ struct InYourFaceApp: App {
 }
 
 @MainActor
-private final class AppAvailabilityMonitor: ObservableObject {
+private final class AppAvailabilityMonitor: NSObject, ObservableObject {
     private let flow: CommitmentProtectionFlow
     private var workspaceObservers: [NSObjectProtocol] = []
     private var applicationObservers: [NSObjectProtocol] = []
@@ -86,19 +86,22 @@ private final class AppAvailabilityMonitor: ObservableObject {
         isStarted = true
 
         let workspaceCenter = NSWorkspace.shared.notificationCenter
+        let recoveryHandler: @Sendable (Notification) -> Void = { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.flow.recoverProtection()
+            }
+        }
         workspaceObservers = [
             NSWorkspace.didWakeNotification,
+            NSWorkspace.screensDidWakeNotification,
             NSWorkspace.sessionDidBecomeActiveNotification
         ].map { notificationName in
             workspaceCenter.addObserver(
                 forName: notificationName,
                 object: nil,
-                queue: .main
-            ) { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    await self?.flow.recoverProtection()
-                }
-            }
+                queue: .main,
+                using: recoveryHandler
+            )
         }
 
         applicationObservers = [
@@ -107,12 +110,29 @@ private final class AppAvailabilityMonitor: ObservableObject {
             NotificationCenter.default.addObserver(
                 forName: notificationName,
                 object: nil,
-                queue: .main
-            ) { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    await self?.flow.recoverProtection()
-                }
-            }
+                queue: .main,
+                using: recoveryHandler
+            )
+        }
+
+        let distributedCenter = DistributedNotificationCenter.default()
+        [
+            Notification.Name("com.apple.screenIsUnlocked")
+        ].forEach { notificationName in
+            distributedCenter.addObserver(
+                self,
+                selector: #selector(handleScreenUnlocked(_:)),
+                name: notificationName,
+                object: nil,
+                suspensionBehavior: .deliverImmediately
+            )
+        }
+    }
+
+    @objc
+    private func handleScreenUnlocked(_ notification: Notification) {
+        Task { @MainActor [weak self] in
+            await self?.flow.recoverProtection()
         }
     }
 }
