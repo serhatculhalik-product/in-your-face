@@ -617,7 +617,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertNil(flow.earlyReminderCommitment)
     }
 
-    func testSnoozeOffersFiveMinutesAndCapsAtCommitmentStart() async {
+    func testSnoozeOptionsSuppressAllRemindersAcrossCommitmentStart() async {
         let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
         let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
         let now = Date(timeIntervalSince1970: 1_000_000)
@@ -641,14 +641,19 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         await activateProtection(for: flow, calendarID: calendar.id)
         await flow.refreshCommitmentProtection(at: now)
 
-        XCTAssertEqual(flow.snoozeOptionsMinutes, [5])
+        XCTAssertEqual(flow.snoozeOptionsMinutes, [5, 10, 15, 30])
         XCTAssertTrue(flow.canSnoozeEarlyReminder)
-        XCTAssertFalse(flow.snoozeEarlyReminder(minutes: 10, at: now))
+        XCTAssertFalse(flow.snoozeEarlyReminder(minutes: 60, at: now))
         XCTAssertTrue(flow.snoozeEarlyReminder(minutes: 5, at: now))
-        XCTAssertEqual(flow.lastActionMessage, "Snoozed until the commitment starts. Protection remains active.")
+        XCTAssertEqual(flow.lastActionMessage, "All reminders snoozed for 5 minutes. Protection remains active.")
         XCTAssertNil(flow.earlyReminderCommitment)
 
         await flow.refreshCommitmentProtection(at: now.addingTimeInterval(4 * 60))
+
+        XCTAssertFalse(flow.isStrongAlertPresented)
+        XCTAssertNil(flow.strongAlertCommitment)
+
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(5 * 60))
 
         XCTAssertTrue(flow.isStrongAlertPresented)
         XCTAssertFalse(flow.canSnoozeEarlyReminder)
@@ -696,6 +701,39 @@ final class CommitmentProtectionFlowTests: XCTestCase {
 
         XCTAssertTrue(flow.clearEarlyReminder(for: displayedCommitment))
         XCTAssertNil(flow.earlyReminderCommitment)
+    }
+
+    func testSnoozeDoesNotShowAnAlertAfterTheCommitmentEnds() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(1 * 60),
+            endDate: now.addingTimeInterval(3 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [commitment],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+        XCTAssertTrue(flow.snoozeEarlyReminder(minutes: 30, at: now))
+
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(2 * 60))
+        XCTAssertFalse(flow.isStrongAlertPresented)
+
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(3 * 60))
+        XCTAssertNil(flow.upcomingCommitment)
+        XCTAssertFalse(flow.isStrongAlertPresented)
     }
 
     func testSnoozeReturnsOnceButCannotBeUsedAgain() async {

@@ -499,15 +499,19 @@ private struct EarlyReminderView: View {
                 Text("Got it closes this reminder. Strong Alert will still appear when the commitment begins.")
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
-                Button("Snooze 5 minutes") {
-                    let didApply = flow.snoozeEarlyReminder(minutes: 5, for: commitment)
-                    if didApply {
-                        announceActionResult(flow.lastActionMessage)
+                Menu("Snooze") {
+                    ForEach(flow.snoozeOptionsMinutes, id: \.self) { minutes in
+                        Button("\(minutes) minutes") {
+                            let didApply = flow.snoozeEarlyReminder(minutes: minutes, for: commitment)
+                            if didApply {
+                                announceActionResult(flow.lastActionMessage)
+                            }
+                            closeAfterAction(reopenIfNeeded: !didApply)
+                        }
                     }
-                    closeAfterAction(reopenIfNeeded: !didApply)
                 }
-                .keyboardShortcut("5")
                 .disabled(!flow.canSnoozeEarlyReminder)
+                .accessibilityHint("Choose how long to pause all reminders, including Strong Alert.")
 
                 HStack(spacing: 10) {
                     Button("Got it") {
@@ -552,7 +556,8 @@ private struct EarlyReminderView: View {
             EarlyReminderWindowController.shared.present(
                 content: EarlyReminderFallbackContent(
                     title: commitment.title,
-                    timing: flow.localStartTimeText(for: commitment)
+                    timing: flow.localStartTimeText(for: commitment),
+                    snoozeOptionsMinutes: flow.snoozeOptionsMinutes
                 ),
                 reopen: {
                     openWindow(id: "early-reminder")
@@ -590,7 +595,8 @@ private struct EarlyReminderView: View {
                 EarlyReminderWindowController.shared.surfaceDidDisappear(
                     content: EarlyReminderFallbackContent(
                         title: commitment.title,
-                        timing: flow.localStartTimeText(for: commitment)
+                        timing: flow.localStartTimeText(for: commitment),
+                        snoozeOptionsMinutes: flow.snoozeOptionsMinutes
                     ),
                     reopen: {
                         openWindow(id: "early-reminder")
@@ -756,6 +762,7 @@ private struct StrongAlertContentView: View {
 private struct EarlyReminderFallbackContent {
     let title: String
     let timing: String
+    let snoozeOptionsMinutes: [Int]
 }
 
 private struct EarlyReminderFallbackView: View {
@@ -779,9 +786,13 @@ private struct EarlyReminderFallbackView: View {
             Text("Got it closes this reminder. Strong Alert will still appear when the commitment begins.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
-            Button("Snooze 5 minutes") { snooze(5) }
-                .keyboardShortcut("5")
-                .disabled(!canSnooze)
+            Menu("Snooze") {
+                ForEach(content.snoozeOptionsMinutes, id: \.self) { minutes in
+                    Button("\(minutes) minutes") { snooze(minutes) }
+                }
+            }
+            .disabled(!canSnooze)
+            .accessibilityHint("Choose how long to pause all reminders, including Strong Alert.")
             HStack(spacing: 10) {
                 Button("Got it", action: clear)
                     .keyboardShortcut("g")
@@ -1040,7 +1051,7 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         // Keep the reminder visible through full-display, window, and app sharing.
         window.sharingType = .readOnly
-        window.standardWindowButton(.closeButton)?.isEnabled = false
+        window.standardWindowButton(.closeButton)?.isEnabled = true
         window.standardWindowButton(.miniaturizeButton)?.isEnabled = false
         window.standardWindowButton(.zoomButton)?.isEnabled = false
         window.isMovable = false
@@ -1085,7 +1096,9 @@ private final class EarlyReminderWindowController: NSObject, NSWindowDelegate, O
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        allowsWindowClose
+        guard !allowsWindowClose else { return true }
+        clearEarlyReminder?()
+        return false
     }
 
     func windowDidMiniaturize(_ notification: Notification) {

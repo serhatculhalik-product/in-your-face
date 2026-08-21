@@ -318,7 +318,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
     }
 
     public var snoozeOptionsMinutes: [Int] {
-        [5]
+        [5, 10, 15, 30]
     }
 
     public var canSnoozeEarlyReminder: Bool {
@@ -589,7 +589,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
                 clearedEarlyReminderEventStartDate = nil
             }
 
-            if let activeCommitment {
+            if let activeCommitment, !isSnoozed(activeCommitment, at: currentDate) {
                 updateStrongAlert(for: activeCommitment, at: currentDate)
             } else {
                 clearStrongAlertState()
@@ -717,14 +717,16 @@ public final class CommitmentProtectionFlow: ObservableObject {
         guard snoozedOccurrence != occurrence else { return false }
 
         snoozedOccurrence = occurrence
-        snoozedUntil = min(
-            startDate,
-            currentDate.addingTimeInterval(Double(minutes) * 60)
+        let requestedSnoozeUntil = currentDate.addingTimeInterval(Double(minutes) * 60)
+        let effectiveSnoozeUntil = min(
+            commitment.endDate ?? requestedSnoozeUntil,
+            requestedSnoozeUntil
         )
+        snoozedUntil = effectiveSnoozeUntil
         earlyReminderCommitment = nil
-        lastActionMessage = snoozedUntil == startDate && currentDate.addingTimeInterval(Double(minutes) * 60) > startDate
-            ? "Snoozed until the commitment starts. Protection remains active."
-            : "Snoozed for \(minutes) minutes. Protection remains active."
+        lastActionMessage = commitment.endDate == effectiveSnoozeUntil && requestedSnoozeUntil > effectiveSnoozeUntil
+            ? "All reminders snoozed until the commitment ends. Protection remains active."
+            : "All reminders snoozed for \(minutes) minutes. Protection remains active."
         lastActionOccurrence = occurrence
         saveConfiguration()
         return true
@@ -934,7 +936,8 @@ public final class CommitmentProtectionFlow: ObservableObject {
     private func restoreDisplayedProtection(for commitment: CalendarEvent, at date: Date) {
         guard let startDate = commitment.startDate,
               let endDate = commitment.endDate,
-              endDate > date else {
+              endDate > date,
+              !isSnoozed(commitment, at: date) else {
             return
         }
 
@@ -1001,6 +1004,10 @@ public final class CommitmentProtectionFlow: ObservableObject {
         if let nextPresentationDate = strongAlertNextPresentationDate,
            nextPresentationDate > currentDate {
             interval = min(interval, nextPresentationDate.timeIntervalSince(currentDate))
+        }
+        if let snoozedUntil,
+           snoozedUntil > currentDate {
+            interval = min(interval, snoozedUntil.timeIntervalSince(currentDate))
         }
         return UInt64(max(interval, 0.25) * 1_000_000_000)
     }

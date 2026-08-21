@@ -51,7 +51,7 @@ _Avoid_: Overlap, double booking
 ## Reminder language
 
 **Early Reminder**:
-A visual reminder shown before a commitment starts. It can optionally stay in front of other app windows through Blocking Mode. Its global lead time ranges from five to thirty minutes and defaults to ten minutes; the reminder can also be turned off while Strong Alert protection remains active. The user can Snooze it for five minutes, choose Got it to close only the early surface, or Stop reminders to end protection for the current occurrence. Got it does not change protection at the commitment start; Stop reminders does.
+A visual reminder shown before a commitment starts. It can optionally stay in front of other app windows through Blocking Mode. Its global lead time ranges from five to thirty minutes and defaults to ten minutes; the reminder can also be turned off while Strong Alert protection remains active. The user can Snooze it for a selected duration, choose Got it to close only the early surface, or Stop reminders to end protection for the current occurrence. Got it does not change protection at the commitment start; Stop reminders does.
 _Avoid_: Warning, alert (when referring specifically to the early reminder)
 
 **Unverified Reminder**:
@@ -87,7 +87,7 @@ An app-level action that reverses Dismiss or Handled for the current occurrence 
 _Avoid_: Re-accept, undo RSVP
 
 **Snooze**:
-A short five-minute delay applied before a commitment starts, always capped at the commitment's start. It is available once per occurrence and unavailable after the commitment has started.
+A user-selected five-, ten-, fifteen-, or thirty-minute quiet period applied from the Early Reminder. It suppresses both Early Reminder and Strong Alert, even when the quiet period crosses the commitment's start; it ends at the selected duration or the commitment's scheduled end, whichever comes first. It is available once per occurrence and unavailable after the commitment has started.
 _Avoid_: Delay, postpone
 
 **Repeat Interval**:

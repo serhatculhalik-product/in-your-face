@@ -35,8 +35,8 @@ The experience is intentionally narrow: Google Calendar is the source of truth f
 17. As a user, I want the Early Reminder to appear before a commitment, so that I have time to stop my current work.
 18. As a user, I want the Early Reminder to be optional and its lead time configurable from five to thirty minutes, with ten minutes as the default when enabled, so that the warning fits my transition needs without requiring complex schedules.
 19. As a user, I want a Got it action to close the Early Reminder while leaving protection active, so that dismissing a passive notification does not make me late.
-20. As a user, I want to Snooze the Early Reminder for five minutes, so that I can briefly finish a safe stopping point without adding another timing preference.
-21. As a user, I want Snooze capped at the commitment’s start time, so that it cannot defer protection past the point when lateness begins.
+20. As a user, I want to Snooze the Early Reminder for a selected duration, so that I can briefly finish a safe stopping point without adding a separate pre-start or post-start control.
+21. As a user, I want Snooze to suppress Early Reminder and Strong Alert even when it crosses the commitment’s start, so that the selected quiet period is predictable.
 22. As a user, I want Snooze available only once per Occurrence, so that repeated deferral does not undermine the safety net.
 23. As a user, I want the Strong Alert to take over every available display at the commitment’s start time, so that ordinary notification blindness or screen sharing cannot make me late.
 24. As a user, I want the Strong Alert to feel calm but urgent, so that it is effective without feeling hostile or theatrical.
@@ -99,14 +99,15 @@ The experience is intentionally narrow: Google Calendar is the source of truth f
 - Recurring events are handled by Occurrence. A rescheduled Occurrence receives a fresh protection decision.
 - Duplicate representations merge only when they share a Recognized Meeting Link and matching start time.
 - The Early Reminder is optional, global, configurable from five to thirty minutes when enabled, and defaults to ten minutes. Optional Blocking Mode can keep it in front of other app windows.
-- The Early Reminder exposes three user actions: Snooze for five minutes, Got it to close only the early surface, and Stop reminders to end protection for the current occurrence.
+- The Early Reminder exposes three user actions: Snooze for a selected duration, Got it to close only the early surface, and Stop reminders to end protection for the current occurrence.
+- Snooze is a dropdown with five-, ten-, fifteen-, and thirty-minute choices. It suppresses Early Reminder and Strong Alert until the selected duration expires or the commitment ends, whichever comes first.
 - Stop reminders requires confirmation and explains that no Early Reminder or Strong Alert will arrive for the commitment; Google Calendar RSVP is unchanged.
 - The Strong Alert is the start-time intervention. It takes over every available display, is calm but urgent, overrides macOS Focus modes, and exposes the next action.
 - The global Repeat Interval ranges from one to five minutes and defaults to one minute. Repetition remains enabled after start until Join, Handled, Dismiss, or scheduled end.
 - Join is prominent when a Recognized Meeting Link exists. A Join click ends protection for the reminder lifecycle; the product does not need to verify attendance.
 - Stop reminders ends protection without changing Google Calendar and records a Dismiss decision for the current occurrence. It is the only user-facing stop action in the Strong Alert.
 - Dismiss and Handled are occurrence-local decisions that persist through calendar refreshes and can be reversed by Restore Protection. Rescheduling resets them; Handled remains an internal/domain decision for compatibility with existing state and test-alert flows.
-- Snooze is available once per Occurrence before start, offers a five-minute choice, and is capped at the start time.
+- Snooze is available once per Occurrence before start, offers five-, ten-, fifteen-, and thirty-minute choices, and can cross the commitment’s start while remaining capped at the commitment’s scheduled end.
 - Clearing or closing an alert surface without an explicit action does not change protection.
 - Pause is a global, temporary escape hatch with one-hour, end-of-day, and custom-expiration choices. It immediately suppresses active and future protection; protection resumes according to the current commitment state when it expires.
 - Full-Screen Sharing, window sharing, and app sharing do not suppress or relocate visual reminders. The same reminder behavior applies regardless of sharing mode or how many displays are shared.
