@@ -165,7 +165,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
     private static let strongAlertRepeatIntervalKey = "commitment-protection.strong-alert-repeat-interval"
     private var clearedEarlyReminderEventID: String?
     private var clearedEarlyReminderEventStartDate: Date?
-    private struct OccurrenceIdentity: Equatable, Sendable {
+    private struct OccurrenceIdentity: Hashable, Sendable {
         let eventID: String
         let startDate: Date?
 
@@ -182,6 +182,8 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
     private var snoozedOccurrence: OccurrenceIdentity?
     private var snoozedUntil: Date?
+    private var observedUnacceptedOccurrences: Set<OccurrenceIdentity> = []
+    private var suppressedPostStartAcceptanceOccurrences: Set<OccurrenceIdentity> = []
     private var decisionOccurrence: OccurrenceIdentity?
     private var lastActionOccurrence: OccurrenceIdentity?
     private var strongAlertEventID: String?
@@ -212,6 +214,8 @@ public final class CommitmentProtectionFlow: ObservableObject {
         let currentCommitmentDecision: CommitmentProtectionDecision?
         let snoozedOccurrence: SavedOccurrence?
         let snoozedUntil: Date?
+        let observedUnacceptedOccurrences: [SavedOccurrence]
+        let suppressedPostStartAcceptanceOccurrences: [SavedOccurrence]
 
         private enum CodingKeys: String, CodingKey {
             case accountID
@@ -221,6 +225,8 @@ public final class CommitmentProtectionFlow: ObservableObject {
             case currentCommitmentDecision
             case snoozedOccurrence
             case snoozedUntil
+            case observedUnacceptedOccurrences
+            case suppressedPostStartAcceptanceOccurrences
         }
 
         init(
@@ -230,7 +236,9 @@ public final class CommitmentProtectionFlow: ObservableObject {
             decisionOccurrence: SavedOccurrence?,
             currentCommitmentDecision: CommitmentProtectionDecision?,
             snoozedOccurrence: SavedOccurrence?,
-            snoozedUntil: Date?
+            snoozedUntil: Date?,
+            observedUnacceptedOccurrences: [SavedOccurrence],
+            suppressedPostStartAcceptanceOccurrences: [SavedOccurrence]
         ) {
             self.accountID = accountID
             self.selectedCalendarIDs = selectedCalendarIDs
@@ -239,6 +247,8 @@ public final class CommitmentProtectionFlow: ObservableObject {
             self.currentCommitmentDecision = currentCommitmentDecision
             self.snoozedOccurrence = snoozedOccurrence
             self.snoozedUntil = snoozedUntil
+            self.observedUnacceptedOccurrences = observedUnacceptedOccurrences
+            self.suppressedPostStartAcceptanceOccurrences = suppressedPostStartAcceptanceOccurrences
         }
 
         init(from decoder: Decoder) throws {
@@ -253,6 +263,14 @@ public final class CommitmentProtectionFlow: ObservableObject {
             )
             snoozedOccurrence = try container.decodeIfPresent(SavedOccurrence.self, forKey: .snoozedOccurrence)
             snoozedUntil = try container.decodeIfPresent(Date.self, forKey: .snoozedUntil)
+            observedUnacceptedOccurrences = try container.decodeIfPresent(
+                [SavedOccurrence].self,
+                forKey: .observedUnacceptedOccurrences
+            ) ?? []
+            suppressedPostStartAcceptanceOccurrences = try container.decodeIfPresent(
+                [SavedOccurrence].self,
+                forKey: .suppressedPostStartAcceptanceOccurrences
+            ) ?? []
         }
     }
 
@@ -817,6 +835,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
     }
 
     private func reconcileCalendarSnapshot(_ events: [CalendarEvent], at currentDate: Date) {
+        recordAcceptanceMutations(in: events, at: currentDate)
         let eligibleEvents = events
             .filter { event in
                 guard event.isEligibleForProtection,
@@ -853,7 +872,9 @@ public final class CommitmentProtectionFlow: ObservableObject {
             clearedEarlyReminderEventStartDate = nil
         }
 
-        if let activeCommitment, !isSnoozed(activeCommitment, at: currentDate) {
+        if let activeCommitment,
+           !isSnoozed(activeCommitment, at: currentDate),
+           !suppressedPostStartAcceptanceOccurrences.contains(OccurrenceIdentity(activeCommitment)) {
             updateStrongAlert(for: activeCommitment, at: currentDate)
         } else {
             clearStrongAlertState()
@@ -876,6 +897,56 @@ public final class CommitmentProtectionFlow: ObservableObject {
         }
 
         earlyReminderCommitment = nextCommitment
+    }
+
+    private func recordAcceptanceMutations(in events: [CalendarEvent], at currentDate: Date) {
+        let trackedEvents = events.filter { event in
+            guard !event.isAllDay,
+                  event.startDate != nil,
+                  let endDate = event.endDate else {
+                return false
+            }
+            return endDate > currentDate
+        }
+        let trackedOccurrences = Set(trackedEvents.map(OccurrenceIdentity.init))
+        var didChange = false
+
+        let retainedUnacceptedOccurrences = observedUnacceptedOccurrences.intersection(trackedOccurrences)
+        if retainedUnacceptedOccurrences != observedUnacceptedOccurrences {
+            observedUnacceptedOccurrences = retainedUnacceptedOccurrences
+            didChange = true
+        }
+        let retainedSuppressedOccurrences = suppressedPostStartAcceptanceOccurrences.intersection(trackedOccurrences)
+        if retainedSuppressedOccurrences != suppressedPostStartAcceptanceOccurrences {
+            suppressedPostStartAcceptanceOccurrences = retainedSuppressedOccurrences
+            didChange = true
+        }
+
+        for event in trackedEvents {
+            let occurrence = OccurrenceIdentity(event)
+            if event.isAccepted {
+                if let startDate = event.startDate,
+                   startDate <= currentDate,
+                   observedUnacceptedOccurrences.contains(occurrence),
+                   suppressedPostStartAcceptanceOccurrences.insert(occurrence).inserted {
+                    didChange = true
+                }
+                if observedUnacceptedOccurrences.remove(occurrence) != nil {
+                    didChange = true
+                }
+            } else {
+                if observedUnacceptedOccurrences.insert(occurrence).inserted {
+                    didChange = true
+                }
+                if suppressedPostStartAcceptanceOccurrences.remove(occurrence) != nil {
+                    didChange = true
+                }
+            }
+        }
+
+        if didChange {
+            saveConfiguration()
+        }
     }
 
     private func recordDecision(
@@ -1029,6 +1100,10 @@ public final class CommitmentProtectionFlow: ObservableObject {
         currentCommitmentDecision = configuration.currentCommitmentDecision
         snoozedOccurrence = configuration.snoozedOccurrence?.identity
         snoozedUntil = configuration.snoozedUntil
+        observedUnacceptedOccurrences = Set(configuration.observedUnacceptedOccurrences.map(\.identity))
+        suppressedPostStartAcceptanceOccurrences = Set(
+            configuration.suppressedPostStartAcceptanceOccurrences.map(\.identity)
+        )
     }
 
     private func saveConfiguration() {
@@ -1041,7 +1116,9 @@ public final class CommitmentProtectionFlow: ObservableObject {
             decisionOccurrence: decisionOccurrence.map(SavedOccurrence.init),
             currentCommitmentDecision: currentCommitmentDecision,
             snoozedOccurrence: snoozedOccurrence.map(SavedOccurrence.init),
-            snoozedUntil: snoozedUntil
+            snoozedUntil: snoozedUntil,
+            observedUnacceptedOccurrences: observedUnacceptedOccurrences.map(SavedOccurrence.init),
+            suppressedPostStartAcceptanceOccurrences: suppressedPostStartAcceptanceOccurrences.map(SavedOccurrence.init)
         )
         guard let data = try? JSONEncoder().encode(configuration) else { return }
         stateStore.set(data, forKey: Self.stateKey)
@@ -1062,6 +1139,8 @@ public final class CommitmentProtectionFlow: ObservableObject {
         clearedEarlyReminderEventStartDate = nil
         snoozedOccurrence = nil
         snoozedUntil = nil
+        observedUnacceptedOccurrences = []
+        suppressedPostStartAcceptanceOccurrences = []
         clearLocalDecision()
         clearLastActionMessage()
     }
