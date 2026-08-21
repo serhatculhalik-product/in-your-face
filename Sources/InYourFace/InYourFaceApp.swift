@@ -73,8 +73,6 @@ struct InYourFaceApp: App {
 @MainActor
 private final class AppAvailabilityMonitor: NSObject, ObservableObject {
     private let flow: CommitmentProtectionFlow
-    private var workspaceObservers: [NSObjectProtocol] = []
-    private var applicationObservers: [NSObjectProtocol] = []
     private var isStarted = false
 
     init(flow: CommitmentProtectionFlow) {
@@ -86,51 +84,38 @@ private final class AppAvailabilityMonitor: NSObject, ObservableObject {
         isStarted = true
 
         let workspaceCenter = NSWorkspace.shared.notificationCenter
-        let recoveryHandler: @Sendable (Notification) -> Void = { [weak self] _ in
-            Task { @MainActor [weak self] in
-                await self?.flow.recoverProtection()
-            }
-        }
-        workspaceObservers = [
+        [
             NSWorkspace.didWakeNotification,
             NSWorkspace.screensDidWakeNotification,
             NSWorkspace.sessionDidBecomeActiveNotification
-        ].map { notificationName in
+        ].forEach { notificationName in
             workspaceCenter.addObserver(
-                forName: notificationName,
-                object: nil,
-                queue: .main,
-                using: recoveryHandler
+                self,
+                selector: #selector(handleRecovery(_:)),
+                name: notificationName,
+                object: nil
             )
         }
 
-        applicationObservers = [
-            NSApplication.didBecomeActiveNotification
-        ].map { notificationName in
-            NotificationCenter.default.addObserver(
-                forName: notificationName,
-                object: nil,
-                queue: .main,
-                using: recoveryHandler
-            )
-        }
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleRecovery(_:)),
+            name: NSApplication.didBecomeActiveNotification,
+            object: nil
+        )
 
         let distributedCenter = DistributedNotificationCenter.default()
-        [
-            Notification.Name("com.apple.screenIsUnlocked")
-        ].forEach { notificationName in
-            distributedCenter.addObserver(
-                self,
-                selector: #selector(handleScreenUnlocked(_:)),
-                name: notificationName,
-                object: nil,
-                suspensionBehavior: .deliverImmediately
-            )
-        }
+        distributedCenter.addObserver(
+            self,
+            selector: #selector(handleRecovery(_:)),
+            name: Notification.Name("com.apple.screenIsUnlocked"),
+            object: nil,
+            suspensionBehavior: .deliverImmediately
+        )
     }
 
     @objc
-    private func handleScreenUnlocked(_ notification: Notification) {
+    private func handleRecovery(_ notification: Notification) {
         Task { @MainActor [weak self] in
             await self?.flow.recoverProtection()
         }
@@ -2055,6 +2040,12 @@ private struct MenuBarLabel: View {
         .onAppear {
             SetupWindowController.shared.showAtLaunch {
                 openWindow(id: "setup")
+            }
+            if flow.earlyReminderCommitment != nil {
+                openWindow(id: "early-reminder")
+            }
+            if flow.isStrongAlertPresented {
+                openWindow(id: "strong-alert")
             }
         }
         .onChange(of: flow.earlyReminderCommitment) { _, commitment in

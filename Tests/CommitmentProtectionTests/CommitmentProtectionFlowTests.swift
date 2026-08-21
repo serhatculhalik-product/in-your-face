@@ -1862,8 +1862,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
     }
 
     func testActivityLogExplainsUserAndSystemProtectionActions() async {
-        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
-        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let (account, calendar) = makeTestAccountAndCalendar()
         let now = Date(timeIntervalSince1970: 1_000_000)
         let commitment = CalendarEvent(
             id: "event-1",
@@ -1915,8 +1914,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
     }
 
     func testActivityLogShowsPauseExpiryAsSystemAction() async {
-        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
-        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let (account, calendar) = makeTestAccountAndCalendar()
         let now = Date(timeIntervalSince1970: 1_000_000)
         let commitment = CalendarEvent(
             id: "event-1",
@@ -1950,8 +1948,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         calendar.timeZone = .current
         let day = calendar.startOfDay(for: Date(timeIntervalSince1970: 1_000_000))
         let now = calendar.date(byAdding: .hour, value: 10, to: day)!
-        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
-        let monitoredCalendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let (account, monitoredCalendar) = makeTestAccountAndCalendar()
         let suiteName = "CommitmentProtectionFlowTests.activityLog.\(UUID().uuidString)"
         let stateStore = UserDefaults(suiteName: suiteName)!
         defer { stateStore.removePersistentDomain(forName: suiteName) }
@@ -2036,8 +2033,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         let day = calendar.startOfDay(for: Date(timeIntervalSince1970: 1_000_000))
         let now = calendar.date(byAdding: .hour, value: 10, to: day)!
         let nextLocalDay = calendar.date(byAdding: .day, value: 1, to: day)!
-        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
-        let monitoredCalendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let (account, monitoredCalendar) = makeTestAccountAndCalendar()
         let suiteName = "CommitmentProtectionFlowTests.activityLogExpiry.\(UUID().uuidString)"
         let stateStore = UserDefaults(suiteName: suiteName)!
         defer { stateStore.removePersistentDomain(forName: suiteName) }
@@ -2215,8 +2211,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
     }
 
     func testRecoveryAfterUnavailablePeriodShowsOverdueStrongAlertForAnOngoingCommitment() async {
-        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
-        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let (account, calendar) = makeTestAccountAndCalendar()
         let start = Date(timeIntervalSince1970: 1_000_000)
         let commitment = CalendarEvent(
             id: "event-1",
@@ -2247,8 +2242,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
     }
 
     func testRelaunchRecoversAnOngoingCommitmentAsAnOverdueStrongAlert() async {
-        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
-        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let (account, calendar) = makeTestAccountAndCalendar()
         let start = Date(timeIntervalSince1970: 1_000_000)
         var currentDate = start
         let commitment = CalendarEvent(
@@ -2295,8 +2289,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
     }
 
     func testRelaunchRespectsPersistedPauseUntilAnOngoingCommitmentResumes() async {
-        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
-        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let (account, calendar) = makeTestAccountAndCalendar()
         let start = Date(timeIntervalSince1970: 1_000_000)
         var currentDate = start
         let commitment = CalendarEvent(
@@ -2346,8 +2339,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
     }
 
     func testRecoveryAfterUnavailablePeriodShowsNoAlertAfterCommitmentEnded() async {
-        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
-        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let (account, calendar) = makeTestAccountAndCalendar()
         let start = Date(timeIntervalSince1970: 1_000_000)
         let commitment = CalendarEvent(
             id: "event-1",
@@ -2374,8 +2366,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
     }
 
     func testRecoveryUsesCurrentCalendarStateBeforeShowingProtection() async {
-        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
-        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let (account, calendar) = makeTestAccountAndCalendar()
         let start = Date(timeIntervalSince1970: 1_000_000)
         let commitment = CalendarEvent(
             id: "event-1",
@@ -2402,8 +2393,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
     }
 
     func testRecoveryDoesNotShowProtectionForAnUnacceptedEvent() async {
-        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
-        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let (account, calendar) = makeTestAccountAndCalendar()
         let start = Date(timeIntervalSince1970: 1_000_000)
         let unacceptedEvent = CalendarEvent(
             id: "event-1",
@@ -2474,6 +2464,12 @@ final class CommitmentProtectionFlowTests: XCTestCase {
             stateStore: stateStore ?? UserDefaults(suiteName: "CommitmentProtectionFlowTests.\(UUID().uuidString)")!,
             now: { now }
         )
+    }
+
+    private func makeTestAccountAndCalendar() -> (GoogleAccount, CalendarOption) {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        return (account, calendar)
     }
 
     private func makeMutableFlow(
