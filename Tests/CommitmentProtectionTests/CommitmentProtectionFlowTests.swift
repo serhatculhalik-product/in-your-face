@@ -1421,6 +1421,45 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertEqual(flow.strongAlertContextText(for: commitment), "Work · alex@example.com")
     }
 
+    func testIncidentalEarlyAndStrongSurfaceClearingLeavesExplicitActionPathActive() async {
+        let (account, calendar) = makeTestAccountAndCalendar()
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let meetingURL = URL(string: "https://meet.google.com/action-parity")!
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(5 * 60),
+            endDate: now.addingTimeInterval(65 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id,
+            recognizedMeetingLink: meetingURL
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [commitment],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+        flow.setBlockingAvailability(false)
+        flow.clearEarlyReminder()
+
+        XCTAssertEqual(flow.upcomingCommitment, commitment)
+        XCTAssertNil(flow.currentCommitmentDecision)
+        XCTAssertNil(flow.strongAlertCommitment)
+
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(5 * 60))
+        flow.closeStrongAlertSurface(at: now.addingTimeInterval(5 * 60 + 1))
+
+        XCTAssertNil(flow.currentCommitmentDecision)
+        XCTAssertEqual(flow.strongAlertCommitment, commitment)
+        XCTAssertEqual(flow.joinStrongAlert(), meetingURL)
+    }
+
     func testOverdueStrongAlertRepeatsAfterSurfaceCloseUntilCommitmentEnds() async {
         let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
         let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
