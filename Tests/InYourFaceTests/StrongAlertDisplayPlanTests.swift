@@ -3,6 +3,44 @@ import CommitmentProtection
 @testable import InYourFace
 
 final class StrongAlertDisplayPlanTests: XCTestCase {
+    func testEarlyReminderPresentationStateInvalidatesStaleRequests() {
+        var state = EarlyReminderPresentationState()
+        let firstRequest = state.beginPresentation()
+
+        XCTAssertTrue(state.acceptsPresentationRequest(firstRequest, hasCommitment: true))
+
+        state.requestCloseWhenWindowAppears()
+
+        XCTAssertFalse(state.acceptsPresentationRequest(firstRequest, hasCommitment: true))
+        XCTAssertTrue(state.shouldCloseWhenWindowAppears)
+
+        let secondRequest = state.beginPresentation()
+
+        XCTAssertTrue(state.acceptsPresentationRequest(secondRequest, hasCommitment: true))
+        XCTAssertFalse(state.shouldCloseWhenWindowAppears)
+        XCTAssertFalse(state.acceptsPresentationRequest(secondRequest, hasCommitment: false))
+    }
+
+    func testEarlyReminderWindowTrackingStateDropsDetachedWindow() {
+        final class WindowToken {}
+        let firstWindow = WindowToken()
+        let secondWindow = WindowToken()
+        var state = EarlyReminderWindowTrackingState()
+
+        state.register(ObjectIdentifier(firstWindow))
+        XCTAssertTrue(state.tracks(ObjectIdentifier(firstWindow)))
+
+        state.unregister(ObjectIdentifier(secondWindow))
+        XCTAssertTrue(state.tracks(ObjectIdentifier(firstWindow)))
+
+        state.unregister(ObjectIdentifier(firstWindow))
+        XCTAssertFalse(state.tracks(ObjectIdentifier(firstWindow)))
+
+        state.register(ObjectIdentifier(secondWindow))
+        XCTAssertTrue(state.tracks(ObjectIdentifier(secondWindow)))
+        XCTAssertFalse(state.tracks(ObjectIdentifier(firstWindow)))
+    }
+
     func testPresentationLifecycleDoesNotPresentWithoutAUsableSurface() {
         var lifecycle = AlertPresentationLifecycle()
 
