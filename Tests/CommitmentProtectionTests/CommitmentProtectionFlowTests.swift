@@ -567,6 +567,35 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertTrue(flow.isStrongAlertPresented)
     }
 
+    func testHandleStrongAlertDoesNotHandleAnEarlyReminderCommitment() async {
+        let (account, calendar) = makeTestAccountAndCalendar()
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Upcoming review",
+            startDate: now.addingTimeInterval(10 * 60),
+            endDate: now.addingTimeInterval(70 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [commitment],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertFalse(flow.handleStrongAlert(for: commitment, at: now))
+        XCTAssertEqual(flow.earlyReminderCommitment, commitment)
+        XCTAssertNil(flow.currentCommitmentDecision)
+        XCTAssertFalse(flow.canRestoreProtection)
+    }
+
     func testSharedMeetingLinkRepresentationsProduceOneProtectionLifecycle() async {
         let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
         let workCalendar = CalendarOption(id: "calendar-work", name: "Work", accountID: account.id)

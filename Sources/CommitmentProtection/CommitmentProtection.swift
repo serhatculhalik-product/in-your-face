@@ -1692,7 +1692,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
     @discardableResult
     public func handleStrongAlert(for commitment: CalendarEvent, at date: Date? = nil) -> Bool {
-        guard isActionable(commitment) else { return false }
+        guard isStrongAlertActionable(commitment) else { return false }
         return handle(commitment, at: date ?? now())
     }
 
@@ -1985,6 +1985,12 @@ public final class CommitmentProtectionFlow: ObservableObject {
             earlyReminderMergedCommitment,
             upcomingMergedCommitment
         ].compactMap { $0 } + strongAlertConflictMergedCommitments + earlyReminderConflictMergedCommitments
+        return displayedGroups.contains { $0.contains(commitment) }
+    }
+
+    private func isStrongAlertActionable(_ commitment: CalendarEvent) -> Bool {
+        let displayedGroups = [strongAlertMergedCommitment].compactMap { $0 } +
+            strongAlertConflictMergedCommitments
         return displayedGroups.contains { $0.contains(commitment) }
     }
 
