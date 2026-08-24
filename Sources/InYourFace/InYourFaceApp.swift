@@ -527,7 +527,7 @@ private struct EarlyReminderSettingsCard: View {
             .disabled(!flow.isEarlyReminderEnabled)
 
             if flow.isProtectionConfirmationRequired {
-                Text("Review the selected calendars and global timing, then confirm protection.")
+                Text("Review the newly selected calendars, then confirm protection.")
                     .foregroundStyle(.secondary)
                 Button("Confirm Protection for All Accounts") {
                     flow.confirmAllProtection()
