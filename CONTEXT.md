@@ -75,7 +75,7 @@ The primary action for an accepted event with a recognized meeting link. The use
 _Avoid_: Attend, launch, open link
 
 **Handled**:
-An occurrence-local acknowledgment that ends protection without changing the Google Calendar RSVP. The current Strong Alert uses the single user-facing Stop reminders action for this outcome; the Handled decision remains available to existing domain and test-alert flows. The decision lasts through the current occurrence even if the calendar refreshes.
+An occurrence-local acknowledgment that ends protection without changing the Google Calendar RSVP. A Strong Alert can record this outcome through the user-facing I joined or Stop reminders action; the Handled decision remains available to existing domain and test-alert flows. The decision lasts through the current occurrence even if the calendar refreshes.
 _Avoid_: Complete, done
 
 **Dismiss**:
