@@ -1234,6 +1234,13 @@ private struct StrongAlertContentView: View {
                                 requestStopReminders(for: commitment)
                             },
                             secondaryActionKeyboardShortcut: "s",
+                            handledActionTitle: "I joined",
+                            handledAction: {
+                                if flow.handleStrongAlert(for: commitment) {
+                                    announceActionResult(flow.lastActionMessage)
+                                }
+                            },
+                            handledActionKeyboardShortcut: "i",
                             tertiaryActionTitle: "Got it",
                             tertiaryAction: {
                                 flow.closeStrongAlertSurface()
@@ -1457,6 +1464,15 @@ private struct StrongAlertConflictContentView: View {
             }
             .buttonStyle(.bordered)
         }
+
+        Button("I joined") {
+            if flow.handleStrongAlert(for: commitment) {
+                announceActionResult(flow.lastActionMessage)
+            }
+        }
+        .keyboardShortcut("i")
+        .buttonStyle(.bordered)
+        .accessibilityHint("Mark this commitment as handled because you joined it outside this app.")
     }
 
     private var pauseAction: ((PauseDuration) -> Void)? {
@@ -2516,6 +2532,9 @@ private struct StrongAlertView: View {
     var secondaryActionTitle: String? = nil
     var secondaryAction: (() -> Void)? = nil
     var secondaryActionKeyboardShortcut: KeyEquivalent = "h"
+    var handledActionTitle: String? = nil
+    var handledAction: (() -> Void)? = nil
+    var handledActionKeyboardShortcut: KeyEquivalent = "i"
     var tertiaryActionTitle: String? = nil
     var tertiaryAction: (() -> Void)? = nil
     var pauseAction: ((PauseDuration) -> Void)? = nil
@@ -2562,6 +2581,13 @@ private struct StrongAlertView: View {
                     .buttonStyle(.bordered)
                     .accessibilityLabel(secondaryActionTitle)
                     .accessibilityHint("Stop Early Reminder and Strong Alert for this commitment occurrence without changing Google Calendar.")
+            }
+            if let handledActionTitle, let handledAction {
+                Button(handledActionTitle, action: handledAction)
+                    .keyboardShortcut(handledActionKeyboardShortcut)
+                    .buttonStyle(.bordered)
+                    .accessibilityLabel(handledActionTitle)
+                    .accessibilityHint("Mark this commitment as handled because you joined it outside this app.")
             }
             if let tertiaryActionTitle, let tertiaryAction {
                 Button(tertiaryActionTitle, action: tertiaryAction)

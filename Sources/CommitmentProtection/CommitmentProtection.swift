@@ -1687,7 +1687,13 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
     public func handleStrongAlert() {
         guard let commitment = strongAlertCommitment else { return }
-        _ = handle(commitment, at: now())
+        _ = handleStrongAlert(for: commitment, at: now())
+    }
+
+    @discardableResult
+    public func handleStrongAlert(for commitment: CalendarEvent, at date: Date? = nil) -> Bool {
+        guard isActionable(commitment) else { return false }
+        return handle(commitment, at: date ?? now())
     }
 
     @discardableResult

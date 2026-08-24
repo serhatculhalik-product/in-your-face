@@ -489,6 +489,84 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertFalse(flow.isStrongAlertPresented)
     }
 
+    func testManuallyJoinedStrongAlertMarksTheCurrentOccurrenceHandled() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now,
+            endDate: now.addingTimeInterval(60 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [commitment],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertTrue(flow.handleStrongAlert(for: commitment, at: now))
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertFalse(flow.isStrongAlertPresented)
+        XCTAssertEqual(flow.currentCommitmentDecision, .handled)
+        XCTAssertEqual(flow.decisionCommitment, commitment)
+        XCTAssertTrue(flow.canRestoreProtection)
+        XCTAssertEqual(flow.lastActionMessage, "Handled for this occurrence. Protection is off until it ends.")
+    }
+
+    func testManuallyJoinedConflictHandlesOnlyTheSelectedCommitment() async {
+        let (account, calendar) = makeTestAccountAndCalendar()
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let firstCommitment = CalendarEvent(
+            id: "event-a",
+            title: "First review",
+            startDate: now,
+            endDate: now.addingTimeInterval(60 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let secondCommitment = CalendarEvent(
+            id: "event-b",
+            title: "Second review",
+            startDate: now,
+            endDate: now.addingTimeInterval(90 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let flow = makeFlow(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [firstCommitment, secondCommitment],
+            now: now
+        )
+
+        await activateProtection(for: flow, calendarID: calendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+
+        XCTAssertTrue(flow.handleStrongAlert(for: firstCommitment, at: now))
+        await settleScheduledRefreshes()
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(1))
+
+        XCTAssertEqual(flow.strongAlertCommitment, secondCommitment)
+        XCTAssertEqual(flow.currentCommitmentDecision, .handled)
+        XCTAssertEqual(flow.decisionCommitment, firstCommitment)
+        XCTAssertTrue(flow.isStrongAlertPresented)
+    }
+
     func testSharedMeetingLinkRepresentationsProduceOneProtectionLifecycle() async {
         let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
         let workCalendar = CalendarOption(id: "calendar-work", name: "Work", accountID: account.id)
