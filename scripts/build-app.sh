@@ -11,6 +11,8 @@ if [[ -f "${dotenv_path}" ]]; then
     source "${dotenv_path}"
 fi
 
+code_sign_identity="${CODE_SIGN_IDENTITY:--}"
+
 if [[ -z "${GOOGLE_OAUTH_CLIENT_ID:-}" ]]; then
     echo "GOOGLE_OAUTH_CLIENT_ID must be set when packaging the app." >&2
     exit 1
@@ -32,7 +34,17 @@ cp "${repository_directory}/Resources/InYourFace.app/Contents/Info.plist" "${app
 /usr/bin/plutil -replace GoogleOAuthClientID -string "${GOOGLE_OAUTH_CLIENT_ID}" "${app_path}/Contents/Info.plist"
 /usr/bin/plutil -replace GoogleOAuthClientSecret -string "${GOOGLE_OAUTH_CLIENT_SECRET}" "${app_path}/Contents/Info.plist"
 
-/usr/bin/codesign --force --deep --sign - "${app_path}"
+if [[ "${code_sign_identity}" == "-" ]]; then
+    /usr/bin/codesign --force --deep --sign - "${app_path}"
+else
+    /usr/bin/codesign \
+        --force \
+        --deep \
+        --options runtime \
+        --timestamp \
+        --sign "${code_sign_identity}" \
+        "${app_path}"
+fi
 
 echo "Built ${app_path}"
 echo "Launch with: open \"${app_path}\""

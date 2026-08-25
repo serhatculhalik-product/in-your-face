@@ -1,0 +1,161 @@
+import Foundation
+import XCTest
+@testable import InYourFace
+
+@MainActor
+final class OnboardingStateTests: XCTestCase {
+    func testFreshInstallWaitsForResolutionThenRequestsOnboarding() {
+        withStateStore { store in
+            let state = OnboardingState(stateStore: store)
+
+            XCTAssertEqual(state.initialSurface, .waiting)
+            XCTAssertFalse(state.isCompleted)
+            XCTAssertFalse(state.needsSetup)
+
+            state.resolveInitialLaunch(hasConfiguredProtection: false)
+
+            XCTAssertEqual(state.initialSurface, .onboarding)
+            XCTAssertEqual(state.phase, .pending)
+            XCTAssertTrue(state.needsSetup)
+        }
+    }
+
+    func testExistingConfiguredUserMigratesToMenuBarOnly() {
+        withStateStore { store in
+            let state = OnboardingState(stateStore: store)
+
+            XCTAssertEqual(state.initialSurface, .waiting)
+            XCTAssertFalse(state.needsSetup)
+
+            state.resume()
+            state.resolveInitialLaunch(hasConfiguredProtection: true)
+
+            XCTAssertTrue(state.isCompleted)
+            XCTAssertFalse(state.needsSetup)
+            XCTAssertEqual(state.initialSurface, .menuBarOnly)
+
+            let relaunchedState = OnboardingState(stateStore: store)
+
+            XCTAssertEqual(relaunchedState.phase, .completed)
+            XCTAssertEqual(relaunchedState.initialSurface, .waiting)
+            XCTAssertFalse(relaunchedState.needsSetup)
+
+            relaunchedState.resolveInitialLaunch(hasConfiguredProtection: false)
+
+            XCTAssertTrue(relaunchedState.isCompleted)
+            XCTAssertFalse(relaunchedState.needsSetup)
+            XCTAssertEqual(relaunchedState.initialSurface, .menuBarOnly)
+        }
+    }
+
+    func testDeferredSetupCannotResumeBeforeInitialLaunchResolution() {
+        withStateStore { store in
+            let state = OnboardingState(stateStore: store)
+            state.resolveInitialLaunch(hasConfiguredProtection: false)
+            state.deferUntilRequested()
+
+            let relaunchedState = OnboardingState(stateStore: store)
+
+            XCTAssertEqual(relaunchedState.phase, .deferred)
+            XCTAssertEqual(relaunchedState.initialSurface, .waiting)
+            XCTAssertFalse(relaunchedState.needsSetup)
+
+            relaunchedState.resume()
+
+            XCTAssertEqual(relaunchedState.phase, .deferred)
+            XCTAssertEqual(relaunchedState.initialSurface, .waiting)
+
+            relaunchedState.resolveInitialLaunch(hasConfiguredProtection: false)
+
+            XCTAssertEqual(relaunchedState.phase, .deferred)
+            XCTAssertEqual(relaunchedState.initialSurface, .menuBarOnly)
+            XCTAssertTrue(relaunchedState.needsSetup)
+
+            relaunchedState.resume()
+
+            XCTAssertEqual(relaunchedState.phase, .pending)
+            XCTAssertEqual(relaunchedState.initialSurface, .onboarding)
+        }
+    }
+
+    func testSetUpLaterSuppressesAutomaticPresentationUntilResumed() {
+        withStateStore { store in
+            let state = OnboardingState(stateStore: store)
+            state.resolveInitialLaunch(hasConfiguredProtection: false)
+            state.deferUntilRequested()
+
+            XCTAssertEqual(state.phase, .deferred)
+            XCTAssertEqual(state.initialSurface, .menuBarOnly)
+
+            let relaunchedState = OnboardingState(stateStore: store)
+            relaunchedState.resolveInitialLaunch(hasConfiguredProtection: false)
+
+            XCTAssertEqual(relaunchedState.initialSurface, .menuBarOnly)
+
+            relaunchedState.resume()
+
+            XCTAssertEqual(relaunchedState.phase, .pending)
+            XCTAssertEqual(relaunchedState.initialSurface, .onboarding)
+        }
+    }
+
+    func testCompletionRequiresHandledTestAlertAndPersists() {
+        withStateStore { store in
+            let state = OnboardingState(stateStore: store)
+            state.resolveInitialLaunch(hasConfiguredProtection: false)
+
+            XCTAssertFalse(state.complete())
+
+            state.markTestAlertHandled()
+
+            XCTAssertTrue(state.complete())
+            XCTAssertTrue(state.isCompleted)
+
+            let relaunchedState = OnboardingState(stateStore: store)
+            relaunchedState.resolveInitialLaunch(hasConfiguredProtection: false)
+
+            XCTAssertTrue(relaunchedState.isCompleted)
+            XCTAssertEqual(relaunchedState.initialSurface, .menuBarOnly)
+        }
+    }
+
+    func testFinishLaterPreservesHandledTestAlertProgress() {
+        withStateStore { store in
+            let state = OnboardingState(stateStore: store)
+            state.resolveInitialLaunch(hasConfiguredProtection: false)
+            state.markTestAlertHandled()
+            state.deferUntilRequested()
+
+            let relaunchedState = OnboardingState(stateStore: store)
+            relaunchedState.resolveInitialLaunch(hasConfiguredProtection: true)
+
+            XCTAssertTrue(relaunchedState.didHandleTestAlert)
+            XCTAssertTrue(relaunchedState.complete())
+        }
+    }
+
+    func testCompletionIsNotResetByLaterCoverageLoss() {
+        withStateStore { store in
+            let state = OnboardingState(stateStore: store)
+            state.resolveInitialLaunch(hasConfiguredProtection: true)
+
+            let stateAfterDisconnect = OnboardingState(stateStore: store)
+            stateAfterDisconnect.resolveInitialLaunch(hasConfiguredProtection: false)
+
+            XCTAssertTrue(stateAfterDisconnect.isCompleted)
+            XCTAssertFalse(stateAfterDisconnect.needsSetup)
+            XCTAssertEqual(stateAfterDisconnect.initialSurface, .menuBarOnly)
+        }
+    }
+
+    private func withStateStore(_ body: (UserDefaults) -> Void) {
+        let suiteName = "OnboardingStateTests.\(UUID().uuidString)"
+        guard let store = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Could not create isolated UserDefaults suite")
+            return
+        }
+        store.removePersistentDomain(forName: suiteName)
+        defer { store.removePersistentDomain(forName: suiteName) }
+        body(store)
+    }
+}

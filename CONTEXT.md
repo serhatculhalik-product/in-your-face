@@ -5,7 +5,7 @@ This context defines the language for a personal macOS app that helps knowledge 
 ## Calendar language
 
 **Connected Account**:
-A Google account the user has authorized for calendar access. Loss of access to one connected account does not disable protection for other connected accounts.
+A Google account the user has authorized for calendar access in the current app session. Authorization is discarded when In Your Face quits; loss of access to one connected account does not disable protection for other connected accounts.
 _Avoid_: Calendar account, logged-in account
 
 **Fresh Coverage**:
@@ -19,6 +19,10 @@ _Avoid_: Offline mode, disconnected calendar
 **No Coverage**:
 The state in which no calendars are selected for protection. The app clearly asks the user to select a calendar and does not imply that commitments are protected.
 _Avoid_: Inactive, empty calendar
+
+**Calendar Access Required**:
+The state after launch or relaunch when a saved account configuration has no current-session Google authorization. Protection is unavailable until the user reconnects Google Calendar; saved Monitored Calendar choices remain available for that account.
+_Avoid_: Stale Coverage, disconnected calendar, No Coverage
 
 **Recognized Meeting Link**:
 A supported video-meeting URL that can be offered through the Join action. When an event provides a designated conference link, it is the primary link; otherwise multiple recognized links are presented as choices.
@@ -51,8 +55,12 @@ _Avoid_: Overlap, double booking
 ## Reminder language
 
 **Early Reminder**:
-A visual reminder shown before a commitment starts. It can optionally stay in front of other app windows through Blocking Mode. Its global lead time ranges from five to thirty minutes and defaults to ten minutes; the reminder can also be turned off while Strong Alert protection remains active. The user can Snooze it for a selected duration, choose Got it to close only the early surface, or Stop reminders to end protection for the current occurrence. Got it does not change protection at the commitment start; Stop reminders does.
+A visual reminder shown before a commitment starts. It can optionally stay in front of other app windows through Blocking Mode. Its global lead time ranges from five to thirty minutes and defaults to ten minutes; the reminder can also be turned off while Strong Alert protection remains active. The user can Snooze it for a selected duration, choose Close for now to close only the early surface, or Stop reminders to end protection for the current occurrence. Close for now does not change protection at the commitment start; Stop reminders does.
 _Avoid_: Warning, alert (when referring specifically to the early reminder)
+
+**Close for now**:
+The passive Early Reminder action that closes only the current surface while keeping start-time protection active for the Occurrence.
+_Avoid_: Dismiss, Dismiss for now, Got it
 
 **Unverified Reminder**:
 A reminder retained from the last fresh calendar data after that account becomes stale. It may fire for a known commitment, keeps the normal alert and action path, and must make its unverified status visible.
@@ -109,7 +117,7 @@ A user-requested global suspension of protection until a specified time, offered
 _Avoid_: Quiet hours, disable (unless referring to a permanent setting)
 
 **Active Protection**:
-The normal availability state in which the app starts automatically at login and is ready to protect selected calendars. No Coverage, Stale Coverage, and Pause are explicit exceptions shown to the user.
+The availability state in which current-session Google authorization is valid and the app is ready to protect selected calendars. Starting at login opens the app but does not make protection active until the user reconnects Google Calendar. Calendar Access Required, No Coverage, Stale Coverage, and Pause are explicit exceptions shown to the user.
 _Avoid_: Running, enabled
 
 **Coverage Warning**:

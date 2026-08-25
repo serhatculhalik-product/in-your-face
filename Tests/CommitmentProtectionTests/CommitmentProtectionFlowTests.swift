@@ -31,6 +31,24 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertEqual(flow.menuBarTitle, "No Coverage")
     }
 
+    func testLaunchAtLoginFailureCanBeRetried() {
+        let launchAtLogin = TestLaunchAtLoginController(shouldEnable: false)
+        let flow = CommitmentProtectionFlow(
+            calendarConnector: TestGoogleCalendarConnector(),
+            launchAtLogin: launchAtLogin
+        )
+
+        XCTAssertFalse(flow.isLaunchAtLoginEnabled)
+        XCTAssertNotNil(flow.launchAtLoginError)
+
+        launchAtLogin.allowEnabling()
+        flow.requestLaunchAtLogin()
+
+        XCTAssertTrue(flow.isLaunchAtLoginEnabled)
+        XCTAssertNil(flow.launchAtLoginError)
+        XCTAssertEqual(launchAtLogin.enableCallCount, 2)
+    }
+
     func testConnectingLoadsCalendarsAndConfirmationActivatesProtection() async {
         let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
         let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
@@ -51,8 +69,9 @@ final class CommitmentProtectionFlowTests: XCTestCase {
 
         XCTAssertEqual(flow.status, .noCoverage)
         XCTAssertTrue(flow.confirmProtection())
-        XCTAssertEqual(flow.status, .active)
-        XCTAssertEqual(flow.menuBarTitle, "Active Protection")
+        XCTAssertEqual(flow.coverage(for: account.id), .checking)
+        XCTAssertEqual(flow.status, .unavailable)
+        XCTAssertEqual(flow.menuBarTitle, "Checking Coverage")
     }
 
     func testMultipleConnectedAccountsKeepHealthyCoverageWhenOneAccountFails() async {
@@ -98,10 +117,10 @@ final class CommitmentProtectionFlowTests: XCTestCase {
 
         XCTAssertEqual(flow.accountCoverages.count, 2)
         XCTAssertEqual(flow.coverage(for: firstAccount.id), .fresh)
-        if case .unavailable = flow.coverage(for: secondAccount.id) {
+        if case .stale = flow.coverage(for: secondAccount.id) {
             // The affected account is isolated without disabling healthy coverage.
         } else {
-            XCTFail("Expected the second account to show an account-specific coverage warning.")
+            XCTFail("Expected the second account to retain stale cached coverage.")
         }
         XCTAssertEqual(flow.strongAlertCommitment, firstCommitment)
         XCTAssertTrue(flow.isStrongAlertUnverified == false)
@@ -157,7 +176,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertTrue(flow.isStrongAlertUnverified)
         XCTAssertEqual(flow.accountCoverages.first?.lastSuccessfulRefreshAt, now)
         XCTAssertEqual(flow.coverage(for: account.id), .stale)
-        XCTAssertTrue(flow.coverageWarning(for: account.id)?.contains("stale") == true)
+        XCTAssertTrue(flow.coverageWarning(for: account.id)?.contains("hasn’t refreshed") == true)
     }
 
     func testFreshCoverageAllowsNewReminderAfterStaleSnapshotRecovery() async {
@@ -273,6 +292,64 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         })
     }
 
+    func testDisconnectingDisplayedConflictAccountImmediatelySurfacesRemainingCommitment() async {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let firstAccount = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let firstCalendar = CalendarOption(id: "calendar-1", name: "Work", accountID: firstAccount.id)
+        let secondAccount = GoogleAccount(id: "account-2", email: "sam@example.com", displayName: "Sam")
+        let secondCalendar = CalendarOption(id: "calendar-2", name: "Personal", accountID: secondAccount.id)
+        let firstCommitment = CalendarEvent(
+            id: "event-1",
+            title: "Work review",
+            startDate: now,
+            endDate: now.addingTimeInterval(60 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: firstCalendar.id,
+            accountID: firstAccount.id
+        )
+        let secondCommitment = CalendarEvent(
+            id: "event-2",
+            title: "Personal appointment",
+            startDate: now,
+            endDate: now.addingTimeInterval(45 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: secondCalendar.id,
+            accountID: secondAccount.id
+        )
+        let connector = MultiAccountTestGoogleCalendarConnector(
+            connections: [
+                GoogleCalendarConnection(account: firstAccount, calendars: [firstCalendar]),
+                GoogleCalendarConnection(account: secondAccount, calendars: [secondCalendar])
+            ],
+            events: [firstCommitment, secondCommitment]
+        )
+        let flow = CommitmentProtectionFlow(
+            calendarConnector: connector,
+            launchAtLogin: TestLaunchAtLoginController(),
+            now: { now }
+        )
+
+        await flow.connectGoogleAccount()
+        flow.setCalendarSelected(true, calendarID: firstCalendar.id)
+        XCTAssertTrue(flow.confirmProtection())
+        await flow.refreshCommitmentProtection(at: now)
+        await flow.connectGoogleAccount()
+        flow.setCalendarSelected(true, calendarID: secondCalendar.id)
+        XCTAssertTrue(flow.confirmProtection())
+        await flow.refreshCommitmentProtection(at: now)
+        XCTAssertEqual(flow.strongAlertConflict?.commitments.count, 2)
+
+        XCTAssertTrue(flow.disconnectGoogleAccount(accountID: firstAccount.id))
+
+        XCTAssertEqual(flow.strongAlertCommitment, secondCommitment)
+        XCTAssertTrue(flow.isStrongAlertPresented)
+        XCTAssertNil(flow.strongAlertConflict)
+    }
+
     func testMultipleAccountSelectionsAndConfirmationRestoreAfterRelaunch() async {
         let now = Date(timeIntervalSince1970: 1_000_000)
         let firstAccount = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
@@ -317,6 +394,28 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertTrue(relaunch.isProtectionConfirmed(for: firstAccount.id))
         XCTAssertTrue(relaunch.isProtectionConfirmed(for: secondAccount.id))
         XCTAssertEqual(relaunch.status, .active)
+    }
+
+    func testAdditionalAccountConnectionFailureRemainsVisibleBesideExistingCoverage() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+        let connector = MultiAccountTestGoogleCalendarConnector(
+            connections: [GoogleCalendarConnection(account: account, calendars: [calendar])],
+            events: []
+        )
+        let flow = CommitmentProtectionFlow(
+            calendarConnector: connector,
+            launchAtLogin: TestLaunchAtLoginController()
+        )
+
+        await flow.connectGoogleAccount()
+        XCTAssertNil(flow.accountConnectionError)
+
+        await flow.connectGoogleAccount()
+
+        XCTAssertFalse(flow.isConnectingAccount)
+        XCTAssertEqual(flow.accountConnectionError, "The test calendar is unavailable.")
+        XCTAssertEqual(flow.accountCoverages.map(\.account.id), [account.id])
     }
 
     func testSelectedCalendarProtectionRestoresAfterRelaunch() async {
@@ -366,8 +465,9 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         flow.setCalendarSelected(true, calendarID: calendar.id)
         XCTAssertTrue(flow.confirmProtection())
 
-        XCTAssertEqual(flow.status, .active)
-        XCTAssertEqual(flow.menuBarTitle, "Active Protection · Login Needs Attention")
+        XCTAssertEqual(flow.coverage(for: account.id), .checking)
+        XCTAssertEqual(flow.status, .unavailable)
+        XCTAssertEqual(flow.menuBarTitle, "Checking Coverage")
     }
 
     func testLoggingOutClearsConnectionAndProtectionConfiguration() async {
@@ -388,7 +488,8 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         await flow.connectGoogleAccount()
         flow.setCalendarSelected(true, calendarID: calendar.id)
         XCTAssertTrue(flow.confirmProtection())
-        XCTAssertEqual(flow.status, .active)
+        XCTAssertEqual(flow.coverage(for: account.id), .checking)
+        XCTAssertEqual(flow.status, .unavailable)
 
         flow.disconnectGoogleAccount()
 
@@ -408,6 +509,34 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         await relaunchedFlow.restoreSavedConnection()
         XCTAssertNil(relaunchedFlow.connectedAccount)
         XCTAssertTrue(relaunchedFlow.activityLog.contains { $0.kind == .accountDisconnected })
+    }
+
+    func testDisconnectFailureKeepsAccountAndExposesRetryableError() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let connector = TestGoogleCalendarConnector(
+            connection: GoogleCalendarConnection(account: account, calendars: [])
+        )
+        let flow = CommitmentProtectionFlow(
+            calendarConnector: connector,
+            launchAtLogin: TestLaunchAtLoginController()
+        )
+        await flow.connectGoogleAccount()
+        connector.state.disconnectError = TestCalendarError.unavailable
+
+        XCTAssertFalse(flow.disconnectGoogleAccount(accountID: account.id))
+
+        XCTAssertEqual(flow.connectedAccount, account)
+        XCTAssertEqual(flow.failedAccountDisconnectionID, account.id)
+        XCTAssertEqual(
+            flow.accountDisconnectionError,
+            "Couldn’t disconnect alex@example.com. The test calendar is unavailable."
+        )
+        XCTAssertTrue(flow.activityLog.contains { $0.kind == .accountDisconnectFailed })
+
+        connector.state.disconnectError = nil
+        XCTAssertTrue(flow.disconnectGoogleAccount(accountID: account.id))
+        XCTAssertNil(flow.accountDisconnectionError)
+        XCTAssertNil(flow.failedAccountDisconnectionID)
     }
 
     func testTestAlertCanBePresentedAndDismissedWithoutACommitment() async {
@@ -454,7 +583,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertEqual(flow.strongAlertCommitment, commitment)
         XCTAssertTrue(flow.isStrongAlertPresented)
         XCTAssertEqual(flow.strongAlertPrimaryActionTitle, "Join")
-        XCTAssertEqual(flow.joinStrongAlert(), meetingURL)
+        XCTAssertTrue(flow.openStrongAlertMeetingLink { $0 == meetingURL })
         XCTAssertNil(flow.strongAlertCommitment)
         XCTAssertFalse(flow.isStrongAlertPresented)
     }
@@ -537,7 +666,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
 
         XCTAssertEqual(flow.strongAlertCommitment?.recognizedMeetingLink, meetingURL)
         XCTAssertTrue(flow.isStrongAlertPresented)
-        XCTAssertEqual(flow.joinStrongAlert(), meetingURL)
+        XCTAssertTrue(flow.openStrongAlertMeetingLink { $0 == meetingURL })
 
         await flow.refreshCommitmentProtection(at: now.addingTimeInterval(1))
 
@@ -620,7 +749,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         await flow.refreshCommitmentProtection(at: now)
 
         XCTAssertEqual(flow.strongAlertMeetingLinkOptions, [primaryLink, secondaryLink])
-        XCTAssertEqual(flow.joinStrongAlert(), primaryLink)
+        XCTAssertTrue(flow.openStrongAlertMeetingLink { $0 == primaryLink })
     }
 
     func testMultipleUndesignatedMeetingLinksCanBeChosenForJoin() async {
@@ -653,7 +782,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         await flow.refreshCommitmentProtection(at: now)
 
         XCTAssertEqual(flow.strongAlertMeetingLinkOptions, [firstLink, secondLink])
-        XCTAssertEqual(flow.joinStrongAlert(using: secondLink), secondLink)
+        XCTAssertTrue(flow.openStrongAlertMeetingLink(using: secondLink) { $0 == secondLink })
         XCTAssertNil(flow.strongAlertCommitment)
     }
 
@@ -711,7 +840,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         await flow.refreshCommitmentProtection(at: now)
 
         XCTAssertEqual(flow.strongAlertMeetingLinkOptions, [meetingURL])
-        XCTAssertEqual(flow.joinStrongAlert(), meetingURL)
+        XCTAssertTrue(flow.openStrongAlertMeetingLink { $0 == meetingURL })
         await flow.refreshCommitmentProtection(at: now.addingTimeInterval(1))
         XCTAssertFalse(flow.isStrongAlertPresented)
     }
@@ -755,7 +884,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         await flow.refreshCommitmentProtection(at: now)
 
         XCTAssertEqual(flow.strongAlertMeetingLinkOptions, [firstLink])
-        XCTAssertEqual(flow.joinStrongAlert(), firstLink)
+        XCTAssertTrue(flow.openStrongAlertMeetingLink { $0 == firstLink })
     }
 
     func testConflictingDesignatedLinksRequireAnExplicitChoice() async {
@@ -805,8 +934,8 @@ final class CommitmentProtectionFlowTests: XCTestCase {
 
         XCTAssertNil(flow.strongAlertPrimaryMeetingLink)
         XCTAssertEqual(flow.strongAlertPrimaryActionTitle, "Choose link")
-        XCTAssertNil(flow.joinStrongAlert())
-        XCTAssertEqual(flow.joinStrongAlert(using: secondLink), secondLink)
+        XCTAssertFalse(flow.openStrongAlertMeetingLink { _ in true })
+        XCTAssertTrue(flow.openStrongAlertMeetingLink(using: secondLink) { $0 == secondLink })
     }
 
     func testMergedReminderBecomesUnverifiedWhenAnySourceAccountIsStale() async {
@@ -1185,7 +1314,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         await flow.refreshCommitmentProtection(at: now)
 
         XCTAssertEqual(flow.strongAlertMeetingLinkOptions, [firstLink, sharedLink, secondLink])
-        XCTAssertEqual(flow.joinStrongAlert(using: secondLink), secondLink)
+        XCTAssertTrue(flow.openStrongAlertMeetingLink(using: secondLink) { $0 == secondLink })
         await flow.refreshCommitmentProtection(at: now.addingTimeInterval(1))
         XCTAssertFalse(flow.isStrongAlertPresented)
     }
@@ -1416,7 +1545,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
 
         XCTAssertEqual(
             flow.strongAlertTimingText(for: commitment, at: now),
-            "Overdue · started 2 min ago"
+            "Overdue · started 2 minutes ago"
         )
         XCTAssertEqual(flow.strongAlertContextText(for: commitment), "Work · alex@example.com")
     }
@@ -1511,7 +1640,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
 
         XCTAssertEqual(
             error.errorDescription,
-            "Google sign-in could not be completed (invalid_grant: Bad Request)."
+            "Google sign-in couldn’t be completed. Try again."
         )
     }
 
@@ -1531,35 +1660,6 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         }
     }
 
-    func testRefreshTokenStorePersistsInUserDefaults() {
-        let accountID = "test-account-\(UUID().uuidString)"
-        let defaultsKey = "google.refreshToken.\(accountID)"
-        let refreshToken = "refresh-token-\(UUID().uuidString)"
-        defer {
-            GoogleRefreshTokenStore.remove(accountID: accountID)
-            UserDefaults.standard.removeObject(forKey: defaultsKey)
-        }
-
-        GoogleRefreshTokenStore.save(refreshToken: refreshToken, accountID: accountID)
-
-        XCTAssertEqual(UserDefaults.standard.string(forKey: defaultsKey), refreshToken)
-        XCTAssertEqual(GoogleRefreshTokenStore.load(accountID: accountID), refreshToken)
-    }
-
-    func testRefreshTokenStoreLoadsExistingUserDefaultsToken() {
-        let accountID = "legacy-account-\(UUID().uuidString)"
-        let defaultsKey = "google.refreshToken.\(accountID)"
-        let refreshToken = "legacy-refresh-token-\(UUID().uuidString)"
-        defer {
-            GoogleRefreshTokenStore.remove(accountID: accountID)
-            UserDefaults.standard.removeObject(forKey: defaultsKey)
-        }
-        UserDefaults.standard.set(refreshToken, forKey: defaultsKey)
-
-        XCTAssertEqual(GoogleRefreshTokenStore.load(accountID: accountID), refreshToken)
-        XCTAssertEqual(UserDefaults.standard.string(forKey: defaultsKey), refreshToken)
-    }
-
     func testSelectingCalendarRequiresConfirmationBeforeProtectionActivates() async {
         let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
         let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
@@ -1575,7 +1675,8 @@ final class CommitmentProtectionFlowTests: XCTestCase {
 
         XCTAssertTrue(flow.confirmProtection())
         XCTAssertTrue(flow.isProtectionConfirmed)
-        XCTAssertEqual(flow.status, .active)
+        XCTAssertEqual(flow.coverage(for: account.id), .checking)
+        XCTAssertEqual(flow.status, .unavailable)
     }
 
     func testLegacySavedConfigurationRequiresExplicitConfirmation() async {
@@ -1604,7 +1705,8 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertFalse(flow.isProtectionConfirmed)
         XCTAssertEqual(flow.status, .noCoverage)
         XCTAssertTrue(flow.confirmProtection())
-        XCTAssertEqual(flow.status, .active)
+        XCTAssertEqual(flow.coverage(for: account.id), .checking)
+        XCTAssertEqual(flow.status, .unavailable)
     }
 
     func testDeselectingCalendarImmediatelyClearsItsProtectionState() async {
@@ -1724,7 +1826,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
 
         XCTAssertEqual(
             error.errorDescription,
-            "The Google calendars could not be loaded (insufficientPermissions: Insufficient Permission)."
+            "Google Calendar access was denied. Reconnect the account and approve read-only calendar access."
         )
     }
 
@@ -1825,7 +1927,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertNil(flow.earlyReminderCommitment)
     }
 
-    func testClearingEarlyReminderLeavesCommitmentProtected() async {
+    func testClosingEarlyReminderForNowStillShowsStrongAlertAtStart() async {
         let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
         let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
         let now = Date(timeIntervalSince1970: 1_000_000)
@@ -1856,6 +1958,16 @@ final class CommitmentProtectionFlowTests: XCTestCase {
 
         XCTAssertEqual(flow.upcomingCommitment, commitment)
         XCTAssertNil(flow.earlyReminderCommitment)
+        XCTAssertNil(flow.currentCommitmentDecision)
+        XCTAssertFalse(flow.canRestoreProtection)
+        XCTAssertTrue(flow.activityLog.contains { activity in
+            activity.kind == .earlyReminderCleared && activity.commitmentID == commitment.id
+        })
+
+        await flow.refreshCommitmentProtection(at: now.addingTimeInterval(10 * 60))
+
+        XCTAssertTrue(flow.isStrongAlertPresented)
+        XCTAssertEqual(flow.strongAlertCommitment, commitment)
     }
 
     func testSnoozeOptionsSuppressAllRemindersAcrossCommitmentStart() async {
@@ -1886,7 +1998,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertTrue(flow.canSnoozeEarlyReminder)
         XCTAssertFalse(flow.snoozeEarlyReminder(minutes: 60, at: now))
         XCTAssertTrue(flow.snoozeEarlyReminder(minutes: 5, at: now))
-        XCTAssertEqual(flow.lastActionMessage, "All reminders snoozed for 5 minutes. Protection remains active.")
+        XCTAssertEqual(flow.lastActionMessage, "Reminders for this occurrence snoozed for 5 minutes. Protection remains active.")
         XCTAssertNil(flow.earlyReminderCommitment)
 
         await flow.refreshCommitmentProtection(at: now.addingTimeInterval(4 * 60))
@@ -2040,7 +2152,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertEqual(flow.upcomingCommitment, commitment)
         XCTAssertEqual(flow.currentCommitmentDecision, .dismissed)
         XCTAssertTrue(flow.canRestoreProtection)
-        XCTAssertEqual(flow.lastActionMessage, "Dismissed for this occurrence. Protection is off until it ends.")
+        XCTAssertEqual(flow.lastActionMessage, "Reminders stopped for this occurrence. Google Calendar RSVP unchanged.")
         XCTAssertTrue(flow.restoreProtection(at: now))
         await flow.refreshCommitmentProtection(at: now)
 
@@ -2359,7 +2471,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertTrue(flow.isStrongAlertPresented)
         XCTAssertEqual(
             flow.strongAlertTimingText(for: rescheduledCommitment, at: now.addingTimeInterval(15 * 60)),
-            "Overdue · started 10 min ago"
+            "Overdue · started 10 minutes ago"
         )
     }
 
@@ -2407,7 +2519,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         await flow.refreshCommitmentProtection(at: now.addingTimeInterval(1))
 
         XCTAssertEqual(flow.strongAlertCommitment, updatedCommitment)
-        XCTAssertEqual(flow.joinStrongAlert(), newLink)
+        XCTAssertTrue(flow.openStrongAlertMeetingLink { $0 == newLink })
     }
 
     func testChangingACommitmentTimeZoneUpdatesTheDisplayedLocalTimeLabel() async {
@@ -2555,6 +2667,54 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertFalse(flow.isStrongAlertPresented)
 
         await flow.refreshCommitmentProtection(at: now.addingTimeInterval(1 * 60))
+
+        XCTAssertNil(flow.strongAlertCommitment)
+        XCTAssertFalse(flow.isStrongAlertPresented)
+    }
+
+    func testConfigurationChangePreservesLateAcceptanceSuppression() async {
+        let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+        let workCalendar = CalendarOption(id: "calendar-work", name: "Work", accountID: account.id)
+        let personalCalendar = CalendarOption(id: "calendar-personal", name: "Personal", accountID: account.id)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let acceptedCommitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: now.addingTimeInterval(-5 * 60),
+            endDate: now.addingTimeInterval(55 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: workCalendar.id,
+            accountID: account.id
+        )
+        let unacceptedCommitment = CalendarEvent(
+            id: acceptedCommitment.id,
+            title: acceptedCommitment.title,
+            startDate: acceptedCommitment.startDate,
+            endDate: acceptedCommitment.endDate,
+            timeZoneIdentifier: acceptedCommitment.timeZoneIdentifier,
+            isAllDay: acceptedCommitment.isAllDay,
+            isAccepted: false,
+            calendarID: acceptedCommitment.calendarID,
+            accountID: acceptedCommitment.accountID
+        )
+        let connector = MutableTestGoogleCalendarConnector(
+            connection: GoogleCalendarConnection(
+                account: account,
+                calendars: [workCalendar, personalCalendar]
+            ),
+            events: [unacceptedCommitment]
+        )
+        let flow = makeMutableFlow(connector: connector, now: now)
+
+        await activateProtection(for: flow, calendarID: workCalendar.id)
+        await flow.refreshCommitmentProtection(at: now)
+
+        flow.setCalendarSelected(true, calendarID: personalCalendar.id)
+        XCTAssertTrue(flow.confirmProtection())
+        connector.events = [acceptedCommitment]
+        await flow.refreshCommitmentProtection(at: now)
 
         XCTAssertNil(flow.strongAlertCommitment)
         XCTAssertFalse(flow.isStrongAlertPresented)
@@ -2970,11 +3130,11 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         let expectedZoneLabel = TimeZone(identifier: "America/Los_Angeles")!
             .abbreviation(for: commitment.startDate!)!
 
-        XCTAssertEqual(flow.countdownText(for: commitment, at: now), "Starts in 10 min")
+        XCTAssertEqual(flow.countdownText(for: commitment, at: now), "Starts in 10 minutes")
         XCTAssertTrue(flow.localStartTimeText(for: commitment).contains(expectedZoneLabel))
     }
 
-    func testLocalStartTimeUsesDayMonthYearDateOrder() {
+    func testLocalStartTimeUsesTheCurrentLocale() {
         var calendar = Calendar.current
         calendar.timeZone = .current
         let startDate = calendar.date(from: DateComponents(
@@ -3005,7 +3165,16 @@ final class CommitmentProtectionFlowTests: XCTestCase {
             now: startDate
         )
 
-        XCTAssertTrue(flow.localStartTimeText(for: commitment).hasPrefix("02/03/2026"))
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        formatter.locale = .current
+        formatter.timeZone = .current
+
+        XCTAssertEqual(
+            flow.localStartTimeText(for: commitment),
+            "\(formatter.string(from: startDate)) local time"
+        )
     }
 
     func testGoogleEventResponseMapsAcceptanceAndAllDayState() throws {
@@ -3834,7 +4003,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertEqual(flow.strongAlertCommitment, commitment)
         XCTAssertEqual(
             flow.strongAlertTimingText(for: commitment, at: start),
-            "Overdue · started 10 min ago"
+            "Overdue · started 10 minutes ago"
         )
     }
 
@@ -3881,7 +4050,7 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertEqual(relaunch.strongAlertCommitment, commitment)
         XCTAssertEqual(
             relaunch.strongAlertTimingText(for: commitment, at: currentDate),
-            "Overdue · started 5 min ago"
+            "Overdue · started 5 minutes ago"
         )
     }
 
@@ -4247,6 +4416,9 @@ private struct TestGoogleCalendarConnector: GoogleCalendarConnecting {
 
     func disconnect(accountID: String) throws {
         state.disconnectWasCalled = true
+        if let error = state.disconnectError {
+            throw error
+        }
     }
 
     func loadEvents(
@@ -4270,6 +4442,7 @@ private struct TestGoogleCalendarConnector: GoogleCalendarConnecting {
 
 private final class TestGoogleCalendarConnectorState: @unchecked Sendable {
     var disconnectWasCalled = false
+    var disconnectError: Error?
     var loadEventsError: Error?
 }
 
@@ -4478,10 +4651,14 @@ private enum TestCalendarError: LocalizedError {
 
 @MainActor
 private final class TestLaunchAtLoginController: LaunchAtLoginControlling {
-    private(set) var enableWasCalled = false
+    private(set) var enableCallCount = 0
     private(set) var isEnabled: Bool
 
-    private let shouldEnable: Bool
+    private var shouldEnable: Bool
+
+    var enableWasCalled: Bool {
+        enableCallCount > 0
+    }
 
     init(shouldEnable: Bool = true) {
         self.shouldEnable = shouldEnable
@@ -4489,11 +4666,15 @@ private final class TestLaunchAtLoginController: LaunchAtLoginControlling {
     }
 
     func enable() throws {
-        enableWasCalled = true
+        enableCallCount += 1
         guard shouldEnable else {
             throw TestLaunchAtLoginError.registrationFailed
         }
         isEnabled = true
+    }
+
+    func allowEnabling() {
+        shouldEnable = true
     }
 }
 

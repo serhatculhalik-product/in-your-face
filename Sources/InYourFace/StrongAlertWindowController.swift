@@ -5,6 +5,12 @@ import SwiftUI
 final class StrongAlertWindowController: NSObject, NSWindowDelegate {
     static let shared = StrongAlertWindowController()
 
+    private struct PresentationRequest {
+        let content: AnyView
+        let surfaceDidClose: @MainActor () -> Void
+    }
+
+    private let windowRegistry: WindowRegistry
     private weak var primaryWindow: NSWindow?
     private var additionalWindows: [NSWindow] = []
     private var screenObserver: NSObjectProtocol?
@@ -13,33 +19,45 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
     private var allowsWindowClose = false
     private var isPresented = false
     private var content: AnyView?
+    private var fittingWindowIDs: Set<ObjectIdentifier> = []
+    private lazy var pendingPresentation = PendingWindowPresentation<PresentationRequest>(
+        registry: windowRegistry,
+        kind: .strongAlert
+    ) { [weak self] window, request in
+        self?.present(request, in: window)
+    }
+
+    init(windowRegistry: WindowRegistry = .shared) {
+        self.windowRegistry = windowRegistry
+        super.init()
+    }
 
     func present(
         content: AnyView,
         surfaceDidClose: @escaping @MainActor () -> Void
     ) {
-        self.content = content
-        self.surfaceDidClose = surfaceDidClose
+        pendingPresentation.submit(PresentationRequest(
+            content: content,
+            surfaceDidClose: surfaceDidClose
+        ))
+    }
 
-        let existingAdditionalWindows = additionalWindows
-        guard let window = NSApp.windows.first(where: { candidate in
-            candidate.title == "Strong Alert" &&
-                !existingAdditionalWindows.contains(where: { $0 === candidate })
-        }) else {
-            DispatchQueue.main.async { [weak self] in
-                self?.present(content: content, surfaceDidClose: surfaceDidClose)
-            }
-            return
-        }
+    private func present(_ request: PresentationRequest, in window: NSWindow) {
+        content = request.content
+        surfaceDidClose = request.surfaceDidClose
 
         stopScreenObservation()
         stopApplicationObservation()
         closeAdditionalWindows()
         primaryWindow = window
         configure(window)
-        window.center()
+        let primaryScreen = window.screen ?? NSScreen.main
+        fitAlertWindow(
+            window,
+            on: primaryScreen
+        )
         isPresented = true
-        createAdditionalWindows(for: window.screen ?? NSScreen.main)
+        createAdditionalWindows(for: primaryScreen)
         startScreenObservation()
         startApplicationObservation()
         NSApp.activate(ignoringOtherApps: true)
@@ -48,6 +66,7 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
     }
 
     func close() {
+        pendingPresentation.clear()
         allowsWindowClose = true
         stopScreenObservation()
         stopApplicationObservation()
@@ -71,11 +90,18 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        bringAlertToFront()
+        preserveAlertFocus()
     }
 
     func windowDidResignMain(_ notification: Notification) {
-        bringAlertToFront()
+        preserveAlertFocus()
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        guard isPresented,
+              let resizedWindow = notification.object as? NSWindow,
+              isManagedAlertWindow(resizedWindow) else { return }
+        fitAlertWindow(resizedWindow, on: resizedWindow.screen)
     }
 
     private func configure(_ window: NSWindow) {
@@ -101,13 +127,20 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
 
         let resolvedPrimaryScreen = screens[displayPlan.primaryIndex]
         if primaryScreenIndex(in: screens, matching: primaryScreen) != displayPlan.primaryIndex {
-            center(primaryWindow, on: resolvedPrimaryScreen)
+            fitAlertWindow(
+                primaryWindow,
+                on: resolvedPrimaryScreen
+            )
         }
 
         additionalWindows = displayPlan.additionalIndices.map { index in
             let screen = screens[index]
+            let hostingView = NSHostingView(
+                rootView: content.accessibilityHidden(true)
+            )
+            hostingView.sizingOptions = [.intrinsicContentSize]
             let panel = NSPanel(
-                contentRect: NSRect(x: 0, y: 0, width: 520, height: 430),
+                contentRect: NSRect(x: 0, y: 0, width: 460, height: 330),
                 styleMask: [.titled, .utilityWindow],
                 backing: .buffered,
                 defer: false
@@ -124,20 +157,16 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
             panel.standardWindowButton(.zoomButton)?.isHidden = true
             panel.isMovable = false
             panel.isReleasedWhenClosed = false
-            panel.contentView = NSHostingView(rootView: content)
-            center(panel, on: screen)
+            panel.setAccessibilityElement(false)
+            panel.contentView = hostingView
+            fitAlertWindow(
+                panel,
+                on: screen
+            )
             panel.delegate = self
             panel.orderFrontRegardless()
             return panel
         }
-    }
-
-    private func center(_ window: NSWindow?, on screen: NSScreen) {
-        guard let window else { return }
-        window.setFrameOrigin(NSPoint(
-            x: screen.frame.midX - window.frame.width / 2,
-            y: screen.frame.midY - window.frame.height / 2
-        ))
     }
 
     private func closeAdditionalWindows() {
@@ -200,16 +229,69 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
 
     private func recreateAdditionalWindows() {
         guard isPresented else { return }
+        let primaryScreen = primaryWindow?.screen ?? NSScreen.main
+        fitAlertWindow(
+            primaryWindow,
+            on: primaryScreen
+        )
         closeAdditionalWindows()
-        createAdditionalWindows(for: primaryWindow?.screen ?? NSScreen.main)
+        createAdditionalWindows(for: primaryScreen)
         bringAlertToFront()
+    }
+
+    private func preserveAlertFocus() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.isPresented else { return }
+            let alertWindows = [self.primaryWindow].compactMap { $0 } + self.additionalWindows
+            if self.isAlertOwnedWindow(NSApp.keyWindow) {
+                alertWindows.forEach { $0.orderFrontRegardless() }
+            } else {
+                self.bringAlertToFront()
+            }
+        }
+    }
+
+    private func isManagedAlertWindow(_ window: NSWindow) -> Bool {
+        window === primaryWindow || additionalWindows.contains(where: { $0 === window })
+    }
+
+    private func isAlertOwnedWindow(_ window: NSWindow?) -> Bool {
+        var candidate = window
+        var visitedWindowIDs: Set<ObjectIdentifier> = []
+
+        while let currentWindow = candidate {
+            guard visitedWindowIDs.insert(ObjectIdentifier(currentWindow)).inserted else {
+                return false
+            }
+            if isManagedAlertWindow(currentWindow) {
+                return true
+            }
+            candidate = currentWindow.sheetParent ?? currentWindow.parent
+        }
+
+        return false
+    }
+
+    private func fitAlertWindow(_ window: NSWindow?, on screen: NSScreen?) {
+        guard let window else { return }
+        let windowID = ObjectIdentifier(window)
+        guard fittingWindowIDs.insert(windowID).inserted else { return }
+        defer { fittingWindowIDs.remove(windowID) }
+
+        WindowFrameFitter.fit(
+            window,
+            on: screen,
+            minimumContentSize: NSSize(width: 360, height: 300)
+        )
     }
 
     private func bringAlertToFront() {
         guard isPresented else { return }
+        let keyWindow = NSApp.keyWindow
         NSApp.activate(ignoringOtherApps: true)
-        primaryWindow?.orderFrontRegardless()
-        primaryWindow?.makeKey()
-        additionalWindows.forEach { $0.orderFrontRegardless() }
+        let alertWindows = [primaryWindow].compactMap { $0 } + additionalWindows
+        alertWindows.forEach { $0.orderFrontRegardless() }
+        guard !isAlertOwnedWindow(keyWindow) else { return }
+        (alertWindows.first(where: \.isKeyWindow) ?? primaryWindow)?.makeKey()
     }
 }

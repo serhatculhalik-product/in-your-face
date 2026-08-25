@@ -13,6 +13,17 @@ public struct GoogleAccount: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+private extension GoogleAccount {
+    var protectionDisplayLabel: String {
+        let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedEmail.isEmpty {
+            return trimmedEmail
+        }
+        let trimmedDisplayName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedDisplayName.isEmpty ? "Google Account" : trimmedDisplayName
+    }
+}
+
 public struct CalendarOption: Codable, Equatable, Identifiable, Sendable {
     public let id: String
     public let name: String
@@ -32,6 +43,25 @@ public struct GoogleCalendarConnection: Codable, Equatable, Sendable {
     public init(account: GoogleAccount, calendars: [CalendarOption]) {
         self.account = account
         self.calendars = calendars
+    }
+}
+
+public struct CalendarEventOccurrenceID: Hashable, Sendable {
+    public let eventID: String
+    public let startDate: Date?
+    public let calendarID: String
+    public let accountID: String
+
+    public init(
+        eventID: String,
+        startDate: Date?,
+        calendarID: String,
+        accountID: String
+    ) {
+        self.eventID = eventID
+        self.startDate = startDate
+        self.calendarID = calendarID
+        self.accountID = accountID
     }
 }
 
@@ -63,6 +93,15 @@ public struct CalendarEvent: Codable, Equatable, Identifiable, Sendable {
     public let accountID: String
     public let recognizedMeetingLinks: [RecognizedMeetingLink]
     public let eventType: CalendarEventType?
+
+    public var occurrenceID: CalendarEventOccurrenceID {
+        CalendarEventOccurrenceID(
+            eventID: id,
+            startDate: startDate,
+            calendarID: calendarID,
+            accountID: accountID
+        )
+    }
 
     public var recognizedMeetingLink: URL? {
         primaryRecognizedMeetingLink ?? recognizedMeetingLinks.first?.url
@@ -220,6 +259,7 @@ public struct CommitmentConflict: Equatable, Identifiable, Sendable {
 
 public protocol GoogleCalendarConnecting: Sendable {
     func connect() async throws -> GoogleCalendarConnection
+    func connect(expectedAccountID: String?) async throws -> GoogleCalendarConnection
     func restore(accountID: String) async throws -> GoogleCalendarConnection?
     func disconnect(accountID: String) throws
     func loadEvents(
@@ -228,6 +268,16 @@ public protocol GoogleCalendarConnecting: Sendable {
         from startDate: Date,
         to endDate: Date
     ) async throws -> [CalendarEvent]
+}
+
+public extension GoogleCalendarConnecting {
+    func connect(expectedAccountID: String?) async throws -> GoogleCalendarConnection {
+        let connection = try await connect()
+        guard expectedAccountID == nil || connection.account.id == expectedAccountID else {
+            throw GoogleCalendarConnectorError.unexpectedAccount
+        }
+        return connection
+    }
 }
 
 @MainActor
@@ -284,7 +334,7 @@ public enum ProtectionActivityKind: String, Codable, Equatable, Sendable {
     fileprivate var activityTitle: String {
         switch self {
         case .joined:
-            return "Joined commitment"
+            return "Meeting link opened"
         case .handled:
             return "Commitment handled"
         case .dismissed:
@@ -371,13 +421,16 @@ public enum ConnectionState: Equatable, Sendable {
     case notConnected
     case connecting
     case connected
+    case reconnectRequired
     case failed(String)
 }
 
 public enum CoverageHealth: Equatable, Sendable {
     case noCoverage
+    case checking
     case fresh
     case stale
+    case reconnectRequired
     case unavailable(String)
 }
 
@@ -441,12 +494,17 @@ public final class CommitmentProtectionFlow: ObservableObject {
     @Published public private(set) var availableCalendars: [CalendarOption] = []
     @Published public private(set) var selectedCalendarIDs: Set<String> = []
     @Published public private(set) var connectionState: ConnectionState = .notConnected
+    @Published public private(set) var isConnectingAccount = false
+    @Published public private(set) var accountConnectionError: String?
+    @Published public private(set) var accountDisconnectionError: String?
+    @Published public private(set) var failedAccountDisconnectionID: String?
     @Published public private(set) var isRestoringConnection = false
     @Published public private(set) var isProtectionConfirmed = false
     @Published public private(set) var isBlockingAvailable = true
     @Published public private(set) var isTestAlertPresented = false
     @Published public private(set) var isStrongAlertPresented = false
     @Published public private(set) var isLaunchAtLoginEnabled = false
+    @Published public private(set) var launchAtLoginError: String?
     @Published public private(set) var upcomingCommitment: CalendarEvent?
     @Published public private(set) var earlyReminderCommitment: CalendarEvent?
     @Published public private(set) var strongAlertCommitment: CalendarEvent?
@@ -455,6 +513,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
     @Published public private(set) var currentCommitmentDecision: CommitmentProtectionDecision?
     @Published public private(set) var decisionCommitment: CalendarEvent?
     @Published public private(set) var lastActionMessage: String?
+    @Published public private(set) var isRefreshingCoverage = false
     @Published public private(set) var isEarlyReminderEnabled: Bool
     @Published public private(set) var isBlockingModeEnabled: Bool
     @Published public private(set) var earlyReminderLeadTimeMinutes: Int
@@ -491,10 +550,26 @@ public final class CommitmentProtectionFlow: ObservableObject {
         }
     }
 
+    private struct AccountRefreshRequest: Sendable {
+        let accountID: String
+        let calendars: [CalendarOption]
+    }
+
+    private enum AccountRefreshResult: Sendable {
+        case success(accountID: String, events: [CalendarEvent])
+        case failure(accountID: String, message: String)
+
+        var accountID: String {
+            switch self {
+            case .success(let accountID, _), .failure(let accountID, _):
+                return accountID
+            }
+        }
+    }
+
     private var accountRecords: [String: AccountRecord] = [:]
     private var activeAccountID: String?
     private var unverifiedAccountIDs: Set<String> = []
-    private var lastConnectionError: String?
     private var lastEvaluatedCoverageDate: Date?
     private var upcomingMergedCommitment: MergedCommitment?
     private var earlyReminderMergedCommitment: MergedCommitment?
@@ -600,12 +675,15 @@ public final class CommitmentProtectionFlow: ObservableObject {
     private var decisionOccurrence: OccurrenceIdentity?
     private var decisionOccurrences: Set<OccurrenceIdentity> = []
     private var lastActionOccurrence: OccurrenceIdentity?
+    private var meetingLinkOpenFailure: (occurrence: OccurrenceIdentity, message: String)?
     private var strongAlertOccurrences: Set<OccurrenceIdentity> = []
     private var clearedEarlyReminderOccurrences: Set<OccurrenceIdentity> = []
     private var strongAlertNextPresentationDate: Date?
     private var newlySelectedCalendars: Set<CalendarSelectionIdentity> = []
     private var shouldSuppressUntrackedPastOccurrencesOnNextRefresh = false
     private var monitoringTask: Task<Void, Never>?
+    private var refreshDrainTask: Task<Void, Never>?
+    private var pendingRefreshDate: Date?
     private var refreshGeneration = 0
 
     private struct SavedOccurrence: Codable {
@@ -797,19 +875,29 @@ public final class CommitmentProtectionFlow: ObservableObject {
             ? 1
             : Self.clampedStrongAlertRepeatInterval(savedRepeatInterval)
         pauseUntil = nil
-
-        do {
-            try launchAtLogin.enable()
-        } catch {
-            isLaunchAtLoginEnabled = launchAtLogin.isEnabled
-        }
-        isLaunchAtLoginEnabled = launchAtLogin.isEnabled
+        requestLaunchAtLogin()
         activityLog = loadActivityLog()
         saveActivityLog()
     }
 
     public func refreshLaunchAtLoginStatus() {
         isLaunchAtLoginEnabled = launchAtLogin.isEnabled
+        if isLaunchAtLoginEnabled {
+            launchAtLoginError = nil
+        }
+    }
+
+    public func requestLaunchAtLogin() {
+        do {
+            try launchAtLogin.enable()
+            isLaunchAtLoginEnabled = launchAtLogin.isEnabled
+            launchAtLoginError = isLaunchAtLoginEnabled
+                ? nil
+                : "macOS did not enable start at login. Try again or review Login Items in System Settings."
+        } catch {
+            isLaunchAtLoginEnabled = launchAtLogin.isEnabled
+            launchAtLoginError = error.localizedDescription
+        }
     }
 
     public func coverage(for accountID: String) -> CoverageHealth? {
@@ -823,11 +911,20 @@ public final class CommitmentProtectionFlow: ObservableObject {
         }
 
         switch coverageHealth(for: record, at: coverageEvaluationDate) {
+        case .reconnectRequired:
+            return "Reconnect \(record.connection.account.protectionDisplayLabel) to resume calendar protection. Google access is kept only while In Your Face is running."
         case .stale:
-            return "Calendar coverage is stale for \(record.connection.account.email). Known reminders are unverified until coverage returns."
+            return "Calendar data for \(record.connection.account.protectionDisplayLabel) hasn’t refreshed in more than 15 minutes. Known reminders are Unverified; new reminders won’t be created until Google Calendar refreshes successfully."
         case .unavailable(let message):
-            return "Calendar coverage is unavailable for \(record.connection.account.email): \(message)"
-        case .noCoverage, .fresh:
+            let otherAccountsRemainProtected = accountRecords.values.contains { otherRecord in
+                otherRecord.connection.account.id != accountID &&
+                    coverageHealth(for: otherRecord, at: coverageEvaluationDate) == .fresh
+            }
+            let otherAccountDetail = otherAccountsRemainProtected
+                ? " Other Connected Accounts remain protected."
+                : ""
+            return "Google Calendar couldn’t refresh \(record.connection.account.protectionDisplayLabel). \(message) New reminders for this account wait until access returns; In Your Face will retry automatically.\(otherAccountDetail)"
+        case .noCoverage, .checking, .fresh:
             return nil
         }
     }
@@ -878,7 +975,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
         guard hasImminentCommitment else { return nil }
         let calendarName = record.connection.calendars.first(where: { $0.id == calendarID })?.name ?? calendarID
-        return "\(calendarName) in \(record.connection.account.email) has an imminent commitment. Turning off this calendar removes its reminders."
+        return "\(calendarName) in \(record.connection.account.protectionDisplayLabel) has an imminent commitment. Turning off this calendar removes its reminders."
     }
 
     public var status: ProtectionStatus {
@@ -893,7 +990,20 @@ public final class CommitmentProtectionFlow: ObservableObject {
         return hasFreshCoverage ? .active : .unavailable
     }
 
+    public var isCheckingCoverage: Bool {
+        let configuredAccounts = accountRecords.values.filter {
+            !$0.selectedCalendars.isEmpty && $0.isProtectionConfirmed
+        }
+        guard !configuredAccounts.isEmpty else { return false }
+        return configuredAccounts.allSatisfy { record in
+            coverageHealth(for: record, at: coverageEvaluationDate) == .checking
+        }
+    }
+
     public var menuBarTitle: String {
+        if isRestoringConnection {
+            return "Loading Protection"
+        }
         switch status {
         case .noCoverage:
             return "No Coverage"
@@ -905,7 +1015,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
                 ? "Active Protection"
                 : "Active Protection · Login Needs Attention"
         case .unavailable:
-            return "Coverage Needs Attention"
+            return isCheckingCoverage ? "Checking Coverage" : "Coverage Needs Attention"
         }
     }
 
@@ -924,24 +1034,15 @@ public final class CommitmentProtectionFlow: ObservableObject {
             return "Protection is not paused."
         }
 
-        let minutesRemaining = Int(ceil(pauseUntil.timeIntervalSince(currentDate) / 60))
-        let relativeText: String
-        if minutesRemaining >= 60 {
-            let hours = minutesRemaining / 60
-            let minutes = minutesRemaining % 60
-            relativeText = minutes == 0
-                ? "\(hours) hour\(hours == 1 ? "" : "s")"
-                : "\(hours) hour\(hours == 1 ? "" : "s") \(minutes) min"
-        } else {
-            relativeText = "\(max(minutesRemaining, 1)) min"
-        }
+        let minutesRemaining = max(Int(ceil(pauseUntil.timeIntervalSince(currentDate) / 60)), 1)
+        let relativeText = Self.localizedHoursAndMinutes(minutesRemaining)
 
         let formatter = DateFormatter()
         formatter.dateStyle = .none
         formatter.timeStyle = .short
-        formatter.locale = .current
-        formatter.timeZone = .current
-        return "Protection paused · ends in \(relativeText) (\(formatter.string(from: pauseUntil)))"
+        formatter.locale = .autoupdatingCurrent
+        formatter.timeZone = .autoupdatingCurrent
+        return "All protection paused · resumes in \(relativeText) (\(formatter.string(from: pauseUntil)))"
     }
 
     @discardableResult
@@ -971,8 +1072,8 @@ public final class CommitmentProtectionFlow: ObservableObject {
         recordActivity(
             .pauseStarted,
             actor: .user,
-            title: "Protection paused",
-            detail: lastActionMessage ?? "Protection paused.",
+            title: "All protection paused",
+            detail: lastActionMessage ?? "All protection paused.",
             at: currentDate
         )
         return true
@@ -1000,15 +1101,38 @@ public final class CommitmentProtectionFlow: ObservableObject {
         return lastActionMessage
     }
 
+    public func meetingLinkOpenFailureMessage(for commitment: CalendarEvent) -> String? {
+        guard let meetingLinkOpenFailure,
+              meetingLinkOpenFailure.occurrence.matches(commitment),
+              lastActionOccurrence?.matches(commitment) == true,
+              lastActionMessage == meetingLinkOpenFailure.message else {
+            return nil
+        }
+        return meetingLinkOpenFailure.message
+    }
+
     public func connectGoogleAccount() async {
+        await connectGoogleAccount(expectedAccountID: nil)
+    }
+
+    public func reconnectGoogleAccount(accountID: String) async {
+        guard accountRecords[accountID] != nil else { return }
+        await connectGoogleAccount(expectedAccountID: accountID)
+    }
+
+    private func connectGoogleAccount(expectedAccountID: String?) async {
+        guard !isConnectingAccount else { return }
+        isConnectingAccount = true
+        defer { isConnectingAccount = false }
+
         invalidateRefreshes()
-        lastConnectionError = nil
+        accountConnectionError = nil
         if accountRecords.isEmpty {
             connectionState = .connecting
         }
 
         do {
-            let connection = try await calendarConnector.connect()
+            let connection = try await calendarConnector.connect(expectedAccountID: expectedAccountID)
             let existingRecord = accountRecords[connection.account.id]
             if existingRecord?.isProtectionConfirmed == true {
                 shouldSuppressUntrackedPastOccurrencesOnNextRefresh = true
@@ -1032,12 +1156,18 @@ public final class CommitmentProtectionFlow: ObservableObject {
                 .accountConnected,
                 actor: .user,
                 title: "Google Calendar connected",
-                detail: "Connected \(connection.account.email)."
+                detail: "Connected \(connection.account.protectionDisplayLabel)."
             )
             await refreshCommitmentProtection()
         } catch {
-            lastConnectionError = error.localizedDescription
-            connectionState = .failed(error.localizedDescription)
+            accountConnectionError = error.localizedDescription
+            if let expectedAccountID, accountRecords[expectedAccountID] != nil {
+                accountRecords[expectedAccountID]?.connectionState = .reconnectRequired
+                activeAccountID = expectedAccountID
+                syncCoverageAndActiveAccountProjection()
+            } else {
+                connectionState = .failed(error.localizedDescription)
+            }
             recordActivity(
                 .accountConnectionFailed,
                 actor: .system,
@@ -1058,10 +1188,14 @@ public final class CommitmentProtectionFlow: ObservableObject {
     @discardableResult
     public func disconnectGoogleAccount(accountID: String) -> Bool {
         invalidateRefreshes()
+        accountDisconnectionError = nil
+        failedAccountDisconnectionID = nil
         guard let record = accountRecords[accountID] else { return false }
         do {
             try calendarConnector.disconnect(accountID: accountID)
         } catch {
+            accountDisconnectionError = "Couldn’t disconnect \(record.connection.account.protectionDisplayLabel). \(error.localizedDescription)"
+            failedAccountDisconnectionID = accountID
             accountRecords[accountID]?.connectionState = .failed(error.localizedDescription)
             syncCoverageAndActiveAccountProjection()
             recordActivity(
@@ -1088,13 +1222,6 @@ public final class CommitmentProtectionFlow: ObservableObject {
         if decisionCommitment?.accountID == accountID {
             clearLocalDecision()
         }
-        if [upcomingCommitment, earlyReminderCommitment, strongAlertCommitment]
-            .compactMap({ $0 })
-            .contains(where: { $0.accountID == accountID }) {
-            clearDisplayedProtectionState()
-            clearLastActionMessage()
-        }
-
         if activeAccountID == accountID {
             activeAccountID = accountRecords.keys.sorted().first
         }
@@ -1105,6 +1232,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
             stateStore.removeObject(forKey: Self.stateKey)
         } else {
             saveConfiguration()
+            reconcileCachedProtectionAfterConfigurationChange(at: now())
         }
         syncCoverageAndActiveAccountProjection()
         if !accountRecords.isEmpty {
@@ -1125,7 +1253,24 @@ public final class CommitmentProtectionFlow: ObservableObject {
         for savedAccount in savedConfiguration.accounts {
             do {
                 guard let connection = try await calendarConnector.restore(accountID: savedAccount.account.id) else {
-                    throw ProtectionFlowError.savedAccountUnavailable
+                    guard !savedAccount.account.id.isEmpty else { continue }
+                    accountRecords[savedAccount.account.id] = AccountRecord(
+                        connection: GoogleCalendarConnection(
+                            account: savedAccount.account,
+                            calendars: savedAccount.calendars
+                        ),
+                        selectedCalendarIDs: Set(savedAccount.selectedCalendarIDs),
+                        isProtectionConfirmed: savedAccount.isProtectionConfirmed,
+                        connectionState: .reconnectRequired,
+                        lastSuccessfulRefreshAt: savedAccount.lastSuccessfulRefreshAt,
+                        lastFreshEvents: restoredFreshEvents(
+                            from: savedAccount,
+                            accountID: savedAccount.account.id,
+                            calendars: savedAccount.calendars
+                        )
+                    )
+                    unverifiedAccountIDs.insert(savedAccount.account.id)
+                    continue
                 }
                 guard connection.account.id == savedAccount.account.id else {
                     throw ProtectionFlowError.restoredAccountMismatch
@@ -1170,7 +1315,11 @@ public final class CommitmentProtectionFlow: ObservableObject {
         saveConfiguration()
         if !accountRecords.isEmpty {
             shouldSuppressUntrackedPastOccurrencesOnNextRefresh = true
-            await refreshCommitmentProtection()
+            reconcileCachedProtectionAfterConfigurationChange(at: now())
+            syncCoverageAndActiveAccountProjection()
+            if accountRecords.values.contains(where: { $0.connectionState == .connected }) {
+                await refreshCommitmentProtection()
+            }
         }
     }
 
@@ -1207,13 +1356,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
         let selectedCalendar = record.connection.calendars.first(where: { $0.id == calendarID })
         let calendarName = selectedCalendar?.name ?? calendarID
         invalidateRefreshes()
-        if !isSelected,
-           [upcomingCommitment, earlyReminderCommitment, strongAlertCommitment]
-            .compactMap({ $0 })
-            .contains(where: { $0.accountID == accountID && $0.calendarID == calendarID }) {
-            clearDisplayedProtectionState()
-            clearLastActionMessage()
-        }
+        reconcileCachedProtectionAfterConfigurationChange(at: now())
         syncCoverageAndActiveAccountProjection()
         recordActivity(
             .configurationChanged,
@@ -1380,6 +1523,38 @@ public final class CommitmentProtectionFlow: ObservableObject {
     }
 
     public func refreshCommitmentProtection(at currentDate: Date) async {
+        if let pendingRefreshDate {
+            self.pendingRefreshDate = max(pendingRefreshDate, currentDate)
+        } else {
+            pendingRefreshDate = currentDate
+        }
+
+        if let refreshDrainTask {
+            await refreshDrainTask.value
+            return
+        }
+
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.drainPendingRefreshes()
+        }
+        refreshDrainTask = task
+        await task.value
+    }
+
+    private func drainPendingRefreshes() async {
+        isRefreshingCoverage = true
+        defer {
+            isRefreshingCoverage = false
+            refreshDrainTask = nil
+        }
+        while let currentDate = pendingRefreshDate {
+            pendingRefreshDate = nil
+            await performCommitmentProtectionRefresh(at: currentDate)
+        }
+    }
+
+    private func performCommitmentProtectionRefresh(at currentDate: Date) async {
         lastEvaluatedCoverageDate = currentDate
         if pruneActivityLog(at: currentDate) {
             saveActivityLog()
@@ -1399,93 +1574,133 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
         let startDate = Calendar.current.startOfDay(for: currentDate)
         let endDate = currentDate.addingTimeInterval(24 * 60 * 60)
-        var events: [CalendarEvent] = []
-        var didRefreshAllConfiguredAccounts = true
-
-        for accountID in configuredAccountIDs {
-            guard var record = accountRecords[accountID] else { continue }
-            let wasUnavailable = record.connectionState != .connected ||
-                unverifiedAccountIDs.contains(accountID)
-            let previouslyTrackedOccurrences = Set(record.lastFreshEvents.map(OccurrenceIdentity.init))
-            let selectedNewCalendars = Set(record.selectedCalendars.map {
-                CalendarSelectionIdentity(calendarID: $0.id, accountID: accountID)
-            }).intersection(newlySelectedCalendars)
-            do {
-                var freshEvents: [CalendarEvent] = []
-                for calendar in record.selectedCalendars {
-                    freshEvents += try await calendarConnector.loadEvents(
-                        accountID: accountID,
-                        calendarID: calendar.id,
-                        from: startDate,
-                        to: endDate
-                    )
-                }
-
-                guard generation == refreshGeneration else { return }
-                let protectionEvents = freshEvents.filter { event in
-                    event.isEligibleForProtection &&
-                        (event.endDate ?? .distantPast) > currentDate
-                }
-                let eventsToSuppress = protectionEvents.filter { event in
-                    shouldSuppressUntrackedPastOccurrencesOnNextRefresh ||
-                        selectedNewCalendars.contains(
-                            CalendarSelectionIdentity(calendarID: event.calendarID, accountID: event.accountID)
-                        )
-                }
-                suppressUntrackedPastOccurrences(
-                    in: eventsToSuppress,
-                    previouslyTracked: previouslyTrackedOccurrences,
-                    at: currentDate
-                )
-                record.connectionState = .connected
-                record.lastSuccessfulRefreshAt = currentDate
-                record.lastFreshEvents = protectionEvents
-                accountRecords[accountID] = record
-                unverifiedAccountIDs.remove(accountID)
-                newlySelectedCalendars.subtract(selectedNewCalendars)
-                events += freshEvents
-                if wasUnavailable {
-                    recordActivity(
-                        .coverageRestored,
-                        actor: .system,
-                        title: "Calendar coverage restored",
-                        detail: "Calendar protection is available again.",
-                        account: record.connection.account,
-                        at: currentDate
-                    )
-                }
-            } catch {
-                guard generation == refreshGeneration else { return }
-                didRefreshAllConfiguredAccounts = false
-                let wasAlreadyUnavailable = record.connectionState == .failed(error.localizedDescription) ||
-                    unverifiedAccountIDs.contains(accountID)
-                record.connectionState = .failed(error.localizedDescription)
-                accountRecords[accountID] = record
-                unverifiedAccountIDs.insert(accountID)
-                events += record.lastFreshEvents.filter {
+        let requests = configuredAccountIDs.compactMap { accountID -> AccountRefreshRequest? in
+            guard let record = accountRecords[accountID],
+                  record.connectionState != .reconnectRequired else { return nil }
+            return AccountRefreshRequest(accountID: accountID, calendars: record.selectedCalendars)
+        }
+        var eventsByAccount = Dictionary(uniqueKeysWithValues: configuredAccountIDs.compactMap {
+            accountID -> (String, [CalendarEvent])? in
+            guard let record = accountRecords[accountID],
+                  record.connectionState != .reconnectRequired else { return nil }
+            return (
+                accountID,
+                record.lastFreshEvents.filter {
                     $0.accountID == accountID && record.selectedCalendarIDs.contains($0.calendarID)
                 }
-                if !wasAlreadyUnavailable {
-                    recordActivity(
-                        .coverageUnavailable,
-                        actor: .system,
-                        title: "Calendar coverage unavailable",
-                        detail: "Calendar events could not be refreshed: \(error.localizedDescription).",
-                        account: record.connection.account,
-                        at: currentDate
-                    )
+            )
+        })
+        var completedAccountIDs: Set<String> = []
+        var didRefreshAllConfiguredAccounts = requests.count == configuredAccountIDs.count
+        let connector = calendarConnector
+
+        await withTaskGroup(of: AccountRefreshResult.self) { group in
+            for request in requests {
+                group.addTask { [connector, request] in
+                    do {
+                        var events: [CalendarEvent] = []
+                        for calendar in request.calendars {
+                            try Task.checkCancellation()
+                            events += try await connector.loadEvents(
+                                accountID: request.accountID,
+                                calendarID: calendar.id,
+                                from: startDate,
+                                to: endDate
+                            )
+                        }
+                        return .success(accountID: request.accountID, events: events)
+                    } catch {
+                        return .failure(accountID: request.accountID, message: error.localizedDescription)
+                    }
                 }
             }
-        }
 
-        guard generation == refreshGeneration else { return }
-        if didRefreshAllConfiguredAccounts {
-            shouldSuppressUntrackedPastOccurrencesOnNextRefresh = false
+            for await result in group {
+                guard generation == refreshGeneration else {
+                    group.cancelAll()
+                    return
+                }
+                let accountID = result.accountID
+                guard var record = accountRecords[accountID] else { continue }
+                completedAccountIDs.insert(accountID)
+
+                switch result {
+                case .success(_, let freshEvents):
+                    let wasUnavailable = record.connectionState != .connected ||
+                        unverifiedAccountIDs.contains(accountID)
+                    let previouslyTrackedOccurrences = Set(record.lastFreshEvents.map(OccurrenceIdentity.init))
+                    let selectedNewCalendars = Set(record.selectedCalendars.map {
+                        CalendarSelectionIdentity(calendarID: $0.id, accountID: accountID)
+                    }).intersection(newlySelectedCalendars)
+                    let protectionEvents = freshEvents.filter { event in
+                        event.isEligibleForProtection &&
+                            (event.endDate ?? .distantPast) > currentDate
+                    }
+                    let eventsToSuppress = protectionEvents.filter { event in
+                        shouldSuppressUntrackedPastOccurrencesOnNextRefresh ||
+                            selectedNewCalendars.contains(
+                                CalendarSelectionIdentity(calendarID: event.calendarID, accountID: event.accountID)
+                            )
+                    }
+                    suppressUntrackedPastOccurrences(
+                        in: eventsToSuppress,
+                        previouslyTracked: previouslyTrackedOccurrences,
+                        at: currentDate
+                    )
+                    record.connectionState = .connected
+                    record.lastSuccessfulRefreshAt = currentDate
+                    record.lastFreshEvents = protectionEvents
+                    accountRecords[accountID] = record
+                    unverifiedAccountIDs.remove(accountID)
+                    newlySelectedCalendars.subtract(selectedNewCalendars)
+                    eventsByAccount[accountID] = freshEvents
+                    if wasUnavailable {
+                        recordActivity(
+                            .coverageRestored,
+                            actor: .system,
+                            title: "Calendar coverage restored",
+                            detail: "Calendar protection is available again.",
+                            account: record.connection.account,
+                            at: currentDate
+                        )
+                    }
+
+                case .failure(_, let message):
+                    didRefreshAllConfiguredAccounts = false
+                    let wasAlreadyUnavailable = record.connectionState == .failed(message) ||
+                        unverifiedAccountIDs.contains(accountID)
+                    record.connectionState = .failed(message)
+                    accountRecords[accountID] = record
+                    unverifiedAccountIDs.insert(accountID)
+                    if !wasAlreadyUnavailable {
+                        recordActivity(
+                            .coverageUnavailable,
+                            actor: .system,
+                            title: "Calendar coverage unavailable",
+                            detail: "Calendar events could not be refreshed: \(message).",
+                            account: record.connection.account,
+                            at: currentDate
+                        )
+                    }
+                }
+
+                let events = configuredAccountIDs.flatMap { eventsByAccount[$0] ?? [] }
+                let isCompleteSnapshot = completedAccountIDs.count == configuredAccountIDs.count
+                syncCoverageAndActiveAccountProjection()
+                migrateLegacyActivityCalendarContext(with: events)
+                reconcileCalendarSnapshot(
+                    events,
+                    at: currentDate,
+                    isCompleteSnapshot: isCompleteSnapshot
+                )
+                syncCoverageAndActiveAccountProjection()
+            }
+
+            guard generation == refreshGeneration else { return }
+            if didRefreshAllConfiguredAccounts, completedAccountIDs.count == requests.count {
+                shouldSuppressUntrackedPastOccurrencesOnNextRefresh = false
+            }
         }
-        syncCoverageAndActiveAccountProjection()
-        migrateLegacyActivityCalendarContext(with: events)
-        reconcileCalendarSnapshot(events, at: currentDate)
-        syncCoverageAndActiveAccountProjection()
     }
 
     public func presentTestAlert() {
@@ -1549,7 +1764,10 @@ public final class CommitmentProtectionFlow: ObservableObject {
     }
 
     public func strongAlertPrimaryMeetingLink(for commitment: CalendarEvent) -> URL? {
-        strongAlertGroup(containing: commitment)?.primaryMeetingLink ?? commitment.primaryRecognizedMeetingLink
+        if let group = strongAlertGroup(containing: commitment) {
+            return group.primaryMeetingLink
+        }
+        return commitment.primaryRecognizedMeetingLink
     }
 
     @discardableResult
@@ -1584,45 +1802,89 @@ public final class CommitmentProtectionFlow: ObservableObject {
         return true
     }
 
+    /// Opens a validated meeting link before ending reminders for the occurrence.
+    /// If macOS cannot open the link, protection stays active so the user can retry.
     @discardableResult
-    public func joinStrongAlert() -> URL? {
-        let options = strongAlertMeetingLinkOptions
-        let primaryLink = strongAlertPrimaryMeetingLink
-        guard primaryLink != nil || options.count <= 1 else { return nil }
-        let meetingLink = primaryLink ?? options.first
-        guard let meetingLink else { return nil }
-        return joinStrongAlert(using: meetingLink)
+    public func openStrongAlertMeetingLink(
+        open: (URL) -> Bool
+    ) -> Bool {
+        guard let commitment = strongAlertCommitment else { return false }
+        return openStrongAlertMeetingLink(for: commitment, open: open)
     }
 
+    /// Opens the designated link, or the only recognized link, for a commitment.
+    /// Multiple undesignated links require the caller to pass an explicit choice.
     @discardableResult
-    public func joinStrongAlert(using meetingLink: URL) -> URL? {
-        guard let commitment = strongAlertCommitment else { return nil }
-        return joinStrongAlert(for: commitment, using: meetingLink)
-    }
-
-    @discardableResult
-    public func joinStrongAlert(for commitment: CalendarEvent) -> URL? {
+    public func openStrongAlertMeetingLink(
+        for commitment: CalendarEvent,
+        open: (URL) -> Bool
+    ) -> Bool {
         let options = strongAlertMeetingLinkOptions(for: commitment)
         let primaryLink = strongAlertPrimaryMeetingLink(for: commitment)
-        guard primaryLink != nil || options.count <= 1 else { return nil }
-        guard let meetingLink = primaryLink ?? options.first else { return nil }
-        return joinStrongAlert(for: commitment, using: meetingLink)
+        guard primaryLink != nil || options.count <= 1,
+              let meetingLink = primaryLink ?? options.first else {
+            return false
+        }
+        return openStrongAlertMeetingLink(for: commitment, using: meetingLink, open: open)
     }
 
     @discardableResult
-    public func joinStrongAlert(for commitment: CalendarEvent, using meetingLink: URL) -> URL? {
-        let meetingLinkKey = CalendarEvent.normalizedMeetingLinkKey(meetingLink)
-        guard strongAlertMeetingLinkOptions(for: commitment).contains(where: {
-            CalendarEvent.normalizedMeetingLinkKey($0) == meetingLinkKey
-        }) else { return nil }
-        guard let group = strongAlertGroup(containing: commitment) else { return nil }
+    public func openStrongAlertMeetingLink(
+        using meetingLink: URL,
+        open: (URL) -> Bool
+    ) -> Bool {
+        guard let commitment = strongAlertCommitment else { return false }
+        return openStrongAlertMeetingLink(for: commitment, using: meetingLink, open: open)
+    }
+
+    /// Opens a validated meeting link before ending reminders for the selected
+    /// commitment in a conflict.
+    @discardableResult
+    public func openStrongAlertMeetingLink(
+        for commitment: CalendarEvent,
+        using meetingLink: URL,
+        open: (URL) -> Bool
+    ) -> Bool {
+        guard let group = validatedStrongAlertJoinGroup(
+            for: commitment,
+            using: meetingLink
+        ) else { return false }
+
+        guard open(meetingLink) else {
+            let message = "Couldn’t open the meeting link. Protection remains active. Try again or open it from Google Calendar."
+            let occurrence = OccurrenceIdentity(commitment)
+            lastActionMessage = message
+            lastActionOccurrence = occurrence
+            meetingLinkOpenFailure = (occurrence, message)
+            return false
+        }
+
         recordDecision(
             .joined,
             for: commitment,
             group: group,
-            message: "Joined. Protection ended for this occurrence."
+            message: "Meeting link opened. Reminders stopped for this occurrence."
         )
-        return meetingLink
+        return true
+    }
+
+    private func validatedStrongAlertJoinGroup(
+        for commitment: CalendarEvent,
+        using meetingLink: URL
+    ) -> MergedCommitment? {
+        guard isStrongAlertPresented else { return nil }
+        let meetingLinkKey = CalendarEvent.normalizedMeetingLinkKey(meetingLink)
+        guard strongAlertMeetingLinkOptions(for: commitment).contains(where: {
+            CalendarEvent.normalizedMeetingLinkKey($0) == meetingLinkKey
+        }) else { return nil }
+        if let group = strongAlertConflictMergedCommitments.first(where: { $0.contains(commitment) }) {
+            return group
+        }
+        guard let strongAlertMergedCommitment,
+              strongAlertMergedCommitment.contains(commitment) else {
+            return nil
+        }
+        return strongAlertMergedCommitment
     }
 
     public func handleStrongAlert() {
@@ -1663,7 +1925,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
             .dismissed,
             for: commitment,
             group: mergedCommitment(containing: commitment),
-            message: "Dismissed for this occurrence. Protection is off until it ends."
+            message: "Reminders stopped for this occurrence. Google Calendar RSVP unchanged."
         )
         return true
     }
@@ -1725,8 +1987,8 @@ public final class CommitmentProtectionFlow: ObservableObject {
         earlyReminderConflictMergedCommitments = []
         earlyReminderConflict = nil
         lastActionMessage = commitment.endDate == effectiveSnoozeUntil && requestedSnoozeUntil > effectiveSnoozeUntil
-            ? "All reminders snoozed until the commitment ends. Protection remains active."
-            : "All reminders snoozed for \(minutes) minutes. Protection remains active."
+            ? "Reminders for this occurrence snoozed until the commitment ends."
+            : "Reminders for this occurrence snoozed for \(Self.localizedMinuteDuration(minutes)). Protection remains active."
         lastActionOccurrence = occurrence
         recordActivity(
             .snoozed,
@@ -1757,9 +2019,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
         strongAlertNextPresentationDate = date.addingTimeInterval(
             Double(strongAlertRepeatIntervalMinutes) * 60
         )
-        let interval = strongAlertRepeatIntervalMinutes == 1
-            ? "1 minute"
-            : "\(strongAlertRepeatIntervalMinutes) minutes"
+        let interval = Self.localizedMinuteDuration(strongAlertRepeatIntervalMinutes)
         lastActionMessage = "Strong Alert closed. Protection remains active and will repeat in \(interval)."
         lastActionOccurrence = OccurrenceIdentity(commitment)
         recordActivity(
@@ -1787,17 +2047,15 @@ public final class CommitmentProtectionFlow: ObservableObject {
         if elapsedMinutes < 1 {
             return "Starting now"
         }
-        return elapsedMinutes == 1
-            ? "Overdue · started 1 min ago"
-            : "Overdue · started \(elapsedMinutes) min ago"
+        return "Overdue · started \(Self.localizedMinuteDuration(elapsedMinutes)) ago"
     }
 
     public func strongAlertContextText(for commitment: CalendarEvent) -> String {
         let group = strongAlertGroup(containing: commitment) ?? mergedCommitment(containing: commitment)
         let representations = group?.representations ?? [commitment]
         let contexts = representations.map { representation in
-            let calendarName = calendarName(for: representation) ?? representation.calendarID
-            let accountName = account(for: representation)?.email ?? representation.accountID
+            let calendarName = calendarName(for: representation) ?? "Calendar unavailable"
+            let accountName = account(for: representation)?.email ?? "Account unavailable"
             return "\(calendarName) · \(accountName)"
         }
         var uniqueContexts: [String] = []
@@ -1822,13 +2080,13 @@ public final class CommitmentProtectionFlow: ObservableObject {
         earlyReminderMergedCommitment = nil
         earlyReminderConflictMergedCommitments = []
         earlyReminderConflict = nil
-        lastActionMessage = "Early Reminder cleared. Protection remains active."
+        lastActionMessage = "Early Reminder closed for now. Strong Alert remains active."
         lastActionOccurrence = OccurrenceIdentity(earlyReminderCommitment)
         recordActivity(
             .earlyReminderCleared,
             actor: .user,
-            title: "Early Reminder cleared",
-            detail: lastActionMessage ?? "Early Reminder cleared.",
+            title: "Early Reminder closed",
+            detail: lastActionMessage ?? "Early Reminder closed for now.",
             commitment: earlyReminderCommitment,
             commitmentGroup: group
         )
@@ -1843,23 +2101,18 @@ public final class CommitmentProtectionFlow: ObservableObject {
     public func localStartTimeText(for commitment: CalendarEvent) -> String {
         guard let startDate = commitment.startDate else { return "Time unavailable" }
 
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "dd/MM/yyyy"
-        dateFormatter.locale = Locale(identifier: "tr_TR")
-        dateFormatter.timeZone = .current
-
-        let timeFormatter = DateFormatter()
-        timeFormatter.dateStyle = .none
-        timeFormatter.timeStyle = .short
-        timeFormatter.locale = .current
-        timeFormatter.timeZone = .current
-        var text = "\(dateFormatter.string(from: startDate)), \(timeFormatter.string(from: startDate))"
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        formatter.locale = .autoupdatingCurrent
+        formatter.timeZone = .autoupdatingCurrent
+        var text = "\(formatter.string(from: startDate)) local time"
 
         if let identifier = commitment.timeZoneIdentifier,
            let eventTimeZone = TimeZone(identifier: identifier),
-           eventTimeZone != .current {
+           eventTimeZone.identifier != TimeZone.autoupdatingCurrent.identifier {
             let label = eventTimeZone.abbreviation(for: startDate) ?? identifier
-            text += " (\(label))"
+            text += " · event time zone: \(label)"
         }
         return text
     }
@@ -1874,14 +2127,28 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
         let totalMinutes = Int(ceil(secondsRemaining / 60))
         if totalMinutes < 60 {
-            return "Starts in \(totalMinutes) min"
+            return "Starts in \(Self.localizedMinuteDuration(totalMinutes))"
         }
+        return "Starts in \(Self.localizedHoursAndMinutes(totalMinutes))"
+    }
 
-        let hours = totalMinutes / 60
-        let minutes = totalMinutes % 60
-        return minutes == 0
-            ? "Starts in \(hours) hr"
-            : "Starts in \(hours) hr \(minutes) min"
+    private static func localizedMinuteDuration(_ minutes: Int) -> String {
+        String(
+            AttributedString(
+                localized: "^[\(minutes) minute](inflect: true)",
+                locale: .autoupdatingCurrent
+            ).characters
+        )
+    }
+
+    private static func localizedHoursAndMinutes(_ totalMinutes: Int) -> String {
+        let formatter = DateComponentsFormatter()
+        formatter.allowedUnits = [.hour, .minute]
+        formatter.unitsStyle = .full
+        formatter.maximumUnitCount = 2
+        formatter.zeroFormattingBehavior = .dropAll
+        return formatter.string(from: TimeInterval(totalMinutes * 60))
+            ?? localizedMinuteDuration(totalMinutes)
     }
 
     private static func clampedEarlyReminderLeadTime(_ minutes: Int) -> Int {
@@ -2148,9 +2415,17 @@ public final class CommitmentProtectionFlow: ObservableObject {
         !clearedEarlyReminderOccurrences.isDisjoint(with: commitment.occurrences)
     }
 
-    private func reconcileCalendarSnapshot(_ events: [CalendarEvent], at currentDate: Date) {
+    private func reconcileCalendarSnapshot(
+        _ events: [CalendarEvent],
+        at currentDate: Date,
+        isCompleteSnapshot: Bool = true
+    ) {
         updateTemporaryLifecycleState(at: currentDate)
-        recordAcceptanceMutations(in: events, at: currentDate)
+        recordAcceptanceMutations(
+            in: events,
+            at: currentDate,
+            pruneMissingOccurrences: isCompleteSnapshot
+        )
         let eligibleEvents = events
             .filter { event in
                 guard event.isEligibleForProtection,
@@ -2284,7 +2559,11 @@ public final class CommitmentProtectionFlow: ObservableObject {
         }
     }
 
-    private func recordAcceptanceMutations(in events: [CalendarEvent], at currentDate: Date) {
+    private func recordAcceptanceMutations(
+        in events: [CalendarEvent],
+        at currentDate: Date,
+        pruneMissingOccurrences: Bool = true
+    ) {
         let trackedEvents = events.filter { event in
             guard event.hasProtectionWindow,
                   let endDate = event.endDate else {
@@ -2295,20 +2574,22 @@ public final class CommitmentProtectionFlow: ObservableObject {
         let trackedOccurrences = Set(trackedEvents.map(OccurrenceIdentity.init))
         var didChange = false
 
-        let retainedUnacceptedOccurrences = observedUnacceptedOccurrences.intersection(trackedOccurrences)
-        if retainedUnacceptedOccurrences != observedUnacceptedOccurrences {
-            observedUnacceptedOccurrences = retainedUnacceptedOccurrences
-            didChange = true
-        }
-        let retainedSuppressedOccurrences = suppressedPostStartAcceptanceOccurrences.intersection(trackedOccurrences)
-        if retainedSuppressedOccurrences != suppressedPostStartAcceptanceOccurrences {
-            suppressedPostStartAcceptanceOccurrences = retainedSuppressedOccurrences
-            didChange = true
-        }
-        let retainedUntrackedPastOccurrences = suppressedUntrackedPastOccurrences.intersection(trackedOccurrences)
-        if retainedUntrackedPastOccurrences != suppressedUntrackedPastOccurrences {
-            suppressedUntrackedPastOccurrences = retainedUntrackedPastOccurrences
-            didChange = true
+        if pruneMissingOccurrences {
+            let retainedUnacceptedOccurrences = observedUnacceptedOccurrences.intersection(trackedOccurrences)
+            if retainedUnacceptedOccurrences != observedUnacceptedOccurrences {
+                observedUnacceptedOccurrences = retainedUnacceptedOccurrences
+                didChange = true
+            }
+            let retainedSuppressedOccurrences = suppressedPostStartAcceptanceOccurrences.intersection(trackedOccurrences)
+            if retainedSuppressedOccurrences != suppressedPostStartAcceptanceOccurrences {
+                suppressedPostStartAcceptanceOccurrences = retainedSuppressedOccurrences
+                didChange = true
+            }
+            let retainedUntrackedPastOccurrences = suppressedUntrackedPastOccurrences.intersection(trackedOccurrences)
+            if retainedUntrackedPastOccurrences != suppressedUntrackedPastOccurrences {
+                suppressedUntrackedPastOccurrences = retainedUntrackedPastOccurrences
+                didChange = true
+            }
         }
 
         for event in trackedEvents {
@@ -2647,18 +2928,19 @@ public final class CommitmentProtectionFlow: ObservableObject {
     }
 
     private func coverageHealth(for record: AccountRecord, at date: Date) -> CoverageHealth {
-        guard !record.selectedCalendars.isEmpty, record.isProtectionConfirmed else {
-            return .noCoverage
-        }
-
         switch record.connectionState {
         case .connected:
+            guard !record.selectedCalendars.isEmpty, record.isProtectionConfirmed else {
+                return .noCoverage
+            }
             guard let lastSuccessfulRefreshAt = record.lastSuccessfulRefreshAt else {
-                return .fresh
+                return .checking
             }
             return date.timeIntervalSince(lastSuccessfulRefreshAt) <= Self.coverageFreshnessInterval
                 ? .fresh
                 : .stale
+        case .reconnectRequired:
+            return .reconnectRequired
         case .failed(let message):
             if let lastSuccessfulRefreshAt = record.lastSuccessfulRefreshAt,
                date.timeIntervalSince(lastSuccessfulRefreshAt) > Self.coverageFreshnessInterval {
@@ -2701,13 +2983,17 @@ public final class CommitmentProtectionFlow: ObservableObject {
                     lastSuccessfulRefreshAt: record.lastSuccessfulRefreshAt
                 )
             }
-            .sorted { $0.account.email.localizedCaseInsensitiveCompare($1.account.email) == .orderedAscending }
+            .sorted {
+                $0.account.protectionDisplayLabel.localizedCaseInsensitiveCompare(
+                    $1.account.protectionDisplayLabel
+                ) == .orderedAscending
+            }
 
         guard let activeAccountID, let record = accountRecords[activeAccountID] else {
             connectedAccount = nil
             availableCalendars = []
             selectedCalendarIDs = []
-            connectionState = lastConnectionError.map(ConnectionState.failed) ?? .notConnected
+            connectionState = accountConnectionError.map(ConnectionState.failed) ?? .notConnected
             isProtectionConfirmed = false
             return
         }
@@ -2847,6 +3133,24 @@ public final class CommitmentProtectionFlow: ObservableObject {
     private func beginRefresh() -> Int {
         invalidateRefreshes()
         return refreshGeneration
+    }
+
+    private func reconcileCachedProtectionAfterConfigurationChange(at date: Date) {
+        let cachedEvents = accountRecords.values
+            .filter {
+                $0.connectionState != .reconnectRequired &&
+                    $0.isProtectionConfirmed &&
+                    !$0.selectedCalendarIDs.isEmpty
+            }
+            .flatMap { record in
+                record.lastFreshEvents.filter { event in
+                    record.selectedCalendarIDs.contains(event.calendarID)
+                }
+            }
+        // `lastFreshEvents` intentionally stores only eligible accepted events, so
+        // this is not a complete acceptance snapshot. Preserve unaccepted-event
+        // history used to suppress commitments accepted after they have started.
+        reconcileCalendarSnapshot(cachedEvents, at: date, isCompleteSnapshot: false)
     }
 
     private func clearProtectionState() {
@@ -3054,9 +3358,11 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
 private enum ProtectionFlowError: LocalizedError {
     case restoredAccountMismatch
-    case savedAccountUnavailable
 
     var errorDescription: String? {
-        "The saved Google account could not be restored safely. Connect it again."
+        switch self {
+        case .restoredAccountMismatch:
+            return "Google returned a different account than the one that was saved. Reconnect the original account."
+        }
     }
 }
