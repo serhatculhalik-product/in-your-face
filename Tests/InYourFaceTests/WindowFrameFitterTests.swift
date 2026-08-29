@@ -49,6 +49,51 @@ final class WindowFrameFitterTests: XCTestCase {
         XCTAssertEqual(frame, CGRect(x: 40, y: 65, width: 944, height: 663))
     }
 
+    func testFitEnforcesTheMinimumContentSizeDuringLaterUserResizes() {
+        let panel = NSPanel(
+            contentRect: CGRect(x: 0, y: 0, width: 500, height: 400),
+            styleMask: [.titled, .resizable, .utilityWindow],
+            backing: .buffered,
+            defer: false
+        )
+        defer { panel.close() }
+
+        WindowFrameFitter.fit(
+            panel,
+            visibleFrame: CGRect(x: 0, y: 24, width: 1_440, height: 876),
+            minimumContentSize: CGSize(width: 360, height: 300)
+        )
+
+        panel.setContentSize(CGSize(width: 84, height: 720))
+
+        XCTAssertGreaterThanOrEqual(panel.contentLayoutRect.width, 359.5)
+        XCTAssertGreaterThanOrEqual(panel.contentLayoutRect.height, 299.5)
+    }
+
+    func testFitClampsTheDurableMinimumToTheAvailableDisplayContentSize() {
+        let panel = NSPanel(
+            contentRect: CGRect(x: 0, y: 0, width: 100, height: 100),
+            styleMask: [.titled, .resizable, .utilityWindow],
+            backing: .buffered,
+            defer: false
+        )
+        defer { panel.close() }
+        let visibleFrame = CGRect(x: 100, y: 200, width: 380, height: 280)
+
+        WindowFrameFitter.fit(
+            panel,
+            visibleFrame: visibleFrame,
+            minimumContentSize: CGSize(width: 360, height: 300)
+        )
+
+        let availableContentSize = panel.contentRect(
+            forFrameRect: CGRect(origin: .zero, size: panel.maxSize)
+        ).size
+        XCTAssertEqual(panel.contentMinSize.width, availableContentSize.width, accuracy: 0.5)
+        XCTAssertEqual(panel.contentMinSize.height, availableContentSize.height, accuracy: 0.5)
+        XCTAssertLessThan(panel.contentMinSize.height, 300)
+    }
+
     func testLivePanelIsRefittedAfterHostedContentGrows() {
         let visibleFrame = CGRect(x: -1_200, y: 40, width: 1_200, height: 760)
         let contentView = VariableFittingView()
@@ -151,6 +196,7 @@ final class WindowFrameFitterTests: XCTestCase {
             content: EarlyReminderFallbackContent(
                 title: "A commitment with enough content to need its natural window size",
                 timing: "Aug 25, 2026 at 20:30 local time",
+                meetingDescription: nil,
                 snoozeOptionsMinutes: [5, 10],
                 verificationLabel: nil
             ),

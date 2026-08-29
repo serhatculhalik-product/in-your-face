@@ -1,0 +1,4 @@
+{
+  "error": "redirect_uri_mismatch",
+  "error_description": "The redirect URI is not registered for this client."
+}

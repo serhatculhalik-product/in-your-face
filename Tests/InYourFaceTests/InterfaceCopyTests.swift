@@ -19,6 +19,39 @@ final class InterfaceCopyTests: XCTestCase {
         )
     }
 
+    func testReconnectProgressDistinguishesSavedChoicesFromActiveProtection() {
+        let locale = Locale(identifier: "en_US")
+
+        XCTAssertEqual(
+            InterfaceCopy.googleAccountConnectionProgress(
+                connectedCount: 0,
+                totalCount: 2,
+                locale: locale
+            ),
+            "0 of 2 Google Accounts connected"
+        )
+        XCTAssertEqual(
+            InterfaceCopy.googleAccountConnectionProgress(
+                connectedCount: 1,
+                totalCount: 1,
+                locale: locale
+            ),
+            "1 of 1 Google Account connected"
+        )
+        XCTAssertEqual(
+            InterfaceCopy.monitoredCalendarProtectionProgress(
+                protectedCount: 0,
+                savedCount: 2,
+                locale: locale
+            ),
+            "0 of 2 Monitored Calendars currently protected"
+        )
+        XCTAssertEqual(
+            InterfaceCopy.savedMonitoredCalendarCount(1, locale: locale),
+            "1 Monitored Calendar saved"
+        )
+    }
+
     func testMinuteDurationsHandleZeroOneAndMany() {
         let locale = Locale(identifier: "en_US")
 
@@ -71,6 +104,10 @@ final class InterfaceCopyTests: XCTestCase {
         XCTAssertEqual(
             InterfaceCopy.disconnectionFailureAnnouncement("The account is still connected."),
             "Account couldn’t disconnect. The account is still connected. Try again."
+        )
+        XCTAssertEqual(
+            InterfaceCopy.removalFailureAnnouncement("The saved account is still available."),
+            "Account couldn’t be removed. The saved account is still available. Try again."
         )
     }
 
@@ -131,6 +168,21 @@ final class InterfaceCopyTests: XCTestCase {
                 .replacingOccurrences(of: "\u{2068}", with: "")
                 .replacingOccurrences(of: "\u{2069}", with: ""),
             "تقويم العمل · person@example.com"
+        )
+    }
+
+    func testRemovingASavedAccountNamesTheLocalConsequence() {
+        XCTAssertEqual(
+            InterfaceCopy.removeAccountTitle("person@example.com"),
+            "Remove person@example.com?"
+        )
+        XCTAssertEqual(
+            InterfaceCopy.removeAccountMessage(hasOtherAccounts: true),
+            "This saved account and its Monitored Calendar choices will be removed from Meeting Incoming. Other saved Google Accounts will remain in Meeting Incoming. Google Calendar events and RSVPs won’t change."
+        )
+        XCTAssertEqual(
+            InterfaceCopy.removeAccountMessage(hasOtherAccounts: false),
+            "This saved account and its Monitored Calendar choices will be removed from Meeting Incoming. Google Calendar events and RSVPs won’t change. You can add the account again later."
         )
     }
 }

@@ -11,6 +11,8 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
     }
 
     private let windowRegistry: WindowRegistry
+    private let scheduleAfterLayout: (@escaping @MainActor () -> Void) -> Void
+    private let fitWindow: @MainActor (NSWindow?, NSScreen?) -> Void
     private weak var primaryWindow: NSWindow?
     private var additionalWindows: [NSWindow] = []
     private var screenObserver: NSObjectProtocol?
@@ -18,6 +20,7 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
     private var surfaceDidClose: (@MainActor () -> Void)?
     private var allowsWindowClose = false
     private var isPresented = false
+    private var isInteractionSuspendedForTestTools = false
     private var content: AnyView?
     private var fittingWindowIDs: Set<ObjectIdentifier> = []
     private lazy var pendingPresentation = PendingWindowPresentation<PresentationRequest>(
@@ -27,8 +30,22 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
         self?.present(request, in: window)
     }
 
-    init(windowRegistry: WindowRegistry = .shared) {
+    init(
+        windowRegistry: WindowRegistry = .shared,
+        scheduleAfterLayout: @escaping (@escaping @MainActor () -> Void) -> Void = { action in
+            DispatchQueue.main.async { action() }
+        },
+        fitWindow: @escaping @MainActor (NSWindow?, NSScreen?) -> Void = { window, screen in
+            WindowFrameFitter.fit(
+                window,
+                on: screen,
+                minimumContentSize: NSSize(width: 360, height: 300)
+            )
+        }
+    ) {
         self.windowRegistry = windowRegistry
+        self.scheduleAfterLayout = scheduleAfterLayout
+        self.fitWindow = fitWindow
         super.init()
     }
 
@@ -59,10 +76,15 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
         isPresented = true
         createAdditionalWindows(for: primaryScreen)
         startScreenObservation()
-        startApplicationObservation()
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
-        window.orderFrontRegardless()
+        if isInteractionSuspendedForTestTools {
+            window.orderFront(nil)
+        } else {
+            startApplicationObservation()
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
+        }
+        refitPrimaryWindowAfterLayout(window)
     }
 
     func close() {
@@ -78,6 +100,25 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
         surfaceDidClose = nil
         isPresented = false
         allowsWindowClose = false
+    }
+
+    func suspendInteractionForTestTools() {
+        guard !isInteractionSuspendedForTestTools else { return }
+        isInteractionSuspendedForTestTools = true
+        stopApplicationObservation()
+        primaryWindow?.level = .normal
+        additionalWindows.forEach { $0.level = .normal }
+    }
+
+    func resumeInteractionAfterTestTools() {
+        guard isInteractionSuspendedForTestTools else { return }
+        isInteractionSuspendedForTestTools = false
+        guard isPresented else { return }
+        let alertLevel = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
+        primaryWindow?.level = alertLevel
+        additionalWindows.forEach { $0.level = alertLevel }
+        startApplicationObservation()
+        bringAlertToFront()
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
@@ -106,7 +147,9 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
 
     private func configure(_ window: NSWindow) {
         window.delegate = self
-        window.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
+        window.level = isInteractionSuspendedForTestTools
+            ? .normal
+            : NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
         window.hidesOnDeactivate = false
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         window.sharingType = .readOnly
@@ -148,7 +191,9 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
             panel.title = "Strong Alert"
             panel.titleVisibility = .hidden
             panel.titlebarAppearsTransparent = true
-            panel.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
+            panel.level = isInteractionSuspendedForTestTools
+                ? .normal
+                : NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
             panel.hidesOnDeactivate = false
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
             panel.sharingType = .readOnly
@@ -241,7 +286,9 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
 
     private func preserveAlertFocus() {
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.isPresented else { return }
+            guard let self,
+                  self.isPresented,
+                  !self.isInteractionSuspendedForTestTools else { return }
             let alertWindows = [self.primaryWindow].compactMap { $0 } + self.additionalWindows
             if self.isAlertOwnedWindow(NSApp.keyWindow) {
                 alertWindows.forEach { $0.orderFrontRegardless() }
@@ -278,15 +325,21 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
         guard fittingWindowIDs.insert(windowID).inserted else { return }
         defer { fittingWindowIDs.remove(windowID) }
 
-        WindowFrameFitter.fit(
-            window,
-            on: screen,
-            minimumContentSize: NSSize(width: 360, height: 300)
-        )
+        fitWindow(window, screen)
+    }
+
+    private func refitPrimaryWindowAfterLayout(_ window: NSWindow) {
+        scheduleAfterLayout { [weak self, weak window] in
+            guard let self,
+                  let window,
+                  self.isPresented,
+                  self.primaryWindow === window else { return }
+            self.fitAlertWindow(window, on: window.screen)
+        }
     }
 
     private func bringAlertToFront() {
-        guard isPresented else { return }
+        guard isPresented, !isInteractionSuspendedForTestTools else { return }
         let keyWindow = NSApp.keyWindow
         NSApp.activate(ignoringOtherApps: true)
         let alertWindows = [primaryWindow].compactMap { $0 } + additionalWindows

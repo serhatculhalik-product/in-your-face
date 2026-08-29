@@ -6,7 +6,7 @@ import XCTest
 final class WindowRegistryTests: XCTestCase {
     func testRegisterAndUnregisterUseSemanticWindowKind() {
         let registry = WindowRegistry()
-        let window = makeWindow(title: "Configuración de In Your Face")
+        let window = makeWindow(title: "Configuración de Meeting Incoming")
 
         registry.register(window, for: .onboarding)
 
@@ -28,6 +28,19 @@ final class WindowRegistryTests: XCTestCase {
         registry.unregister(oldWindow, for: .strongAlert)
 
         XCTAssertTrue(registry.window(for: .strongAlert) === replacementWindow)
+    }
+
+    func testRegistryRecognizesItsRootAndOwnedChildWindows() {
+        let registry = WindowRegistry()
+        let rootWindow = makeWindow(title: "Settings")
+        let childWindow = makeWindow(title: "Confirmation")
+        let unrelatedWindow = makeWindow(title: "Menu Bar Popover")
+        rootWindow.addChildWindow(childWindow, ordered: .above)
+        registry.register(rootWindow, for: .settings)
+
+        XCTAssertTrue(registry.manages(rootWindow))
+        XCTAssertTrue(registry.manages(childWindow))
+        XCTAssertFalse(registry.manages(unrelatedWindow))
     }
 
     func testLocalizedVisibleTitleDoesNotAffectPendingPresentation() {
@@ -108,7 +121,7 @@ final class WindowRegistryTests: XCTestCase {
     func testOnboardingCloseDoesNotActOnAWindowRegisteredLater() {
         let registry = WindowRegistry()
         let controller = OnboardingWindowController(windowRegistry: registry)
-        let futureWindow = makeWindow(title: "Configurer In Your Face")
+        let futureWindow = makeWindow(title: "Configurer Meeting Incoming")
 
         controller.bringToFront()
         controller.close()
@@ -121,7 +134,7 @@ final class WindowRegistryTests: XCTestCase {
     func testOnboardingCloseTargetsTheRegisteredWindowRegardlessOfTitle() {
         let registry = WindowRegistry()
         let controller = OnboardingWindowController(windowRegistry: registry)
-        let localizedWindow = makeWindow(title: "In Your Face einrichten")
+        let localizedWindow = makeWindow(title: "Meeting Incoming einrichten")
         localizedWindow.orderFrontRegardless()
         registry.register(localizedWindow, for: .onboarding)
 

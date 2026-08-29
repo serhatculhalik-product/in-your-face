@@ -4,41 +4,286 @@ import Carbon.HIToolbox
 import Combine
 import CommitmentProtection
 import CoreGraphics
-import ServiceManagement
 import SwiftUI
 
 @main
 @MainActor
 struct InYourFaceApp: App {
+    @NSApplicationDelegateAdaptor(InYourFaceApplicationDelegate.self)
+    private var applicationDelegate
+    @ObservedObject private var productionFlow: CommitmentProtectionFlow
+    private let productionBlockingPermissions: BlockingPermissionController
+    private let runtimeProfile: RuntimeProfile
+    private let runtimeStateStore: UserDefaults
+    private let resetRecoveryDisablesWindowRestoration: Bool
+    private let windowQuarantineObservation: AnyCancellable
     @StateObject private var flow: CommitmentProtectionFlow
     @StateObject private var availabilityMonitor: AppAvailabilityMonitor
     @StateObject private var onboardingState: OnboardingState
+    @StateObject private var blockingPermissions: BlockingPermissionController
+    @StateObject private var testToolsController: TestToolsController
+    @StateObject private var resetCoordinator: AppManagedDataResetCoordinator
+#if INTERNAL_BUILD
+    @StateObject private var internalResetCoordinator: AppManagedDataResetCoordinator
+#endif
 
     init() {
-        let protectionFlow = CommitmentProtectionFlow(
-            calendarConnector: GoogleCalendarConnector(
-                configuration: GoogleCalendarOAuthConfiguration(
-                    clientID: googleOAuthClientID(),
-                    clientSecret: googleOAuthClientSecret()
-                )
-            ),
-            launchAtLogin: MacLaunchAtLoginController()
+        let bootstrap = RuntimeBootstrap.load()
+        let oauthConfiguration = GoogleOAuthConfigurationResolver.resolve(
+            infoDictionary: Bundle.main.infoDictionary ?? [:],
+            environment: ProcessInfo.processInfo.environment
         )
-        let monitor = AppAvailabilityMonitor(flow: protectionFlow)
-        let onboarding = OnboardingState()
-        _flow = StateObject(wrappedValue: protectionFlow)
+        let hasHelperResetRecovery = bootstrap.appDataResetRecoveryAvailable ||
+            bootstrap.internalResetRecoveryAvailable ||
+            bootstrap.resetRecoveryRequiresManualRepair
+        let hasJournalResetRecovery = bootstrap.appDataResetJournalRequiresResume ||
+            bootstrap.internalResetJournalRequiresResume
+        let hasAnyResetRecovery = hasHelperResetRecovery || hasJournalResetRecovery
+        let productionComposition = RuntimeProtectionFactory.make(
+            profile: .production(
+                vaultApplicationIdentifier: bootstrap.namespace
+            ),
+            stateStore: .standard,
+            oauthConfiguration: oauthConfiguration,
+            startupMode: bootstrap.protectionStartupMode
+        )
+        let activeComposition: RuntimeProtectionComposition
+        if RuntimeProtectionCompositionPolicy.usesIsolatedTestComposition(
+            profile: bootstrap.profile,
+            hasResetRecovery: hasAnyResetRecovery
+        ) {
+            activeComposition = RuntimeProtectionFactory.make(
+                profile: bootstrap.profile,
+                stateStore: bootstrap.stateStore,
+                oauthConfiguration: oauthConfiguration,
+                startupMode: bootstrap.protectionStartupMode
+            )
+        } else {
+            activeComposition = productionComposition
+        }
+        let monitor = AppAvailabilityMonitor(flow: productionComposition.flow)
+        let onboarding = OnboardingState(
+            stateStore: bootstrap.stateStore,
+            allowsPreferenceMutation: {
+                !productionComposition.flow.isAppManagedDataResetInProgress
+            }
+        )
+        let testTools = TestToolsController(
+            profile: bootstrap.profile,
+            router: bootstrap.router,
+            productionFlow: productionComposition.flow,
+            recoveryReport: bootstrap.recoveryReport,
+            appDataResetRecoveryAvailable: bootstrap.appDataResetRecoveryAvailable,
+            internalResetRecoveryAvailable: bootstrap.internalResetRecoveryAvailable,
+            resetRecoveryRequiresManualRepair: bootstrap.resetRecoveryRequiresManualRepair,
+            isCleanupRecovery: bootstrap.isCleanupRecovery,
+            productionReady: false
+        )
+        let resetRelauncher = EmbeddedApplicationRelauncher(
+            helperExecutableName: "MeetingIncomingAppDataResetHelper"
+        )
+        let resetJournalURL = bootstrap.applicationSupportDirectory
+            .appendingPathComponent("\(bootstrap.namespace).reset-control", isDirectory: true)
+            .appendingPathComponent("app-managed-data-reset.v1.json", isDirectory: false)
+        let resetJournal = ResetJournal(fileURL: resetJournalURL)
+        let reset = AppManagedDataResetCoordinator(
+            journal: resetJournal,
+            flow: productionComposition.flow,
+            unregisterLaunchAtLogin: {
+                let launchAtLogin = SystemLaunchAtLoginController()
+                if launchAtLogin.isEnabled {
+                    try launchAtLogin.disable()
+                }
+            },
+            stageRelaunch: {
+                try resetRelauncher.stageRelaunch()
+                if bootstrap.profile.isTest {
+                    _ = try bootstrap.router.requestExitTest()
+                }
+            },
+            commitStagedRelaunch: {
+                resetRelauncher.commitStagedRelaunch()
+            },
+            cancelStagedRelaunch: {
+                resetRelauncher.cancelStagedRelaunch()
+            }
+        )
+        testTools.installEraseAppManagedDataAction {
+            try resetRelauncher.validate()
+            _ = try await reset.begin()
+        }
+
+#if INTERNAL_BUILD
+        let internalRelauncher = EmbeddedApplicationRelauncher(
+            helperExecutableName: "MeetingIncomingInternalResetHelper"
+        )
+        let internalResetJournalURL = bootstrap.applicationSupportDirectory
+            .appendingPathComponent("\(bootstrap.namespace).reset-control", isDirectory: true)
+            .appendingPathComponent("internal-full-first-run.v1.json", isDirectory: false)
+        let internalResetJournal = ResetJournal(fileURL: internalResetJournalURL)
+        let internalReset = AppManagedDataResetCoordinator(
+            journal: internalResetJournal,
+            flow: productionComposition.flow,
+            unregisterLaunchAtLogin: {
+                let launchAtLogin = SystemLaunchAtLoginController()
+                if launchAtLogin.isEnabled {
+                    try launchAtLogin.disable()
+                }
+            },
+            stageRelaunch: {
+                try internalRelauncher.stageRelaunch()
+                if bootstrap.profile.isTest {
+                    _ = try bootstrap.router.requestExitTest()
+                }
+            },
+            commitStagedRelaunch: {
+                internalRelauncher.commitStagedRelaunch()
+            },
+            cancelStagedRelaunch: {
+                internalRelauncher.cancelStagedRelaunch()
+            }
+        )
+        testTools.installFullFirstRunInternalAction {
+            try internalRelauncher.validate()
+            _ = try await internalReset.begin()
+        }
+        testTools.installResetBusyCheck {
+            reset.state.blocksRuntimeChanges || internalReset.state.blocksRuntimeChanges
+        }
+        testTools.installResetRetryableCheck {
+            reset.state.allowsExplicitRetry
+        }
+        testTools.installInternalResetRetryableCheck {
+            internalReset.state.allowsExplicitRetry
+        }
+#else
+        testTools.installResetBusyCheck {
+            reset.state.blocksRuntimeChanges
+        }
+        testTools.installResetRetryableCheck {
+            reset.state.allowsExplicitRetry
+        }
+#endif
+
+        _productionFlow = ObservedObject(wrappedValue: productionComposition.flow)
+        productionBlockingPermissions = productionComposition.blockingPermissions
+        runtimeProfile = bootstrap.profile
+        runtimeStateStore = bootstrap.stateStore
+        resetRecoveryDisablesWindowRestoration = hasAnyResetRecovery
+        RuntimeWindowQuarantine.update(
+            isActive: hasAnyResetRecovery ||
+                productionComposition.flow.isAppManagedDataResetInProgress
+        )
+        windowQuarantineObservation = productionComposition.flow
+            .$isAppManagedDataResetInProgress
+            .removeDuplicates()
+            .sink { isResetInProgress in
+                MainActor.assumeIsolated {
+                    RuntimeWindowQuarantine.update(
+                        isActive: hasAnyResetRecovery || isResetInProgress
+                    )
+                }
+            }
+        _flow = StateObject(wrappedValue: activeComposition.flow)
         _availabilityMonitor = StateObject(wrappedValue: monitor)
         _onboardingState = StateObject(wrappedValue: onboarding)
+        _blockingPermissions = StateObject(
+            wrappedValue: activeComposition.blockingPermissions
+        )
+        _testToolsController = StateObject(wrappedValue: testTools)
+        _resetCoordinator = StateObject(wrappedValue: reset)
+#if INTERNAL_BUILD
+        _internalResetCoordinator = StateObject(wrappedValue: internalReset)
+#endif
+        testTools.start()
         Task {
-            await protectionFlow.restoreSavedConnection()
+            if hasHelperResetRecovery {
+                testTools.productionDidFinishInitialRestore()
+                NotificationCenter.default.post(name: .showTestTools, object: nil)
+                return
+            }
+            if hasJournalResetRecovery {
+#if INTERNAL_BUILD
+                if bootstrap.internalResetJournalRequiresResume {
+                    _ = try? await internalReset.resume()
+                    switch internalReset.state {
+                    case .completed:
+                        break
+                    default:
+                        NotificationCenter.default.post(name: .showTestTools, object: nil)
+                    }
+                } else {
+                    _ = try? await reset.resume()
+                    switch reset.state {
+                    case .completed:
+                        break
+                    default:
+                        NotificationCenter.default.post(name: .showTestTools, object: nil)
+                    }
+                }
+#else
+                _ = try? await reset.resume()
+                switch reset.state {
+                case .completed:
+                    break
+                default:
+                    NotificationCenter.default.post(name: .showTestTools, object: nil)
+                }
+#endif
+                testTools.productionDidFinishInitialRestore()
+                return
+            }
+            await productionComposition.flow.restoreSavedConnection()
+            if activeComposition.flow !== productionComposition.flow {
+                await activeComposition.flow.restoreSavedConnection()
+            }
+#if INTERNAL_BUILD
+            do {
+                let internalResolution = try await internalResetJournal.resumeResolution()
+                switch internalResolution {
+                case .run, .reconcile, .retry, .readyToFinish:
+                    _ = try? await internalReset.resume()
+                case .noJournal, .finished:
+                    _ = try? await reset.resume()
+                }
+            } catch {
+                // Preserve a visible, locked recovery state instead of treating
+                // an unreadable internal journal as if it did not exist.
+                _ = try? await internalReset.resume()
+            }
+            switch internalReset.state {
+            case .blocked, .unavailable:
+                NotificationCenter.default.post(name: .showTestTools, object: nil)
+            default:
+                break
+            }
+#else
+            _ = try? await reset.resume()
+#endif
+            testTools.productionDidFinishInitialRestore()
             onboarding.resolveInitialLaunch(
-                hasConfiguredProtection: protectionFlow.accountCoverages.contains { coverage in
+                hasConfiguredProtection: activeComposition.flow.accountCoverages.contains { coverage in
                     !coverage.selectedCalendarIDs.isEmpty && coverage.isProtectionConfirmed
                 }
             )
-            protectionFlow.startMonitoring()
+            productionComposition.flow.startMonitoring()
+            if activeComposition.flow !== productionComposition.flow {
+                activeComposition.flow.startMonitoring()
+            }
             monitor.start()
         }
+    }
+
+    private var applicationWindowStatePolicy: RuntimeWindowStatePolicy {
+        .applicationWindow(
+            isTestProfile: runtimeProfile.isTest,
+            isResetQuarantined: isApplicationWindowResetQuarantined
+        )
+    }
+
+    private var isApplicationWindowResetQuarantined: Bool {
+        resetRecoveryDisablesWindowRestoration ||
+            productionFlow.isAppManagedDataResetInProgress
     }
 
     var body: some Scene {
@@ -46,18 +291,29 @@ struct InYourFaceApp: App {
             MenuBarContent()
                 .environmentObject(flow)
                 .environmentObject(onboardingState)
+                .environmentObject(testToolsController)
+                .environmentObject(resetCoordinator)
+                .defaultAppStorage(runtimeStateStore)
+                .runtimeModeSurface(testToolsController)
         } label: {
-            MenuBarLabel()
+            MenuBarLabel(productionFlow: productionFlow)
                 .environmentObject(flow)
                 .environmentObject(onboardingState)
+                .environmentObject(testToolsController)
+                .environmentObject(resetCoordinator)
         }
         .menuBarExtraStyle(.window)
 
-        Window("Set Up In Your Face", id: "onboarding") {
+        Window(AppIdentity.onboardingWindowTitle, id: "onboarding") {
             OnboardingView()
                 .environmentObject(flow)
                 .environmentObject(onboardingState)
+                .environmentObject(blockingPermissions)
+                .environmentObject(testToolsController)
                 .registerWindow(.onboarding)
+                .defaultAppStorage(runtimeStateStore)
+                .runtimeWindowState(applicationWindowStatePolicy)
+                .runtimeModeSurface(testToolsController)
         }
         .defaultSize(width: 616, height: 640)
         .windowResizability(.contentSize)
@@ -66,29 +322,53 @@ struct InYourFaceApp: App {
             SettingsRootView()
                 .environmentObject(flow)
                 .environmentObject(onboardingState)
+                .environmentObject(blockingPermissions)
+                .environmentObject(testToolsController)
+                .registerWindow(.settings)
+                .defaultAppStorage(runtimeStateStore)
+                .runtimeWindowState(applicationWindowStatePolicy)
+                .runtimeModeSurface(testToolsController)
         }
-
-        Window("Test Alert", id: "test-alert") {
-            TestAlertView()
-                .environmentObject(flow)
-                .environmentObject(onboardingState)
-        }
-        .windowStyle(.hiddenTitleBar)
-        .windowResizability(.contentSize)
 
         Window("Early Reminder", id: "early-reminder") {
-            EarlyReminderView()
-                .environmentObject(flow)
+            PriorityEarlyReminderView(
+                activeFlow: flow,
+                productionFlow: productionFlow,
+                blockingPermissions: blockingPermissions,
+                productionBlockingPermissions: productionBlockingPermissions,
+                testToolsController: testToolsController
+            )
                 .registerWindow(.earlyReminder)
+                .runtimeWindowState(applicationWindowStatePolicy)
         }
         .windowResizability(.contentSize)
 
         Window("Strong Alert", id: "strong-alert") {
-            StrongAlertWindowView()
-                .environmentObject(flow)
+            PriorityStrongAlertView(
+                activeFlow: flow,
+                productionFlow: productionFlow,
+                testToolsController: testToolsController
+            )
                 .registerWindow(.strongAlert)
+                .runtimeWindowState(applicationWindowStatePolicy)
         }
         .windowStyle(.hiddenTitleBar)
+        .windowResizability(.contentSize)
+
+        Window("Test Tools", id: "test-tools") {
+            Group {
+#if INTERNAL_BUILD
+                TestToolsView(internalResetCoordinator: internalResetCoordinator)
+#else
+                TestToolsView()
+#endif
+            }
+                .environmentObject(testToolsController)
+                .environmentObject(resetCoordinator)
+                .registerWindow(.testTools)
+                .runtimeWindowState(.testTools)
+        }
+        .defaultSize(width: 560, height: 560)
         .windowResizability(.contentSize)
     }
 }
@@ -145,34 +425,28 @@ private final class AppAvailabilityMonitor: NSObject, ObservableObject {
     }
 }
 
-private func googleOAuthClientID() -> String {
-    if let bundledClientID = Bundle.main.object(forInfoDictionaryKey: "GoogleOAuthClientID") as? String,
-       !bundledClientID.isEmpty {
-        return bundledClientID
-    }
-    return ProcessInfo.processInfo.environment["GOOGLE_OAUTH_CLIENT_ID"] ?? ""
-}
-
-private func googleOAuthClientSecret() -> String? {
-    if let bundledClientSecret = Bundle.main.object(forInfoDictionaryKey: "GoogleOAuthClientSecret") as? String,
-       !bundledClientSecret.isEmpty {
-        return bundledClientSecret
-    }
-    guard let environmentClientSecret = ProcessInfo.processInfo.environment["GOOGLE_OAUTH_CLIENT_SECRET"],
-          !environmentClientSecret.isEmpty else {
-        return nil
-    }
-    return environmentClientSecret
-}
-
-@MainActor
-private final class MacLaunchAtLoginController: LaunchAtLoginControlling {
-    var isEnabled: Bool {
-        SMAppService.mainApp.status == .enabled
+enum GoogleOAuthConfigurationResolver {
+    static func resolve(
+        infoDictionary: [String: Any],
+        environment: [String: String]
+    ) -> GoogleCalendarOAuthConfiguration {
+        let clientID = nonBlankString(infoDictionary["GoogleOAuthClientID"])
+            ?? nonBlankString(environment["GOOGLE_OAUTH_CLIENT_ID"])
+            ?? ""
+        let clientSecret = nonBlankString(infoDictionary["GoogleOAuthClientSecret"])
+            ?? nonBlankString(environment["GOOGLE_OAUTH_CLIENT_SECRET"])
+        return GoogleCalendarOAuthConfiguration(
+            clientID: clientID,
+            clientSecret: clientSecret
+        )
     }
 
-    func enable() throws {
-        try SMAppService.mainApp.register()
+    private static func nonBlankString(_ value: Any?) -> String? {
+        guard let string = value as? String,
+              !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return string
     }
 }
 
@@ -192,6 +466,90 @@ private func openEarlyReminderIfNeeded(
             return
         }
         openWindow()
+    }
+}
+
+private struct PriorityEarlyReminderView: View {
+    @ObservedObject var activeFlow: CommitmentProtectionFlow
+    @ObservedObject var productionFlow: CommitmentProtectionFlow
+    @ObservedObject var blockingPermissions: BlockingPermissionController
+    @ObservedObject var productionBlockingPermissions: BlockingPermissionController
+    @ObservedObject var testToolsController: TestToolsController
+
+    private var presentedFlow: CommitmentProtectionFlow {
+        if productionHasPriorityAlert {
+            return productionFlow
+        }
+        return activeFlow
+    }
+
+    private var productionHasPriorityAlert: Bool {
+        productionFlow.earlyReminderCommitment != nil ||
+            productionFlow.isStrongAlertPresented ||
+            productionFlow.strongAlertCommitment != nil
+    }
+
+    private var isRealProtection: Bool {
+        activeFlow !== productionFlow && productionFlow.earlyReminderCommitment != nil
+    }
+
+    private var runtimeModeBadgeTitle: String? {
+        guard testToolsController.isTestMode else { return nil }
+        return isRealProtection ? "REAL PROTECTION" : "TEST MODE"
+    }
+
+    var body: some View {
+        EarlyReminderView(runtimeModeBadgeTitle: runtimeModeBadgeTitle)
+            .id(ObjectIdentifier(presentedFlow))
+            .environmentObject(presentedFlow)
+            .environmentObject(
+                isRealProtection
+                    ? productionBlockingPermissions
+                    : blockingPermissions
+            )
+            .runtimeModeSurface(
+                testToolsController,
+                isRealProtection: isRealProtection
+            )
+    }
+}
+
+private struct PriorityStrongAlertView: View {
+    @ObservedObject var activeFlow: CommitmentProtectionFlow
+    @ObservedObject var productionFlow: CommitmentProtectionFlow
+    @ObservedObject var testToolsController: TestToolsController
+
+    private var presentedFlow: CommitmentProtectionFlow {
+        if productionHasPriorityAlert {
+            return productionFlow
+        }
+        return activeFlow
+    }
+
+    private var productionHasPriorityAlert: Bool {
+        productionFlow.earlyReminderCommitment != nil ||
+            productionFlow.isStrongAlertPresented ||
+            productionFlow.strongAlertCommitment != nil
+    }
+
+    private var isRealProtection: Bool {
+        activeFlow !== productionFlow &&
+            (productionFlow.isStrongAlertPresented || productionFlow.strongAlertCommitment != nil)
+    }
+
+    private var runtimeModeBadgeTitle: String? {
+        guard testToolsController.isTestMode else { return nil }
+        return isRealProtection ? "REAL PROTECTION" : "TEST MODE"
+    }
+
+    var body: some View {
+        StrongAlertWindowView(runtimeModeBadgeTitle: runtimeModeBadgeTitle)
+            .id(ObjectIdentifier(presentedFlow))
+            .environmentObject(presentedFlow)
+            .runtimeModeSurface(
+                testToolsController,
+                isRealProtection: isRealProtection
+            )
     }
 }
 
@@ -228,7 +586,7 @@ private extension CoverageHealth {
         case .stale:
             return "Stale Coverage"
         case .reconnectRequired:
-            return "Calendar Access Required"
+            return "Reconnect Required"
         case .unavailable:
             return "Coverage Unavailable"
         }
@@ -537,39 +895,10 @@ struct ProtectionActivityCard: View {
     }
 }
 
-private struct TestAlertView: View {
-    @EnvironmentObject private var flow: CommitmentProtectionFlow
-    @EnvironmentObject private var onboardingState: OnboardingState
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        StrongAlertView(
-            title: "Test Alert",
-            timing: "Ready now",
-            detail: "This preview shows the Strong Alert experience. It won’t change any calendar event or RSVP.",
-            primaryActionHint: "Finish this Test Alert without changing a calendar event or RSVP.",
-            primaryActionTitle: "Finish Test",
-            primaryAction: {
-                flow.dismissTestAlert()
-                onboardingState.markTestAlertHandled()
-                dismiss()
-            }
-        )
-        .accessibilityAddTraits(.isModal)
-        .transaction { transaction in
-            if reduceMotion {
-                transaction.animation = nil
-            }
-        }
-        .onDisappear {
-            flow.dismissTestAlert()
-        }
-    }
-}
-
 private struct EarlyReminderView: View {
+    let runtimeModeBadgeTitle: String?
     @EnvironmentObject private var flow: CommitmentProtectionFlow
+    @EnvironmentObject private var blockingPermissions: BlockingPermissionController
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openWindow) private var openWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -578,8 +907,9 @@ private struct EarlyReminderView: View {
     @State private var pendingStopRemindersCommitment: CalendarEvent?
 
     var body: some View {
-        VStack(spacing: 18) {
-            if let commitment = flow.earlyReminderCommitment {
+        ScrollView(.vertical, showsIndicators: true) {
+            VStack(spacing: 18) {
+                if let commitment = flow.earlyReminderCommitment {
                 Label("Early Reminder", systemImage: "bell.fill")
                     .font(.headline)
                 if flow.isEarlyReminderUnverified {
@@ -601,12 +931,17 @@ private struct EarlyReminderView: View {
                             .foregroundStyle(.secondary)
                         VStack(alignment: .leading, spacing: 8) {
                             ForEach(conflict.commitments, id: \.occurrenceID) { conflictCommitment in
-                                Button("Make primary: \(conflictCommitment.title)") {
-                                    if flow.selectPrimary(for: conflictCommitment) {
-                                        announceActionResult(flow.lastActionMessage)
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Button("Make primary: \(conflictCommitment.title)") {
+                                        if flow.selectPrimary(for: conflictCommitment) {
+                                            announceActionResult(flow.lastActionMessage)
+                                        }
+                                    }
+                                    .buttonStyle(.bordered)
+                                    if let meetingDescription = conflictCommitment.meetingDescription {
+                                        MeetingDescriptionView(text: meetingDescription)
                                     }
                                 }
-                                .buttonStyle(.bordered)
                             }
                         }
                     }
@@ -670,16 +1005,23 @@ private struct EarlyReminderView: View {
                         earlyReminderActions(for: commitment)
                     }
                 }
-            } else {
-                Color.clear
-                    .frame(width: 1, height: 1)
+                if let meetingDescription = commitment.meetingDescription {
+                    MeetingDescriptionView(text: meetingDescription)
+                }
+                } else {
+                    Color.clear
+                        .frame(width: 1, height: 1)
+                }
             }
+            .padding(flow.earlyReminderCommitment == nil ? 0 : 28)
         }
-        .padding(flow.earlyReminderCommitment == nil ? 0 : 28)
         .frame(
-            idealWidth: flow.earlyReminderCommitment == nil ? 1 : 500,
-            maxWidth: flow.earlyReminderCommitment == nil ? 1 : 560,
-            maxHeight: flow.earlyReminderCommitment == nil ? 1 : 680
+            minWidth: 360,
+            idealWidth: 500,
+            maxWidth: 560,
+            minHeight: 300,
+            idealHeight: 520,
+            maxHeight: 680
         )
         .accessibilityAddTraits(.isModal)
         .transaction { transaction in
@@ -688,8 +1030,18 @@ private struct EarlyReminderView: View {
             }
         }
         .onAppear {
-            flow.setBlockingAvailability(false)
-            windowController.setBlockingModeEnabled(flow.isBlockingModeEnabled)
+            windowController.setRuntimeModeBadgeTitle(runtimeModeBadgeTitle)
+            if blockingPermissions.isSimulated {
+                flow.setBlockingAvailability(
+                    blockingPermissions.hasAccessibilityPermission &&
+                        blockingPermissions.hasInputMonitoringPermission
+                )
+            } else {
+                flow.setBlockingAvailability(false)
+            }
+            windowController.setBlockingModeEnabled(
+                flow.isBlockingModeEnabled && !blockingPermissions.isSimulated
+            )
             guard let commitment = flow.earlyReminderCommitment else {
                 flow.setBlockingAvailability(true)
                 EarlyReminderWindowController.shared.prepareForProgrammaticClose()
@@ -701,6 +1053,7 @@ private struct EarlyReminderView: View {
                 content: EarlyReminderFallbackContent(
                     title: commitment.title,
                     timing: flow.localStartTimeText(for: commitment),
+                    meetingDescription: commitment.meetingDescription,
                     snoozeOptionsMinutes: flow.snoozeOptionsMinutes,
                     verificationLabel: flow.isEarlyReminderUnverified ? "Unverified Reminder" : nil
                 ),
@@ -743,6 +1096,7 @@ private struct EarlyReminderView: View {
                     content: EarlyReminderFallbackContent(
                         title: commitment.title,
                         timing: flow.localStartTimeText(for: commitment),
+                        meetingDescription: commitment.meetingDescription,
                         snoozeOptionsMinutes: flow.snoozeOptionsMinutes,
                         verificationLabel: flow.isEarlyReminderUnverified ? "Unverified Reminder" : nil
                     ),
@@ -785,7 +1139,9 @@ private struct EarlyReminderView: View {
             }
         }
         .onChange(of: windowController.isGlobalInteractionBarrierAvailable) { _, isAvailable in
-            flow.setBlockingAvailability(isAvailable)
+            if !blockingPermissions.isSimulated {
+                flow.setBlockingAvailability(isAvailable)
+            }
         }
         .stopRemindersConfirmation(
             isPresented: $isStopRemindersConfirmationPresented,
@@ -840,6 +1196,7 @@ private struct EarlyReminderView: View {
 }
 
 private struct StrongAlertWindowView: View {
+    let runtimeModeBadgeTitle: String?
     @EnvironmentObject private var flow: CommitmentProtectionFlow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -871,7 +1228,19 @@ private struct StrongAlertWindowView: View {
             return
         }
         StrongAlertWindowController.shared.present(
-            content: AnyView(StrongAlertContentView(flow: flow)),
+            content: AnyView(
+                StrongAlertContentView(flow: flow)
+                    .safeAreaInset(edge: .top, spacing: 0) {
+                        if let runtimeModeBadgeTitle {
+                            HStack {
+                                Spacer()
+                                TestModeBadge(title: runtimeModeBadgeTitle)
+                            }
+                            .padding(10)
+                            .allowsHitTesting(false)
+                        }
+                    }
+            ),
             surfaceDidClose: {
                 flow.closeStrongAlertSurface()
                 announceActionResult(flow.lastActionMessage)
@@ -906,6 +1275,7 @@ private struct StrongAlertContentView: View {
                         title: commitment.title,
                         timing: flow.strongAlertTimingText(for: commitment, at: context.date),
                         detail: flow.strongAlertContextText(for: commitment),
+                        meetingDescription: commitment.meetingDescription,
                         verificationLabel: flow.isStrongAlertUnverified ? "Unverified Reminder" : nil,
                         statusMessage: meetingLinkFailure(for: commitment),
                         repeatConsequence: InterfaceCopy.strongAlertRepeatConsequence(
@@ -941,15 +1311,21 @@ private struct StrongAlertContentView: View {
                         secondaryAction: {
                             requestStopReminders(for: commitment)
                         },
+                        handledActionTitle: "I joined another way",
+                        handledAction: {
+                            guard flow.handleCommitment(for: commitment) else { return }
+                            announceActionResult(flow.lastActionMessage)
+                            finishStrongAlertAction(flow)
+                        },
                         tertiaryActionTitle: "Got it",
                         tertiaryAction: {
-                            flow.closeStrongAlertSurface()
-                            announceActionResult(flow.lastActionMessage)
+                            closeStrongAlertAndYieldFocus(flow)
                         },
                         pauseAction: { duration in
                             let didPause = flow.pause(for: duration)
                             if didPause {
                                 announceActionResult(flow.lastActionMessage)
+                                finishStrongAlertAction(flow)
                             }
                             return didPause
                         }
@@ -975,6 +1351,7 @@ private struct StrongAlertContentView: View {
                     return
                 }
                 announceActionResult(flow.lastActionMessage)
+                finishStrongAlertAction(flow)
                 self.pendingStopRemindersCommitment = nil
             }
         )
@@ -1083,6 +1460,7 @@ private struct StrongAlertConflictContentView: View {
                             Text(commitment.title)
                                 .font(.headline)
                                 .fixedSize(horizontal: false, vertical: true)
+                                .accessibilityAddTraits(.isHeader)
                             Text(flow.strongAlertTimingText(for: commitment, at: date))
                                 .font(.subheadline.weight(.semibold))
                                 .fixedSize(horizontal: false, vertical: true)
@@ -1098,6 +1476,9 @@ private struct StrongAlertConflictContentView: View {
                                     conflictActions(for: commitment)
                                 }
                             }
+                            if let meetingDescription = commitment.meetingDescription {
+                                MeetingDescriptionView(text: meetingDescription)
+                            }
                             if let meetingLinkError = meetingLinkFailure(for: commitment) {
                                 Label(meetingLinkError, systemImage: "exclamationmark.triangle")
                                     .font(.caption)
@@ -1112,8 +1493,7 @@ private struct StrongAlertConflictContentView: View {
                 }
 
             Button("Got it") {
-                flow.closeStrongAlertSurface()
-                announceActionResult(flow.lastActionMessage)
+                closeStrongAlertAndYieldFocus(flow)
             }
             .buttonStyle(.bordered)
             .accessibilityHint("Close this Strong Alert. Protection remains active and it will repeat after the configured interval.")
@@ -1162,16 +1542,37 @@ private struct StrongAlertConflictContentView: View {
     private func conflictActions(for commitment: CalendarEvent) -> some View {
         let links = flow.strongAlertMeetingLinkOptions(for: commitment)
         let choices = InterfaceCopy.meetingLinkChoices(links)
+        let conflictPosition = conflict.commitments.firstIndex(where: {
+            $0.occurrenceID == commitment.occurrenceID
+        }).map { "option \($0 + 1) of \(conflict.commitments.count)" } ?? "conflict option"
+        let actionContext = [
+            commitment.title,
+            flow.localStartTimeText(for: commitment),
+            flow.strongAlertContextText(for: commitment),
+            conflictPosition,
+        ].joined(separator: ", ")
+
+        Button("Make primary") {
+            if flow.selectPrimary(for: commitment) {
+                announceActionResult(flow.lastActionMessage)
+            }
+        }
+        .buttonStyle(.borderedProminent)
+        .accessibilityLabel("Make \(actionContext) primary")
+        .accessibilityHint("Use this commitment as the primary choice for this conflict.")
+
         if links.isEmpty {
             Button("Stop reminders") {
                 requestStopReminders(commitment)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.bordered)
+            .accessibilityLabel("Stop reminders for \(actionContext)")
         } else if let primaryLink = flow.strongAlertPrimaryMeetingLink(for: commitment) {
             Button("Join") {
                 openMeetingLink(primaryLink, for: commitment)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.bordered)
+            .accessibilityLabel("Join \(actionContext)")
         } else {
             Menu("Choose link") {
                 ForEach(choices, id: \.url.absoluteString) { choice in
@@ -1180,7 +1581,8 @@ private struct StrongAlertConflictContentView: View {
                     }
                 }
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.bordered)
+            .accessibilityLabel("Choose a meeting link for \(actionContext)")
         }
 
         if !links.isEmpty {
@@ -1188,15 +1590,17 @@ private struct StrongAlertConflictContentView: View {
                 requestStopReminders(commitment)
             }
             .buttonStyle(.bordered)
+            .accessibilityLabel("Stop reminders for \(actionContext)")
         }
 
-        Button("Make primary") {
-            if flow.selectPrimary(for: commitment) {
-                announceActionResult(flow.lastActionMessage)
-            }
+        Button("I joined another way") {
+            guard flow.handleCommitment(for: commitment) else { return }
+            announceActionResult(flow.lastActionMessage)
+            finishStrongAlertAction(flow)
         }
         .buttonStyle(.bordered)
-        .accessibilityHint("Use this commitment as the primary choice for this conflict.")
+        .accessibilityLabel("I joined \(actionContext) another way")
+        .accessibilityHint("Mark this commitment as handled because you joined it outside Meeting Incoming.")
     }
 
     private var pauseAction: ((PauseDuration) -> Bool)? {
@@ -1204,6 +1608,7 @@ private struct StrongAlertConflictContentView: View {
             let didPause = flow.pause(for: duration)
             if didPause {
                 announceActionResult(flow.lastActionMessage)
+                finishStrongAlertAction(flow)
             }
             return didPause
         }
@@ -1226,6 +1631,7 @@ private struct StrongAlertConflictContentView: View {
 struct EarlyReminderFallbackContent {
     let title: String
     let timing: String
+    let meetingDescription: String?
     let snoozeOptionsMinutes: [Int]
     let verificationLabel: String?
 }
@@ -1239,10 +1645,11 @@ private struct EarlyReminderFallbackView: View {
     @State private var isStopRemindersConfirmationPresented = false
 
     var body: some View {
-        VStack(spacing: 16) {
-            Label("Early Reminder", systemImage: "bell.fill")
-                .font(.headline)
-            if let verificationLabel = content.verificationLabel {
+        ScrollView(.vertical, showsIndicators: true) {
+            VStack(spacing: 16) {
+                Label("Early Reminder", systemImage: "bell.fill")
+                    .font(.headline)
+                if let verificationLabel = content.verificationLabel {
                 Label(verificationLabel, systemImage: "questionmark.circle")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.orange)
@@ -1275,17 +1682,28 @@ private struct EarlyReminderFallbackView: View {
             Text("Snooze delays both reminders for this occurrence and can continue past its start time.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 10) {
-                    fallbackActions
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 10) {
+                        fallbackActions
+                    }
+                    VStack(spacing: 8) {
+                        fallbackActions
+                    }
                 }
-                VStack(spacing: 8) {
-                    fallbackActions
+                if let meetingDescription = content.meetingDescription {
+                    MeetingDescriptionView(text: meetingDescription)
                 }
             }
+            .padding(28)
         }
-        .padding(28)
-        .frame(idealWidth: 500, maxWidth: 560, maxHeight: 680)
+        .frame(
+            minWidth: 360,
+            idealWidth: 500,
+            maxWidth: 560,
+            minHeight: 300,
+            idealHeight: 520,
+            maxHeight: 680
+        )
         .accessibilityAddTraits(.isModal)
         .stopRemindersConfirmation(
             isPresented: $isStopRemindersConfirmationPresented,
@@ -1415,6 +1833,12 @@ private final class EarlyReminderInteractionGate: @unchecked Sendable {
 
     @MainActor
     func allows(_ event: NSEvent) -> Bool {
+        if event.type == .keyDown,
+           event.keyCode == UInt16(kVK_ANSI_R),
+           event.modifierFlags.intersection([.command, .control, .shift, .option]) ==
+            [.command, .control, .shift] {
+            return true
+        }
         lock.lock()
         let reminderWindow = self.reminderWindow
         lock.unlock()
@@ -1475,14 +1899,20 @@ private final class EarlyReminderInteractionGate: @unchecked Sendable {
             let systemModifierFlags: CGEventFlags = [
                 .maskCommand,
                 .maskAlternate,
-                .maskControl
+                .maskControl,
+                .maskShift
             ]
             let modifiers = event.flags.intersection(systemModifierFlags)
             let hasVoiceOverModifiers = modifiers.contains(.maskControl) && modifiers.contains(.maskAlternate)
             let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
             let isAccessibilityShortcut = keyCode == Int64(kVK_F5) &&
                 modifiers.contains(.maskCommand)
-            if hasVoiceOverModifiers || isAccessibilityShortcut {
+            let isTestToolsShortcut = keyCode == Int64(kVK_ANSI_R) &&
+                modifiers.contains(.maskCommand) &&
+                modifiers.contains(.maskControl) &&
+                modifiers.contains(.maskShift) &&
+                !modifiers.contains(.maskAlternate)
+            if hasVoiceOverModifiers || isAccessibilityShortcut || isTestToolsShortcut {
                 return true
             }
             guard isApplicationActive else { return false }
@@ -1528,11 +1958,13 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
     private var dismissCommitment: (() -> Void)?
     private var canSnoozeEarlyReminder = false
     private var fallbackContent: EarlyReminderFallbackContent?
+    private var runtimeModeBadgeTitle: String?
     private var fallbackPanel: NSPanel?
     private var surfaceRecoveryAttempts = 0
     private var allowsWindowClose = false
     private var isPresented = false
     private var isInteractionBarrierActive = false
+    private var isInteractionSuspendedForTestTools = false
     private var fittingWindowIDs: Set<ObjectIdentifier> = []
     private var blockingMode = EarlyReminderBlockingMode()
     @Published private(set) var isGlobalInteractionBarrierAvailable = false
@@ -1610,7 +2042,9 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
         stopSurfaceRecoveryMonitoring()
         window = registeredWindow
         registeredWindow.delegate = self
-        registeredWindow.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
+        registeredWindow.level = isInteractionSuspendedForTestTools
+            ? .normal
+            : NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
         registeredWindow.hidesOnDeactivate = false
         registeredWindow.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         // Keep the reminder visible through full-display, window, and app sharing.
@@ -1626,16 +2060,20 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
         isPresented = true
         startScreenObservation()
         let barrierAvailable: Bool
-        if blockingMode.shouldAttemptBlocking {
+        if blockingMode.shouldAttemptBlocking && !isInteractionSuspendedForTestTools {
             startBarrierRetryMonitoring()
             barrierAvailable = attemptBlockingMode()
         } else {
             barrierAvailable = false
         }
-        NSApp.activate(ignoringOtherApps: true)
-        registeredWindow.makeKeyAndOrderFront(nil)
-        if !barrierAvailable {
-            registeredWindow.orderFrontRegardless()
+        if isInteractionSuspendedForTestTools {
+            registeredWindow.orderFront(nil)
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+            registeredWindow.makeKeyAndOrderFront(nil)
+            if !barrierAvailable {
+                registeredWindow.orderFrontRegardless()
+            }
         }
         refitRegisteredWindowAfterLayout(registeredWindow)
     }
@@ -1660,6 +2098,7 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
         fallbackPanel = nil
         self.window = nil
         self.fallbackContent = nil
+        self.runtimeModeBadgeTitle = nil
         self.clearEarlyReminder = nil
         self.snoozeEarlyReminder = nil
         self.dismissCommitment = nil
@@ -1670,6 +2109,30 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
     func prepareForProgrammaticClose() {
         allowsWindowClose = true
         window?.delegate = nil
+    }
+
+    func setRuntimeModeBadgeTitle(_ title: String?) {
+        runtimeModeBadgeTitle = title
+    }
+
+    func suspendInteractionForTestTools() {
+        guard !isInteractionSuspendedForTestTools else { return }
+        isInteractionSuspendedForTestTools = true
+        stopBarrierRetryMonitoring()
+        deactivateInteractionBarrier()
+        window?.level = .normal
+    }
+
+    func resumeInteractionAfterTestTools() {
+        guard isInteractionSuspendedForTestTools else { return }
+        isInteractionSuspendedForTestTools = false
+        guard isPresented else { return }
+        window?.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
+        if blockingMode.shouldAttemptBlocking {
+            startBarrierRetryMonitoring()
+            retryInteractionBarrierIfNeeded()
+        }
+        bringReminderToFront()
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
@@ -1776,6 +2239,16 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
                 snooze: snoozeEarlyReminder,
                 dismiss: dismissCommitment
             )
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if let runtimeModeBadgeTitle {
+                    HStack {
+                        Spacer()
+                        TestModeBadge(title: runtimeModeBadgeTitle)
+                    }
+                    .padding(10)
+                    .allowsHitTesting(false)
+                }
+            }
         )
         hostingView.sizingOptions = [.intrinsicContentSize]
         let panel = NSPanel(
@@ -1785,7 +2258,9 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
             defer: false
         )
         panel.title = "Early Reminder"
-        panel.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
+        panel.level = isInteractionSuspendedForTestTools
+            ? .normal
+            : NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.sharingType = .readOnly
@@ -1802,16 +2277,20 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
         isPresented = true
         startScreenObservation()
         let barrierAvailable: Bool
-        if blockingMode.shouldAttemptBlocking {
+        if blockingMode.shouldAttemptBlocking && !isInteractionSuspendedForTestTools {
             startBarrierRetryMonitoring()
             barrierAvailable = attemptBlockingMode()
         } else {
             barrierAvailable = false
         }
-        NSApp.activate(ignoringOtherApps: true)
-        panel.makeKeyAndOrderFront(nil)
-        if !barrierAvailable {
-            panel.orderFrontRegardless()
+        if isInteractionSuspendedForTestTools {
+            panel.orderFront(nil)
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+            panel.makeKeyAndOrderFront(nil)
+            if !barrierAvailable {
+                panel.orderFrontRegardless()
+            }
         }
     }
 
@@ -1829,8 +2308,16 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
         NSWorkspace.shared.open(settingsURL)
     }
 
+    var hasAccessibilityPermission: Bool {
+        AXIsProcessTrusted()
+    }
+
+    var hasInputMonitoringPermission: Bool {
+        CGPreflightListenEventAccess()
+    }
+
     func setBlockingModeEnabled(_ isEnabled: Bool) {
-        if isEnabled {
+        if isEnabled && !isInteractionSuspendedForTestTools {
             blockingMode.enableBlocking()
         } else {
             blockingMode.disableBlocking()
@@ -1970,6 +2457,16 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
                 snooze: snoozeEarlyReminder,
                 dismiss: dismissCommitment
             )
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if let runtimeModeBadgeTitle {
+                    HStack {
+                        Spacer()
+                        TestModeBadge(title: runtimeModeBadgeTitle)
+                    }
+                    .padding(10)
+                    .allowsHitTesting(false)
+                }
+            }
         )
         hostingView.sizingOptions = [.intrinsicContentSize]
         panel.contentView = hostingView
@@ -2052,7 +2549,9 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
     }
 
     private func retryInteractionBarrierIfNeeded() {
-        guard isPresented, blockingMode.shouldAttemptBlocking else { return }
+        guard isPresented,
+              blockingMode.shouldAttemptBlocking,
+              !isInteractionSuspendedForTestTools else { return }
         if isInteractionBarrierActive {
             if interactionGate.userDisabledEventTap() {
                 stopBarrierRetryMonitoring()
@@ -2072,7 +2571,8 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
 
     @discardableResult
     private func attemptBlockingMode() -> Bool {
-        guard blockingMode.shouldAttemptBlocking else { return false }
+        guard blockingMode.shouldAttemptBlocking,
+              !isInteractionSuspendedForTestTools else { return false }
         guard activateInteractionBarrier() else {
             return false
         }
@@ -2158,7 +2658,9 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
 
     private func preserveReminderFocus() {
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.isPresented else { return }
+            guard let self,
+                  self.isPresented,
+                  !self.isInteractionSuspendedForTestTools else { return }
             if windowIsOwned(NSApp.keyWindow, by: self.window) {
                 self.window?.orderFrontRegardless()
             } else {
@@ -2168,7 +2670,7 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
     }
 
     private func bringReminderToFront() {
-        guard isPresented else { return }
+        guard isPresented, !isInteractionSuspendedForTestTools else { return }
         let keyWindow = NSApp.keyWindow
         NSApp.activate(ignoringOtherApps: true)
         window?.orderFrontRegardless()
@@ -2208,11 +2710,40 @@ private extension View {
     }
 }
 
-private struct StrongAlertContentHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 280
+private struct MeetingDescriptionView: View {
+    let text: String
+    @State private var isExpanded = false
 
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
+    private var canExpand: Bool {
+        text.count > 180 || text.split(separator: "\n").count > 3
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("Meeting description", systemImage: "text.alignleft")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(text)
+                .font(.callout)
+                .lineLimit(isExpanded || !canExpand ? nil : 3)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            if canExpand {
+                Button(isExpanded ? "Show less" : "Show full description") {
+                    isExpanded.toggle()
+                }
+                .buttonStyle(.link)
+                .controlSize(.small)
+                .accessibilityLabel(
+                    isExpanded
+                        ? "Collapse meeting description"
+                        : "Expand meeting description"
+                )
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .multilineTextAlignment(.leading)
+        .accessibilityElement(children: .contain)
     }
 }
 
@@ -2220,6 +2751,7 @@ private struct StrongAlertView: View {
     let title: String
     let timing: String
     let detail: String
+    var meetingDescription: String? = nil
     var verificationLabel: String? = nil
     var statusMessage: String? = nil
     var repeatConsequence: String? = nil
@@ -2230,31 +2762,21 @@ private struct StrongAlertView: View {
     var primaryActionChoices: [(String, () -> Void)] = []
     var secondaryActionTitle: String? = nil
     var secondaryAction: (() -> Void)? = nil
+    var handledActionTitle: String? = nil
+    var handledAction: (() -> Void)? = nil
     var tertiaryActionTitle: String? = nil
     var tertiaryAction: (() -> Void)? = nil
     var pauseAction: ((PauseDuration) -> Bool)? = nil
     @State private var customPauseExpiration = Date().addingTimeInterval(60 * 60)
     @State private var isCustomPausePresented = false
-    @State private var measuredContentHeight: CGFloat = 280
 
     var body: some View {
-        ScrollView {
+        ScrollView(.vertical, showsIndicators: true) {
             alertContent
-                .background {
-                    GeometryReader { proxy in
-                        Color.clear.preference(
-                            key: StrongAlertContentHeightKey.self,
-                            value: proxy.size.height
-                        )
-                    }
-                }
         }
         .frame(minWidth: 360, idealWidth: 500, maxWidth: 620)
-        .frame(height: min(measuredContentHeight, 680))
+        .frame(minHeight: 500, idealHeight: 560, maxHeight: 680)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
-        .onPreferenceChange(StrongAlertContentHeightKey.self) { height in
-            measuredContentHeight = max(240, height)
-        }
         .sheet(isPresented: $isCustomPausePresented) {
             if let pauseAction {
                 CustomPauseSheet(
@@ -2314,6 +2836,14 @@ private struct StrongAlertView: View {
             VStack(spacing: 12) {
                 primaryActionControl
 
+                if let handledActionTitle, let handledAction {
+                    Button(handledActionTitle, action: handledAction)
+                        .keyboardShortcut("i")
+                        .buttonStyle(.bordered)
+                        .accessibilityLabel(handledActionTitle)
+                        .accessibilityHint("Mark this commitment as handled because you joined it outside Meeting Incoming.")
+                }
+
                 if let secondaryActionTitle, let secondaryAction {
                     Button(secondaryActionTitle, action: secondaryAction)
                         .buttonStyle(.bordered)
@@ -2333,6 +2863,10 @@ private struct StrongAlertView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
+            }
+
+            if let meetingDescription {
+                MeetingDescriptionView(text: meetingDescription)
             }
 
             if let pauseAction {
@@ -2450,6 +2984,20 @@ private func announceActionResult(_ message: String?) {
     )
 }
 
+@MainActor
+private func closeStrongAlertAndYieldFocus(_ flow: CommitmentProtectionFlow) {
+    flow.closeStrongAlertSurface()
+    announceActionResult(flow.lastActionMessage)
+    finishStrongAlertAction(flow)
+}
+
+@MainActor
+private func finishStrongAlertAction(_ flow: CommitmentProtectionFlow) {
+    StrongAlertActionCompletion.finish(
+        hasRemainingAlert: flow.isStrongAlertPresented
+    )
+}
+
 private struct MenuBarConflictView: View {
     @ObservedObject var flow: CommitmentProtectionFlow
     let conflict: CommitmentConflict
@@ -2462,23 +3010,37 @@ private struct MenuBarConflictView: View {
                 Text("Choose which commitment is primary:")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                ForEach(conflict.commitments, id: \.occurrenceID) { commitment in
-                    Button("Make primary: \(commitment.title)") {
-                        if flow.selectPrimary(for: commitment) {
-                            announceActionResult(flow.lastActionMessage)
+                if conflict.commitments.count <= 3 {
+                    ForEach(conflict.commitments, id: \.occurrenceID) { commitment in
+                        Button("Make primary: \(commitment.title)") {
+                            selectPrimary(commitment)
+                        }
+                    }
+                } else {
+                    Menu("Choose primary commitment…") {
+                        ForEach(conflict.commitments, id: \.occurrenceID) { commitment in
+                            Button(commitment.title) {
+                                selectPrimary(commitment)
+                            }
                         }
                     }
                 }
             } else {
                 Text("Also in this conflict")
                     .font(.caption.weight(.semibold))
-                ForEach(conflict.commitments.filter {
+                let secondaryCommitments = conflict.commitments.filter {
                     $0.occurrenceID != conflict.primaryCommitment?.occurrenceID
-                }, id: \.occurrenceID) { commitment in
+                }
+                ForEach(secondaryCommitments.prefix(3), id: \.occurrenceID) { commitment in
                     Label(commitment.title, systemImage: "calendar")
                         .font(.caption)
                         .lineLimit(2)
                         .help(commitment.title)
+                }
+                if secondaryCommitments.count > 3 {
+                    Text("+\(secondaryCommitments.count - 3) more protected commitments")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 Text("The primary commitment appears in the menu bar; every commitment remains protected.")
                     .font(.caption)
@@ -2488,53 +3050,54 @@ private struct MenuBarConflictView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 4)
     }
+
+    private func selectPrimary(_ commitment: CalendarEvent) {
+        if flow.selectPrimary(for: commitment) {
+            announceActionResult(flow.lastActionMessage)
+        }
+    }
 }
 
-private struct MenuBarContent: View {
+struct MenuBarContent: View {
     @EnvironmentObject private var flow: CommitmentProtectionFlow
     @EnvironmentObject private var onboardingState: OnboardingState
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
     @State private var customPauseExpiration = Date().addingTimeInterval(60 * 60)
+    @State private var isCustomPausePresented = false
 
     var body: some View {
-        TimelineView(.periodic(from: Date(), by: 1)) { context in
-            VStack(spacing: 0) {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 12) {
-                        scrollableContent(at: context.date)
-                    }
-                    .padding(16)
-                }
-                .frame(maxHeight: maximumScrollableHeight)
+        VStack(spacing: 0) {
+            primaryContent
+                .padding(.horizontal, 16)
+                .padding(.vertical, 16)
 
+            if hasSupplementalContent {
                 Divider()
 
-                VStack(alignment: .leading, spacing: 8) {
-                    if onboardingState.needsSetup {
-                        Button("Finish Setup…") {
-                            onboardingState.resume()
-                            OnboardingWindowController.shared.show {
-                                openWindow(id: "onboarding")
-                            }
-                        }
-                        .keyboardShortcut("o")
-                    }
-
-                    SettingsLink {
-                        Text("Settings…")
-                    }
-                    .keyboardShortcut(",")
-
-                    Button("Quit") {
-                        NSApplication.shared.terminate(nil)
-                    }
-                    .keyboardShortcut("q")
+                VStack(alignment: .leading, spacing: 12) {
+                    supplementalContent
                 }
                 .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+                .padding(.vertical, 14)
             }
+
+            Divider()
+            utilityFooter
         }
-        .frame(minWidth: 280, idealWidth: 320, maxWidth: 380)
+        .frame(width: 336)
+        .sheet(isPresented: $isCustomPausePresented) {
+            CustomPauseSheet(
+                expiration: $customPauseExpiration,
+                pause: { duration in
+                    let didPause = flow.pause(for: duration)
+                    if didPause {
+                        announceActionResult(flow.lastActionMessage)
+                    }
+                    return didPause
+                }
+            )
+        }
         .onAppear {
             flow.refreshLaunchAtLoginStatus()
             if customPauseExpiration <= Date() {
@@ -2544,19 +3107,45 @@ private struct MenuBarContent: View {
     }
 
     @ViewBuilder
-    private func scrollableContent(at date: Date) -> some View {
+    private var primaryContent: some View {
         if let commitment = flow.upcomingCommitment {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(commitment.title)
-                    .font(.headline)
-                    .lineLimit(2)
-                    .help(commitment.title)
-                Text(flow.countdownText(for: commitment, at: date))
-                    .font(.subheadline.weight(.semibold))
-                Text(flow.localStartTimeText(for: commitment))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            TimelineView(.periodic(from: Date(), by: 1)) { context in
+                upcomingCommitmentContent(commitment, at: context.date)
             }
+        } else if let conflict = flow.strongAlertConflict {
+            MenuBarConflictView(flow: flow, conflict: conflict)
+        } else if hasRestorableDecision {
+            decisionTimeline
+        } else {
+            protectionStatusTimeline
+        }
+    }
+
+    private func upcomingCommitmentContent(_ commitment: CalendarEvent, at date: Date) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "calendar")
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 26)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(commitment.title)
+                        .font(.headline)
+                        .lineLimit(2)
+                        .help(commitment.title)
+                    Text(flow.countdownText(for: commitment, at: date))
+                        .font(.subheadline.weight(.semibold))
+                    Text(flow.localStartTimeText(for: commitment))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(
+                "Next commitment, \(commitment.title), \(flow.countdownText(for: commitment, at: date)), \(flow.localStartTimeText(for: commitment))"
+            )
 
             if flow.earlyReminderCommitment != nil {
                 Button("Open Early Reminder") {
@@ -2565,65 +3154,34 @@ private struct MenuBarContent: View {
                     }
                 }
                 .keyboardShortcut("r")
+                .buttonStyle(.bordered)
             }
-
-            if let conflict = flow.strongAlertConflict ?? flow.upcomingConflict {
-                MenuBarConflictView(flow: flow, conflict: conflict)
-            }
-
-            Divider()
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
 
-        if flow.upcomingCommitment == nil,
-           let conflict = flow.strongAlertConflict {
+    @ViewBuilder
+    private var supplementalContent: some View {
+        if flow.upcomingCommitment != nil,
+           let conflict = flow.strongAlertConflict ?? flow.upcomingConflict {
             MenuBarConflictView(flow: flow, conflict: conflict)
-            Divider()
         }
 
-        if flow.isPaused(at: date) {
-            VStack(alignment: .leading, spacing: 6) {
-                Label("All Protection Paused", systemImage: "pause.circle.fill")
-                    .font(.headline)
-                Text(flow.pauseExpirationText(at: date))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .accessibilityElement(children: .combine)
-
-            Divider()
-        } else if flow.status == .active {
-            VStack(alignment: .leading, spacing: 8) {
-                Label("Pause All Protection", systemImage: "pause.circle")
-                    .font(.headline)
-                Text(InterfaceCopy.pauseAllProtectionDetail())
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Button("Pause all for 1 hour") {
-                    pause(.oneHour)
-                }
-                .keyboardShortcut("1")
-                Button("Pause all until end of day") {
-                    pause(.endOfDay)
-                }
-                .keyboardShortcut("e")
-                DatePicker(
-                    "Resume all protection",
-                    selection: $customPauseExpiration,
-                    in: date...
-                )
-                .datePickerStyle(.field)
-                Button("Pause all until selected time") {
-                    pause(.custom(customPauseExpiration))
-                }
-                .disabled(customPauseExpiration <= date)
-                .keyboardShortcut("c")
-                .accessibilityHint("Pause reminders for every Monitored Calendar until the selected local date and time.")
-            }
-
-            Divider()
+        if showsProtectionStatusInSupplementalContent {
+            protectionStatusTimeline
         }
 
+        if hasRestorableDecision && !isDecisionPrimary {
+            decisionTimeline
+        }
+
+        if !visibleAccountIssues.isEmpty {
+            accountIssuesContent
+        }
+    }
+
+    @ViewBuilder
+    private var decisionContent: some View {
         if let decisionCommitment = flow.decisionCommitment,
            let decision = flow.currentCommitmentDecision,
            decision.isRestorable {
@@ -2649,53 +3207,321 @@ private struct MenuBarContent: View {
                 }
             }
             .accessibilityElement(children: .contain)
-
-            Divider()
-        }
-
-        Label(flow.menuBarTitle, systemImage: menuBarStatusIcon)
-            .font(.headline)
-
-        ForEach(flow.accountCoverages) { coverage in
-            let health = flow.coverage(for: coverage.account.id) ?? coverage.health
-            VStack(alignment: .leading, spacing: 4) {
-                Text(InterfaceCopy.connectedAccountLabel(
-                    email: coverage.account.email,
-                    displayName: coverage.account.displayName
-                ))
-                    .font(.caption.weight(.semibold))
-                Text(health.displayTitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if let warning = flow.coverageWarning(for: coverage.account.id) {
-                    Text(warning)
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
-                if coverage.connectionState == .reconnectRequired {
-                    Button("Reconnect Google Calendar…") {
-                        Task {
-                            await flow.reconnectGoogleAccount(accountID: coverage.account.id)
-                        }
-                    }
-                    .disabled(flow.isConnectingAccount)
-                }
-            }
-
-            if coverage.id != flow.accountCoverages.last?.id {
-                Divider()
-            }
         }
     }
 
-    private var maximumScrollableHeight: CGFloat {
-        let visibleHeight = NSScreen.main?.visibleFrame.height ?? 800
-        return max(180, min(520, visibleHeight - 220))
+    private var decisionTimeline: some View {
+        TimelineView(.periodic(from: Date(), by: 1)) { _ in
+            decisionContent
+        }
+    }
+
+    private var protectionStatusTimeline: some View {
+        TimelineView(.periodic(from: Date(), by: 60)) { context in
+            protectionStatusContent(at: context.date)
+        }
+    }
+
+    private func protectionStatusContent(at date: Date) -> some View {
+        let presentation = protectionPresentation(at: date)
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: presentation.systemImage)
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(color(for: presentation.tone))
+                    .frame(width: 26)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(presentation.title)
+                        .font(.headline)
+                    Text(presentation.detail)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                if presentation.showsProgress {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel(presentation.title)
+                }
+            }
+            .accessibilityElement(children: presentation.showsProgress ? .contain : .combine)
+
+            if let primaryAction = presentation.primaryAction {
+                primaryActionButton(primaryAction)
+            } else if flow.status == .active && !flow.isPaused(at: date) {
+                pauseMenu
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func primaryActionButton(_ action: MenuBarProtectionPresentation.PrimaryAction) -> some View {
+        switch action {
+        case .finishSetup:
+            Button("Finish Setup…") {
+                showOnboarding()
+            }
+            .keyboardShortcut(.defaultAction)
+            .buttonStyle(.borderedProminent)
+
+        case .openSettings:
+            Button("Open Settings…") {
+                showSettings()
+            }
+            .keyboardShortcut(.defaultAction)
+            .buttonStyle(.borderedProminent)
+
+        case .reconnect(let accountID):
+            Button("Reconnect Google Calendar…") {
+                reconnect(accountID: accountID)
+            }
+            .disabled(flow.isConnectingAccount)
+            .keyboardShortcut(.defaultAction)
+            .buttonStyle(.borderedProminent)
+        }
+    }
+
+    private var pauseMenu: some View {
+        Menu {
+            Button("Pause all for 1 hour") {
+                pause(.oneHour)
+            }
+            .keyboardShortcut("1")
+            Button("Pause all until end of day") {
+                pause(.endOfDay)
+            }
+            .keyboardShortcut("e")
+            Button("Choose when to resume…") {
+                customPauseExpiration = Date().addingTimeInterval(60 * 60)
+                isCustomPausePresented = true
+            }
+            .keyboardShortcut("c")
+        } label: {
+            Label("Pause All Protection", systemImage: "pause.circle")
+        }
+        .menuStyle(.button)
+        .accessibilityHint(InterfaceCopy.pauseAllProtectionDetail())
+    }
+
+    private var accountIssuesContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(visibleAccountIssues) { coverage in
+                accountIssueRow(coverage)
+            }
+
+            if remainingAccountIssueCount > 0 {
+                Button("Review \(remainingAccountIssueCount) more in Settings…") {
+                    showSettings()
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func accountIssueRow(_ coverage: AccountCoverage) -> some View {
+        let health = effectiveHealth(for: coverage)
+        return HStack(alignment: .center, spacing: 10) {
+            Image(systemName: health.systemImage)
+                .foregroundStyle(health.displayColor)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(accountLabel(for: coverage))
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                    .help(accountLabel(for: coverage))
+                Text(accountIssueDetail(for: health))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if flow.connectingAccountID == coverage.account.id {
+                HStack(spacing: 5) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Connecting…")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .accessibilityElement(children: .combine)
+            } else if coverage.connectionState == .reconnectRequired || health == .reconnectRequired {
+                Button("Reconnect…") {
+                    reconnect(accountID: coverage.account.id)
+                }
+                .disabled(flow.isConnectingAccount)
+                .controlSize(.small)
+            }
+        }
+        .help(flow.coverageWarning(for: coverage.account.id) ?? health.displayTitle)
+        .accessibilityElement(children: .contain)
+    }
+
+    private var utilityFooter: some View {
+        HStack(spacing: 10) {
+            Button {
+                showSettings()
+            } label: {
+                Label("Settings…", systemImage: "gearshape")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.borderless)
+            .keyboardShortcut(",")
+
+            Divider()
+                .frame(height: 18)
+
+            Button {
+                NSApplication.shared.terminate(nil)
+            } label: {
+                Label("Quit \(AppIdentity.displayName)", systemImage: "power")
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            .buttonStyle(.borderless)
+            .keyboardShortcut("q")
+        }
+        .font(.callout)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity)
+    }
+
+    private var hasSupplementalContent: Bool {
+        let hasUpcomingConflict = flow.upcomingCommitment != nil &&
+            (flow.strongAlertConflict != nil || flow.upcomingConflict != nil)
+        return hasUpcomingConflict ||
+            showsProtectionStatusInSupplementalContent ||
+            (hasRestorableDecision && !isDecisionPrimary) ||
+            !visibleAccountIssues.isEmpty
+    }
+
+    private var showsProtectionStatusInSupplementalContent: Bool {
+        flow.upcomingCommitment != nil || flow.strongAlertConflict != nil || isDecisionPrimary
+    }
+
+    private var hasRestorableDecision: Bool {
+        flow.decisionCommitment != nil && flow.currentCommitmentDecision?.isRestorable == true
+    }
+
+    private var isDecisionPrimary: Bool {
+        flow.upcomingCommitment == nil && flow.strongAlertConflict == nil && hasRestorableDecision
+    }
+
+    private var visibleAccountIssues: [AccountCoverage] {
+        Array(accountIssues.prefix(3))
+    }
+
+    private var remainingAccountIssueCount: Int {
+        max(accountIssues.count - visibleAccountIssues.count, 0)
+    }
+
+    private var accountIssues: [AccountCoverage] {
+        guard flow.status != .noCoverage,
+              !flow.isRestoringConnection,
+              !flow.isCheckingCoverage else {
+            return []
+        }
+
+        let consumedReconnectAccountID: String?
+        if case .reconnect(let accountID) = protectionPresentation(at: Date()).primaryAction {
+            consumedReconnectAccountID = accountID
+        } else {
+            consumedReconnectAccountID = nil
+        }
+
+        return flow.accountCoverages.filter { coverage in
+            effectiveHealth(for: coverage) != .fresh &&
+                coverage.account.id != consumedReconnectAccountID
+        }
+    }
+
+    private func protectionPresentation(at date: Date) -> MenuBarProtectionPresentation {
+        MenuBarProtectionPresentation.make(
+            isRestoringConnection: flow.isRestoringConnection,
+            needsSetup: onboardingState.needsSetup,
+            status: flow.status,
+            isCheckingCoverage: flow.isCheckingCoverage || flow.isConnectingAccount,
+            isPaused: flow.isPaused(at: date),
+            pauseDetail: flow.pauseExpirationText(at: date),
+            isLaunchAtLoginEnabled: flow.isLaunchAtLoginEnabled,
+            hasUpcomingCommitment: flow.upcomingCommitment != nil,
+            accounts: flow.accountCoverages.map { coverage in
+                MenuBarAccountPresentation(
+                    id: coverage.account.id,
+                    label: accountLabel(for: coverage),
+                    connectionState: coverage.connectionState,
+                    health: effectiveHealth(for: coverage)
+                )
+            }
+        )
+    }
+
+    private func effectiveHealth(for coverage: AccountCoverage) -> CoverageHealth {
+        flow.coverage(for: coverage.account.id) ?? coverage.health
+    }
+
+    private func accountIssueDetail(for health: CoverageHealth) -> String {
+        switch health {
+        case .noCoverage:
+            return "No Monitored Calendars"
+        case .checking:
+            return "Checking calendar coverage…"
+        case .fresh:
+            return "Coverage is current"
+        case .stale:
+            return "Calendar data is out of date"
+        case .reconnectRequired:
+            return "Reconnect Required"
+        case .unavailable:
+            return "Refresh failed; retrying automatically"
+        }
+    }
+
+    private func accountLabel(for coverage: AccountCoverage) -> String {
+        InterfaceCopy.connectedAccountLabel(
+            email: coverage.account.email,
+            displayName: coverage.account.displayName
+        )
+    }
+
+    private func color(for tone: MenuBarProtectionPresentation.Tone) -> Color {
+        switch tone {
+        case .neutral:
+            return .secondary
+        case .positive:
+            return .green
+        case .attention:
+            return .orange
+        }
     }
 
     private func pause(_ duration: PauseDuration) {
         if flow.pause(for: duration) {
             announceActionResult(flow.lastActionMessage)
+        }
+    }
+
+    private func reconnect(accountID: String) {
+        Task {
+            await flow.reconnectGoogleAccount(accountID: accountID)
+        }
+    }
+
+    private func showOnboarding() {
+        onboardingState.resume()
+        OnboardingWindowController.shared.show {
+            openWindow(id: "onboarding")
+        }
+    }
+
+    private func showSettings() {
+        ApplicationWindowPresenter.shared.showSettings {
+            openSettings()
         }
     }
 
@@ -2709,65 +3535,104 @@ private struct MenuBarContent: View {
             return "Commitment handled"
         }
     }
-
-    private var menuBarStatusIcon: String {
-        if flow.isRestoringConnection {
-            return "arrow.triangle.2.circlepath"
-        }
-        if flow.isPaused() {
-            return "pause.circle.fill"
-        }
-        switch flow.status {
-        case .active:
-            return "checkmark.shield"
-        case .noCoverage:
-            return "shield.slash"
-        case .unavailable:
-            return flow.isCheckingCoverage
-                ? "arrow.triangle.2.circlepath"
-                : "exclamationmark.triangle"
-        }
-    }
 }
 
 private struct MenuBarLabel: View {
     @EnvironmentObject private var flow: CommitmentProtectionFlow
     @EnvironmentObject private var onboardingState: OnboardingState
+    @EnvironmentObject private var testToolsController: TestToolsController
+    @EnvironmentObject private var resetCoordinator: AppManagedDataResetCoordinator
+    @ObservedObject var productionFlow: CommitmentProtectionFlow
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         Label(
-            flow.menuBarTitle,
+            testToolsController.isTestMode
+                ? "TEST · \(flow.menuBarTitle)"
+                : flow.menuBarTitle,
             systemImage: menuBarStatusIcon
         )
+        .background {
+            TestToolsCommandBridge(controller: testToolsController)
+        }
         .onAppear {
             presentInitialOnboardingIfNeeded()
-            if flow.earlyReminderCommitment != nil {
-                openEarlyReminderIfNeeded(flow: flow) {
-                    openWindow(id: "early-reminder")
-                }
-            }
-            if flow.isStrongAlertPresented {
-                openWindow(id: "strong-alert")
+            updateEarlyReminderSurface()
+            updateStrongAlertSurface()
+            if testToolsController.recoveryReport != nil {
+                showTestTools()
             }
         }
-        .onChange(of: onboardingState.initialSurface) { _, _ in
+        .onChange(of: onboardingState.initialSurface) { previousSurface, surface in
             presentInitialOnboardingIfNeeded()
+            guard previousSurface == .waiting, surface != .waiting else { return }
+            presentResolvedInitialSurface()
         }
         .onChange(of: flow.earlyReminderCommitment) { _, commitment in
-            if commitment != nil {
-                openEarlyReminderIfNeeded(flow: flow) {
-                    openWindow(id: "early-reminder")
-                }
-            } else {
-                EarlyReminderWindowController.shared.close()
-            }
+            updateEarlyReminderSurface()
         }
         .onChange(of: flow.isStrongAlertPresented) { _, isPresented in
-            if isPresented {
-                openWindow(id: "strong-alert")
-            } else {
-                StrongAlertWindowController.shared.close()
+            updateStrongAlertSurface()
+        }
+        .onChange(of: productionFlow.earlyReminderCommitment) { _, _ in
+            updateEarlyReminderSurface()
+        }
+        .onChange(of: productionFlow.isStrongAlertPresented) { _, _ in
+            updateStrongAlertSurface()
+        }
+        .onChange(of: resetCoordinator.state) { _, state in
+            switch state {
+            case .blocked, .unavailable:
+                showTestTools()
+            case .idle, .recovering, .executing, .completed:
+                break
+            }
+        }
+        .onChange(of: testToolsController.recoveryReport) { _, report in
+            if report != nil {
+                showTestTools()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.didBecomeActiveNotification
+        )) { _ in
+            presentApplicationWindowAfterCurrentEvent()
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: .inYourFaceApplicationDidRequestReopen
+        )) { _ in
+            presentApplicationWindowAfterCurrentEvent()
+        }
+    }
+
+    private func presentResolvedInitialSurface() {
+        let triggeringWindow = NSApp.currentEvent?.window
+        Task { @MainActor in
+            await Task.yield()
+            ApplicationWindowPresenter.shared.initialSurfaceDidResolve(
+                initialSurface: onboardingState.initialSurface,
+                isApplicationActive: NSApp.isActive,
+                hasEarlyReminder: hasEarlyReminder,
+                hasStrongAlert: hasStrongAlert,
+                triggeringWindow: triggeringWindow
+            ) {
+                openSettings()
+            }
+        }
+    }
+
+    private func presentApplicationWindowAfterCurrentEvent() {
+        let triggeringWindow = NSApp.currentEvent?.window
+        Task { @MainActor in
+            await Task.yield()
+            ApplicationWindowPresenter.shared.applicationDidBecomeActive(
+                initialSurface: onboardingState.initialSurface,
+                hasEarlyReminder: hasEarlyReminder,
+                hasStrongAlert: hasStrongAlert,
+                triggeringWindow: triggeringWindow
+            ) {
+                openSettings()
             }
         }
     }
@@ -2776,6 +3641,59 @@ private struct MenuBarLabel: View {
         guard onboardingState.initialSurface == .onboarding else { return }
         OnboardingWindowController.shared.showAtLaunch {
             openWindow(id: "onboarding")
+        }
+    }
+
+    private var alertFlow: CommitmentProtectionFlow {
+        if productionHasPriorityAlert {
+            return productionFlow
+        }
+        return flow
+    }
+
+    private var productionHasPriorityAlert: Bool {
+        productionFlow.earlyReminderCommitment != nil ||
+            productionFlow.isStrongAlertPresented ||
+            productionFlow.strongAlertCommitment != nil
+    }
+
+    private var hasEarlyReminder: Bool {
+        productionHasPriorityAlert
+            ? productionFlow.earlyReminderCommitment != nil
+            : flow.earlyReminderCommitment != nil
+    }
+
+    private var hasStrongAlert: Bool {
+        productionHasPriorityAlert
+            ? productionFlow.isStrongAlertPresented
+            : flow.isStrongAlertPresented
+    }
+
+    private func updateEarlyReminderSurface() {
+        guard hasEarlyReminder else {
+            EarlyReminderWindowController.shared.close()
+            return
+        }
+        openEarlyReminderIfNeeded(flow: alertFlow) {
+            openWindow(id: "early-reminder")
+        }
+    }
+
+    private func updateStrongAlertSurface() {
+        if hasStrongAlert {
+            openWindow(id: "strong-alert")
+        } else {
+            StrongAlertWindowController.shared.close()
+        }
+    }
+
+    private func showTestTools() {
+        testToolsController.testToolsDidOpen()
+        openWindow(id: "test-tools")
+        NSApp.activate(ignoringOtherApps: true)
+        Task { @MainActor in
+            await Task.yield()
+            WindowRegistry.shared.window(for: .testTools)?.makeKeyAndOrderFront(nil)
         }
     }
 

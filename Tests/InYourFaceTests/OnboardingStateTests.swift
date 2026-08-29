@@ -20,7 +20,7 @@ final class OnboardingStateTests: XCTestCase {
         }
     }
 
-    func testExistingConfiguredUserMigratesToMenuBarOnly() {
+    func testExistingConfiguredUserMakesOneTimeLaunchAtLoginChoice() {
         withStateStore { store in
             let state = OnboardingState(stateStore: store)
 
@@ -31,7 +31,9 @@ final class OnboardingStateTests: XCTestCase {
             state.resolveInitialLaunch(hasConfiguredProtection: true)
 
             XCTAssertTrue(state.isCompleted)
-            XCTAssertFalse(state.needsSetup)
+            XCTAssertTrue(state.needsSetup)
+            XCTAssertEqual(state.initialSurface, .onboarding)
+            XCTAssertTrue(state.complete())
             XCTAssertEqual(state.initialSurface, .menuBarOnly)
 
             let relaunchedState = OnboardingState(stateStore: store)
@@ -99,14 +101,10 @@ final class OnboardingStateTests: XCTestCase {
         }
     }
 
-    func testCompletionRequiresHandledTestAlertAndPersists() {
+    func testCompletionPersistsWithoutAnAlertPrerequisite() {
         withStateStore { store in
             let state = OnboardingState(stateStore: store)
             state.resolveInitialLaunch(hasConfiguredProtection: false)
-
-            XCTAssertFalse(state.complete())
-
-            state.markTestAlertHandled()
 
             XCTAssertTrue(state.complete())
             XCTAssertTrue(state.isCompleted)
@@ -119,18 +117,13 @@ final class OnboardingStateTests: XCTestCase {
         }
     }
 
-    func testFinishLaterPreservesHandledTestAlertProgress() {
+    func testLegacyTestAlertStateDoesNotAffectCompletion() {
         withStateStore { store in
+            store.set(false, forKey: "in-your-face.onboarding-test-alert-handled")
             let state = OnboardingState(stateStore: store)
             state.resolveInitialLaunch(hasConfiguredProtection: false)
-            state.markTestAlertHandled()
-            state.deferUntilRequested()
 
-            let relaunchedState = OnboardingState(stateStore: store)
-            relaunchedState.resolveInitialLaunch(hasConfiguredProtection: true)
-
-            XCTAssertTrue(relaunchedState.didHandleTestAlert)
-            XCTAssertTrue(relaunchedState.complete())
+            XCTAssertTrue(state.complete())
         }
     }
 
@@ -138,6 +131,7 @@ final class OnboardingStateTests: XCTestCase {
         withStateStore { store in
             let state = OnboardingState(stateStore: store)
             state.resolveInitialLaunch(hasConfiguredProtection: true)
+            XCTAssertTrue(state.complete())
 
             let stateAfterDisconnect = OnboardingState(stateStore: store)
             stateAfterDisconnect.resolveInitialLaunch(hasConfiguredProtection: false)
@@ -145,6 +139,53 @@ final class OnboardingStateTests: XCTestCase {
             XCTAssertTrue(stateAfterDisconnect.isCompleted)
             XCTAssertFalse(stateAfterDisconnect.needsSetup)
             XCTAssertEqual(stateAfterDisconnect.initialSurface, .menuBarOnly)
+        }
+    }
+
+    func testResetRecoveryQuarantineRejectsEveryOnboardingMutation() {
+        withStateStore { store in
+            let before = store.dictionaryRepresentation()
+            let state = OnboardingState(
+                stateStore: store,
+                allowsPreferenceMutation: { false }
+            )
+
+            state.resolveInitialLaunch(hasConfiguredProtection: true)
+            state.resume()
+            state.deferUntilRequested()
+
+            XCTAssertFalse(state.complete())
+            XCTAssertEqual(state.initialSurface, .waiting)
+            XCTAssertEqual(state.phase, .pending)
+            XCTAssertFalse(state.didChooseLaunchAtLogin)
+            XCTAssertTrue(
+                NSDictionary(dictionary: before).isEqual(
+                    to: store.dictionaryRepresentation()
+                )
+            )
+        }
+    }
+
+    func testStartingResetInTheSameProcessClosesTheOnboardingMutationGate() {
+        withStateStore { store in
+            let gate = PreferenceMutationGate()
+            let state = OnboardingState(
+                stateStore: store,
+                allowsPreferenceMutation: { gate.isOpen }
+            )
+            state.resolveInitialLaunch(hasConfiguredProtection: false)
+            let before = store.dictionaryRepresentation()
+
+            gate.isOpen = false
+            state.deferUntilRequested()
+
+            XCTAssertFalse(state.complete())
+            XCTAssertEqual(state.phase, .pending)
+            XCTAssertTrue(
+                NSDictionary(dictionary: before).isEqual(
+                    to: store.dictionaryRepresentation()
+                )
+            )
         }
     }
 
@@ -158,4 +199,9 @@ final class OnboardingStateTests: XCTestCase {
         defer { store.removePersistentDomain(forName: suiteName) }
         body(store)
     }
+}
+
+@MainActor
+private final class PreferenceMutationGate {
+    var isOpen = true
 }

@@ -1,0 +1,13 @@
+# Google-derived data is encrypted and retained only for active protection
+
+**Status**: accepted
+
+All persisted Google-derived data is encrypted at rest using the device-bound storage boundary established by ADR-0006. This includes account identity and calendar metadata, Monitored Calendar choices, eligible event snapshots, occurrence-local decisions, and Protection Activity fields that identify an account, calendar, or commitment. Google-derived values must not be duplicated in plaintext UserDefaults, logs, temporary files, crash metadata, or analytics. Ordinary non-Google preferences may remain in UserDefaults.
+
+The encrypted event snapshot contains only eligible events from explicitly selected Monitored Calendars: currently ongoing protected occurrences plus occurrences beginning in the next twenty-four hours. It may contain a Recognized Meeting Link when one exists, but a link is not required for eligibility. Ended, cancelled, declined, deselected, removed-account, and otherwise out-of-scope events are physically deleted, not merely hidden. Every snapshot records its refresh time and is physically discarded once it is more than twenty-four hours old, even when Calendar coverage remains stale. Unverified Reminders may use only a still-retained snapshot.
+
+Protection Activity is encrypted, limited to the current local day, and bounded across the app to the newest 1,000 entries or 1 MiB of encoded data, whichever limit is reached first; oldest entries are removed first. It survives same-day relaunch and Disconnect because Disconnect preserves the Saved Account, but Remove Account immediately deletes entries belonging to that account. The local-day boundary deletes all remaining Activity. Activity is an explanation surface, not permanent calendar history or analytics.
+
+Occurrence-local decisions are retained only while their occurrence can still affect protection. Disconnect removes the protected event snapshot but preserves the Saved Account's configuration; Remove Account deletes the account's decisions and all other account-scoped encrypted data. Encrypted stores and their device-bound key representation are excluded from backups, so migration to a new Mac requires reconnecting and selecting calendars again. If the device-bound key or store becomes permanently unreadable, the affected encrypted data is deleted rather than retained as inaccessible history.
+
+A one-time migration may import only the minimum legacy account identifiers and Monitored Calendar choices required to preserve setup, then immediately rewrites them inside the encrypted store. Legacy plaintext OAuth credentials, event snapshots, event titles, meeting links, and Protection Activity are not migrated and are deleted when found.

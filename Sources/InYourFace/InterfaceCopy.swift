@@ -15,6 +15,44 @@ enum InterfaceCopy {
         )
     }
 
+    static func googleAccountConnectionProgress(
+        connectedCount: Int,
+        totalCount: Int,
+        locale: Locale = .autoupdatingCurrent
+    ) -> String {
+        plainText(
+            AttributedString(
+                localized: "\(connectedCount) of ^[\(totalCount) Google Account](inflect: true) connected",
+                locale: locale
+            )
+        )
+    }
+
+    static func monitoredCalendarProtectionProgress(
+        protectedCount: Int,
+        savedCount: Int,
+        locale: Locale = .autoupdatingCurrent
+    ) -> String {
+        plainText(
+            AttributedString(
+                localized: "\(protectedCount) of ^[\(savedCount) Monitored Calendar](inflect: true) currently protected",
+                locale: locale
+            )
+        )
+    }
+
+    static func savedMonitoredCalendarCount(
+        _ count: Int,
+        locale: Locale = .autoupdatingCurrent
+    ) -> String {
+        plainText(
+            AttributedString(
+                localized: "^[\(count) Monitored Calendar](inflect: true) saved",
+                locale: locale
+            )
+        )
+    }
+
     static func calendarSelectionSummary(
         selectedCount: Int,
         totalCount: Int,
@@ -82,6 +120,15 @@ enum InterfaceCopy {
         )
     }
 
+    static func removeAccountTitle(_ accountLabel: String, locale: Locale = .autoupdatingCurrent) -> String {
+        plainText(
+            AttributedString(
+                localized: "Remove \(accountLabel)?",
+                locale: locale
+            )
+        )
+    }
+
     static func connectedAccountLabel(
         email: String,
         displayName: String,
@@ -132,6 +179,27 @@ enum InterfaceCopy {
         )
     }
 
+    static func removeAccountMessage(
+        hasOtherAccounts: Bool,
+        locale: Locale = .autoupdatingCurrent
+    ) -> String {
+        if hasOtherAccounts {
+            return plainText(
+                AttributedString(
+                    localized: "This saved account and its Monitored Calendar choices will be removed from Meeting Incoming. Other saved Google Accounts will remain in Meeting Incoming. Google Calendar events and RSVPs won’t change.",
+                    locale: locale
+                )
+            )
+        }
+
+        return plainText(
+            AttributedString(
+                localized: "This saved account and its Monitored Calendar choices will be removed from Meeting Incoming. Google Calendar events and RSVPs won’t change. You can add the account again later.",
+                locale: locale
+            )
+        )
+    }
+
     static func connectionFailureAnnouncement(_ message: String) -> String {
         sentences([
             "Google Calendar couldn’t connect",
@@ -142,6 +210,10 @@ enum InterfaceCopy {
 
     static func disconnectionFailureAnnouncement(_ message: String) -> String {
         sentences(["Account couldn’t disconnect", message, "Try again"])
+    }
+
+    static func removalFailureAnnouncement(_ message: String) -> String {
+        sentences(["Account couldn’t be removed", message, "Try again"])
     }
 
     static func strongAlertRepeatConsequence(

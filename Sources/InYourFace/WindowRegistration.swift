@@ -2,7 +2,9 @@ import AppKit
 import SwiftUI
 
 enum AppWindowKind: Hashable, Sendable {
+    case settings
     case onboarding
+    case testTools
     case earlyReminder
     case strongAlert
 }
@@ -37,6 +39,12 @@ final class WindowRegistry {
     func unregister(_ window: NSWindow, for kind: AppWindowKind) {
         guard windows[kind]?.value === window else { return }
         windows[kind] = nil
+    }
+
+    func manages(_ candidate: NSWindow) -> Bool {
+        windows.values.contains { registeredWindow in
+            windowIsOwned(candidate, by: registeredWindow.value)
+        }
     }
 
     @discardableResult

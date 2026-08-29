@@ -1,137 +1,169 @@
 # Commitment Protection MVP
 
-## Problem Statement
+## Status
 
-Remote and hybrid knowledge workers can spend long periods in deep work and fail to notice ordinary calendar notifications. The result is being late to accepted, high-stakes commitments or joining after the commitment has already started.
+This is the active product specification. **Meeting Incoming** is the provisional public working name and **“Full-screen calendar alerts for Mac.”** is the working descriptor. Name, bundle identity, Google OAuth publishing, signing, notarization, and distribution clearance remain pending; this spec does not claim that a public release is complete.
 
-The user does not need another calendar view. They need a reliable, context-aware interruption that is strong enough to break through focus, while respecting calendar changes, explicit user intent, and the user's choice to keep reminders visible while sharing.
+## Problem
 
-## Solution
+Ordinary calendar notifications are easy to miss during focused work. A personal macOS utility should help one user arrive on time to eligible Google Calendar commitments without becoming a planning calendar, changing calendar truth, retaining permanent history, or asking the user to reconnect after every relaunch.
 
-Provide a personal macOS utility that protects accepted, timed Google Calendar events from user-selected calendars across multiple Connected Accounts.
+## Product Boundary
 
-The product can start with a visual Early Reminder, then presents a Strong Alert at the commitment’s start time. Optional Blocking Mode can keep the Early Reminder in front of other app windows. The Strong Alert offers the most direct next action—Join when a Recognized Meeting Link exists, or Stop reminders otherwise—and repeats at a configurable Repeat Interval until the user takes an explicit action or the commitment reaches its scheduled end.
-
-The experience is intentionally narrow: Google Calendar is the source of truth for calendar changes, the user chooses which calendars are protected, and the product never guesses which accepted event is important. Visual reminders remain visible during Full-Screen Sharing, window sharing, and app sharing so sharing cannot silently suppress the protection experience.
+- Native, menu-bar-first macOS utility for an individual user.
+- Google Calendar only, with multiple accounts and explicitly selected Monitored Calendars.
+- Accepted or self-organized timed commitments are eligible; a Recognized Meeting Link is optional.
+- The least disruptive reminder that still protects punctuality.
+- No team controls, attendance tracking, analytics dashboard, or permanent calendar archive.
+- Public-v1 direction is Google-only, English-only, Apple silicon, and macOS 14 or later. This is a target rather than current release status.
 
 ## User Stories
 
-1. As a remote or hybrid knowledge worker, I want accepted Google Calendar commitments to be protected, so that I am less likely to arrive late after deep work.
-2. As a user, I want to connect multiple Google Accounts, so that my work commitments can be protected even when they are split across accounts.
-3. As a user, I want to choose the Monitored Calendars in each Connected Account, so that the app protects only the calendars I explicitly trust it to interrupt.
-4. As a user, I want the app to show No Coverage when no calendars are selected, so that I never mistake an unconfigured app for Active Protection.
-5. As a user, I want the app to start automatically at login and clearly ask me to reconnect Google Calendar for that session, so that I can resume protection without hunting for the control.
-6. As a user, I want a Test Alert during onboarding, so that I can verify the protection experience before relying on it for a real commitment.
-7. As a user, I want onboarding to confirm the monitored calendars and global reminder settings, so that I understand what the app will protect before it becomes active.
-8. As a user, I want the app to protect only Accepted Events, so that invitations I have not accepted do not interrupt me.
-9. As a user, I want all-day events excluded, so that an event without a specific start moment does not create a misleading punctuality alert.
-10. As a user, I want recurring commitments evaluated one Occurrence at a time, so that one skipped or rescheduled occurrence does not silently change every future occurrence.
-11. As a user, I want a rescheduled Occurrence to receive a fresh protection decision, so that a new commitment time is not suppressed by an old local choice.
-12. As a user, I want the event’s scheduled instant to remain authoritative across time zones, so that travel does not make the app alert at the wrong moment.
-13. As a user, I want times shown in my current local time with a time-zone label when needed, so that I understand exactly when the commitment occurs.
-14. As a user, I want duplicate calendar representations of one commitment merged into one flow when they share a Recognized Meeting Link and matching start time, so that I do not receive duplicate alerts.
-15. As a user, I want the calendar’s designated conference link to be preferred when an event has several links, so that Join opens the intended meeting.
-16. As a user, I want several recognized links presented as choices when no primary link is designated, so that the app does not guess incorrectly.
-17. As a user, I want the Early Reminder to appear before a commitment, so that I have time to stop my current work.
-18. As a user, I want the Early Reminder to be optional and its lead time configurable from five to thirty minutes, with ten minutes as the default when enabled, so that the warning fits my transition needs without requiring complex schedules.
-19. As a user, I want a Close for now action to close the Early Reminder while leaving protection active, so that closing a passive reminder does not make me late.
-20. As a user, I want to Snooze the Early Reminder for a selected duration, so that I can briefly finish a safe stopping point without adding a separate pre-start or post-start control.
-21. As a user, I want Snooze to suppress Early Reminder and Strong Alert even when it crosses the commitment’s start, so that the selected quiet period is predictable.
-22. As a user, I want Snooze available only once per Occurrence, so that repeated deferral does not undermine the safety net.
-23. As a user, I want the Strong Alert to take over every available display at the commitment’s start time, so that ordinary notification blindness or screen sharing cannot make me late.
-24. As a user, I want the Strong Alert to feel calm but urgent, so that it is effective without feeling hostile or theatrical.
-25. As a user, I want the Strong Alert to show the commitment title, current timing state, relevant calendar or account, and the next action, so that I can act without searching.
-26. As a user, I want Join to be prominent when a Recognized Meeting Link exists, so that I can enter the commitment immediately.
-27. As a user, I want a Join click to count as joining for the reminder lifecycle, so that I am not repeatedly challenged to prove attendance.
-28. As a user, I want Stop reminders available when no Recognized Meeting Link exists, so that physical or otherwise linkless commitments can stop protection cleanly.
-29. As a user, I want Stop reminders available as a secondary action for linked commitments, so that I can stop reminders when I joined from another device or app or will skip the commitment.
-30. As a user, I want Stop reminders to stop protection for only the current Occurrence without changing my Google Calendar RSVP, so that I can skip one commitment without corrupting calendar intent.
-31. As a user, I want Restore Protection available after Dismiss or Handled until the Occurrence ends, so that I can reverse an accidental or changed decision.
-32. As a user, I want the Strong Alert to repeat at a configurable Repeat Interval after the commitment starts, so that an alert I cannot act on immediately does not disappear forever.
-33. As a user, I want the Repeat Interval configurable from one to five minutes, with one minute as the default, so that I can balance urgency and interruption.
-34. As a user, I want post-start repetition to remain enabled until Join, Handled, Dismiss, or the commitment’s scheduled end, so that there is no silent opt-out at the moment punctuality matters most.
-35. As a user, I want closing an Early Reminder or Strong Alert surface without an explicit action to leave protection active, so that an incidental window dismissal cannot be mistaken for a decision.
-36. As a user, I want a commitment that is accepted after its start time to produce an immediate overdue Strong Alert while it is still ongoing, so that late acceptance does not hide an already-active commitment.
-37. As a user, I want a commitment that becomes protected while it is within its lead window or already underway to be evaluated immediately, so that enabling a Monitored Calendar does not defer protection until tomorrow.
-38. As a user, I want accepted commitments to override macOS Focus modes, so that system notification suppression does not defeat the product’s core promise.
-39. As a user, I want Pause to suppress active alerts and future protection immediately, so that I have an emergency escape hatch.
-40. As a user, I want Pause durations of one hour, end of day, or a custom expiration, so that every pause has a clear and temporary boundary.
-41. As a user, I want protection to resume immediately when Pause ends if a commitment is still ongoing, so that Pause defers protection rather than silently erasing it.
-42. As a user, I want visual reminders to remain visible during Full-Screen Sharing, so that sharing cannot silently suppress the protection experience.
-43. As a user, I want visual reminders to remain visible during window or app sharing, so that every sharing mode has the same predictable alert behavior.
-44. As a user, I want an active alert to remain visible if sharing starts, without clearing the underlying protection decision, so that sharing cannot suppress protection.
-45. As a user, I want the reminder to remain visible when every display is shared, so that the app keeps its punctuality promise in any sharing configuration.
-50. As a user, I want the Strong Alert to cover every available display, so that I cannot miss it simply because I was working on another screen or sharing a display.
-51. As a user, I want overlapping commitments represented as a Commitment Conflict, so that the app makes scheduling reality visible instead of silently choosing for me.
-52. As a user, I want the commitment needing attention now to become the single primary conflict, so that the next punctuality risk is clear.
-53. As a user, I want other overlapping commitments retained in a conflict list, so that I can understand the consequences of the primary choice.
-54. As a user, I want same-start commitments presented as equal choices, so that the app does not infer importance from insufficient calendar data.
-55. As a user, I want a same-start conflict to present all equal Join or Handled paths if I never choose a primary, so that no commitment is silently abandoned.
-56. As a user, I want a stale or unavailable Connected Account to show a persistent Coverage Warning, so that I know protection is incomplete.
-57. As a user, I want healthy Connected Accounts to keep working when one account fails, so that one authorization problem does not disable all protection.
-58. As a user, I want account data older than fifteen minutes treated as Stale Coverage, so that the app does not present outdated calendar information as reliable.
-59. As a user, I want stale coverage to suppress newly discovered reminders while retaining already-known reminders as Unverified Reminders, so that synchronization problems do not silently erase an imminent commitment.
-60. As a user, I want an Unverified Reminder to retain the normal alert and action path while visibly explaining its uncertainty, so that I can still act without being misled about calendar freshness.
-61. As a user, I want the app to update protection when Google Calendar cancels, reschedules, or changes a meeting link, so that stale calendar state does not continue to interrupt me.
-62. As a user, I want explicit Dismiss and Handled decisions to survive routine calendar refreshes for the current Occurrence, so that a deliberate choice does not resurrect.
-63. As a user, I want in-session recovery after sleep, lock, or temporary unavailability to show an overdue Strong Alert for an ongoing commitment, so that a transient interruption does not create a silent protection gap.
-67. As a user, I want locked or sleeping Macs to show an overdue alert after becoming active when the commitment is still ongoing, so that sleep does not permanently erase protection.
-68. As a user, I want no new strong interruption after a commitment has reached its scheduled end, so that the app respects its lifecycle boundary.
-69. As a user, I want a compact upcoming-commitment view in the menu bar, so that I can understand what the app is protecting without opening a full schedule product.
-70. As a user, I want Calendar Access Required, coverage, Pause, stale-account, and No Coverage states visible in the menu-bar experience, so that the app’s protection status is always understandable.
-71. As a user, I want event titles and times visible in normal Strong Alerts while secondary details remain secondary, so that the alert is useful without exposing unnecessary information.
-72. As a user, I want the app to retain only the non-secret data needed for upcoming protection and settings while discarding Google authorization when it quits, so that relaunch always requires my explicit reconnection.
-73. As a user, I want keyboard access, VoiceOver support, reduced-motion behavior, and strong contrast in the alert flow, so that a high-pressure interruption remains usable with different accessibility needs.
-74. As a user, I want the product to remain a personal utility rather than a team policy system, so that setup and privacy remain appropriate for individual users.
-75. As a user, I want the app’s value judged by whether I am no longer late, rather than by an analytics dashboard, so that the product stays focused on behavior change.
+### Accounts and coverage
+
+1. As a user, I can connect more than one Google account and choose Monitored Calendars separately for each account.
+2. As a user, I remain connected after app relaunch, Mac restart, and app update while my device-bound authorization remains valid.
+3. As a user, I see Reconnect Required only after an exceptional credential, encrypted-data, or device event—not after an ordinary relaunch—and Reconnect is the one primary connection action in that state.
+4. As a user with one failing account, I keep protection for my healthy accounts and see the affected account's state clearly.
+5. As a user facing a transient network or Google service failure, I can Retry without losing valid authorization.
+6. As an existing user moving from the superseded session-only model, I complete one explicit reconnect per Saved Account without an unexpected browser flow.
+7. As a user, a Connected Account offers Disconnect as its one primary connection action, preserving its identity, Monitored Calendar choices, and same-day Protection Activity for later reconnection.
+8. As a user, I can Remove Account when I want all local data for that account deleted.
+9. As a user, a failed or ambiguous Google revocation does not leave me with a partially disconnected or partially removed account.
+10. As a user with definitively no usable local grant, I can remove the remaining local account data and reach Google Account access settings for independent review.
+11. As a user with no selected calendars, I see No Coverage rather than a false Active Protection state.
+12. As a user with calendar data older than fifteen minutes, I see Stale Coverage and a persistent, non-interruptive Coverage Warning.
+13. As a user, a stale account produces no newly discovered reminders, while a previously known commitment may remain an Unverified Reminder only within the retained snapshot window.
+
+### Calendar truth and eligibility
+
+14. As a user, accepted invitation events with a specific start and end time are eligible for protection.
+15. As a user, timed events I organize are eligible even when Google does not provide a separate accepted self-attendee response.
+16. As a user, linkless timed commitments remain protected and offer Stop reminders rather than Join.
+17. As a user, all-day, cancelled, declined, tentative, unanswered, and unselected-calendar events remain quiet. Timed out-of-office events also remain quiet by default, and I can explicitly enable or disable their Early Reminder and Strong Alert protection in Settings.
+18. As a user, selecting a calendar does not retroactively adopt a commitment already underway.
+19. As a user, accepting an invitation after its scheduled start does not retroactively create an alert.
+20. As a user, a commitment protected before temporary app unavailability may return as an Overdue Commitment while it is still ongoing.
+21. As a user, Google Calendar remains authoritative for acceptance, cancellation, rescheduling, timing, time zones, Meeting Description, and meeting links. When a Meeting Description exists, I see it as secondary plain text without it changing eligibility or becoming a Join action.
+22. As a user, I see the commitment's scheduled instant in my current local time, with a time-zone label when relevant.
+23. As a user, recurring events are evaluated by Occurrence, and a rescheduled Occurrence receives a fresh protection decision.
+24. As a user, duplicate representations merge only when they share a Recognized Meeting Link and matching start time.
+25. As a user with overlapping commitments, I see every conflict. The commitment needing attention now is primary, and equal same-start choices remain available unless I choose one.
+
+### Reminder flow
+
+26. As a user, I can enable or disable the global Early Reminder while leaving Strong Alert protection active.
+27. As a user, I can set Early Reminder lead time from five to thirty minutes, with ten minutes as the default. A newly discovered reminder appears only with at least one minute remaining, while an already-visible reminder stays available as start approaches.
+28. As a user, Close for now closes only the current Early Reminder surface and leaves start-time protection active.
+29. As a user, Stop reminders ends protection for the current Occurrence without changing my Google Calendar RSVP.
+30. As a user, I can Snooze once before start for five, ten, fifteen, or thirty minutes. Snooze suppresses both reminder types until its duration or the commitment end, whichever comes first.
+31. As a user, I receive a calm but urgent Strong Alert at start time across every available display.
+32. As a user, macOS Focus and Full-Screen Sharing, window sharing, or app sharing do not hide or relocate visual reminders.
+33. As a user, closing an alert surface without an explicit action does not silently end protection.
+34. As a user, Strong Alert repeats every one to five minutes, defaulting to one minute, until Join, Handled, Dismiss, Pause, or the scheduled end.
+35. As a user, I can mark a Commitment Handled when I joined another way. With a Recognized Meeting Link, I can Join as the primary action; either action ends that Occurrence's reminder lifecycle without claiming to verify attendance.
+36. As a user, I can Restore Protection for the current Occurrence after Dismiss or Handled until that Occurrence ends.
+37. As a user, I can Pause all protection for one hour, until end of day, or until a custom expiration.
+38. As a user, an ongoing previously protected commitment becomes overdue when Pause ends, while an already-ended commitment stays quiet.
+
+### Permissions, launch, and control
+
+39. As a user, Launch at Login is offered during onboarding and in Settings, is off by default, and can be changed at any time.
+40. As a user, enabling Launch at Login resumes protection after login when authorization and coverage remain valid; it does not conceal Reconnect Required.
+41. As a user, Blocking Mode is optional and off by default.
+42. As a user, I see why Accessibility and Input Monitoring are needed before I choose to enable Blocking Mode, then receive direct links to the relevant System Settings panes.
+43. As a user who withholds either permission, I retain a visual-only Early Reminder and all ordinary protection behavior.
+44. As a user, onboarding does not request Blocking Mode permissions before I express intent to enable that feature.
+45. As a user, after connecting Google Calendar and choosing Monitored Calendars, I can use readiness to enable or disable Early Reminder, choose its lead time, optionally choose Blocking Mode, and choose Launch at Login before finishing setup.
+46. As a user who chooses Set Up Later, I get the menu-bar experience and can return through Finish Setup without being forced through onboarding on every launch.
+
+### Privacy and explanation
+
+47. As a user, my Google authorization is device-bound, encrypted at rest, excluded from backup, and unavailable after migration to another Mac; on the new Mac I reconnect and select calendars again.
+48. As a user, the app creates no Keychain items, invokes no SecItem API, and offers no plaintext or software-only credential fallback.
+49. As a user, access tokens live only in memory and refresh credentials remain encrypted until an explicit account action or exceptional invalidation requires deletion.
+50. As a user, all persisted Google-derived account, calendar, event, decision, Meeting Description, and Activity data is encrypted rather than duplicated into plaintext preferences, logs, temporary files, crash metadata, or analytics.
+51. As a user, the app retains only ongoing protected Occurrences and eligible Occurrences starting in the next twenty-four hours from my Monitored Calendars.
+52. As a user, ended, cancelled, declined, deselected, removed-account, out-of-office after opt-out, out-of-scope, and expired snapshot data is physically deleted rather than merely hidden.
+53. As a user, Protection Activity explains actions and state changes from the current local day without becoming permanent history.
+54. As a user, Protection Activity survives a same-day relaunch and Disconnect, while Remove Account deletes that account's entries and the local-day boundary deletes everything remaining.
+55. As a user, Activity storage is bounded to the newest 1,000 entries or 1 MiB across the app, with the oldest entries removed first.
+56. As a user, I receive truthful Active Protection, Reconnect Required, No Coverage, Stale Coverage, Pause, and per-account failure states.
+57. As a keyboard or assistive-technology user, every alert action is reachable, VoiceOver-readable, distinguishable without color alone, and safe under reduced-motion settings.
 
 ## Implementation Decisions
 
-- The MVP is a personal macOS product for remote and hybrid knowledge workers.
-- The only calendar source in scope is Google Calendar, with multiple Connected Accounts supported. OAuth access and refresh tokens are held only in memory and discarded when the app process ends.
-- Users explicitly select Monitored Calendars. The product does not infer importance, monitor unselected calendars, or treat an Accepted Event outside selected calendars as protected.
-- Only Accepted Events with a specific start time are eligible. All-day events are excluded.
-- Google Calendar is authoritative for acceptance, cancellation, rescheduling, timing, time zones, and meeting links.
-- A commitment’s scheduled instant is authoritative across time zones; presentation uses the user’s current local time and adds a time-zone label when relevant.
-- Recurring events are handled by Occurrence. A rescheduled Occurrence receives a fresh protection decision.
-- Duplicate representations merge only when they share a Recognized Meeting Link and matching start time.
-- The Early Reminder is optional, global, configurable from five to thirty minutes when enabled, and defaults to ten minutes. Optional Blocking Mode can keep it in front of other app windows.
-- The Early Reminder exposes three user actions: Snooze for a selected duration, Close for now to close only the early surface, and Stop reminders to end protection for the current occurrence.
-- Snooze is a dropdown with five-, ten-, fifteen-, and thirty-minute choices. It suppresses Early Reminder and Strong Alert until the selected duration expires or the commitment ends, whichever comes first.
-- Stop reminders requires confirmation and explains that no Early Reminder or Strong Alert will arrive for the commitment; Google Calendar RSVP is unchanged.
-- The Strong Alert is the start-time intervention. It takes over every available display, is calm but urgent, overrides macOS Focus modes, and exposes the next action.
-- The global Repeat Interval ranges from one to five minutes and defaults to one minute. Repetition remains enabled after start until Join, Handled, Dismiss, or scheduled end.
-- Join is prominent when a Recognized Meeting Link exists. A Join click ends protection for the reminder lifecycle; the product does not need to verify attendance.
-- Stop reminders ends protection without changing Google Calendar and records a Dismiss decision for the current occurrence. It is the only user-facing stop action in the Strong Alert.
-- Dismiss and Handled are occurrence-local decisions that persist through calendar refreshes and can be reversed by Restore Protection. Rescheduling resets them; Handled remains an internal/domain decision for compatibility with existing state and test-alert flows.
-- Snooze is available once per Occurrence before start, offers five-, ten-, fifteen-, and thirty-minute choices, and can cross the commitment’s start while remaining capped at the commitment’s scheduled end.
-- Clearing or closing an alert surface without an explicit action does not change protection.
-- Pause is a global, temporary escape hatch with one-hour, end-of-day, and custom-expiration choices. It immediately suppresses active and future protection; protection resumes according to the current commitment state when it expires.
-- Full-Screen Sharing, window sharing, and app sharing do not suppress or relocate visual reminders. The same reminder behavior applies regardless of sharing mode or how many displays are shared.
-- Commitment Conflicts have one primary commitment at a time. Same-start commitments remain equal choices until the user chooses, and all equal choices remain available at alert time if no choice was made.
-- Connected Account freshness is evaluated at a fifteen-minute boundary. Stale accounts show persistent, non-interruptive Coverage Warnings and do not create new reminders.
-- Already-known reminders may fire as Unverified Reminders after coverage becomes stale, preserving the normal action path with visible uncertainty.
-- Account failures are isolated: healthy accounts remain protected while the affected account is visibly uncovered.
-- The app starts automatically at login and supports recovery after sleep, lock, or other in-session unavailable periods. After quit or relaunch, saved accounts enter Calendar Access Required and cannot protect commitments until the user reconnects Google Calendar; ended commitments remain quiet.
-- The main app shows a Protection Activity timeline containing human-readable user actions and system transitions from the current local day. It survives a relaunch during that day, remains visible after an explicit account disconnect, and is discarded at the local-day boundary. When accounts change, each entry retains its account context so activity is never ambiguous; it is not permanent event history or an analytics dashboard.
-- Onboarding includes account selection, Monitored Calendar selection, a Test Alert, a clear session-only authorization disclosure, and a final summary that confirms the current global reminder timing before completion. Ongoing timing changes live in native Settings.
-- The product uses a menu-bar-first experience with a compact upcoming-commitment view rather than a full planning calendar.
-- Accessibility is a baseline product requirement for the commitment protection flow.
+### Authorization and accounts
+
+- ADR-0006 supersedes the session-only model in ADR-0005.
+- Each Google refresh credential is AES-GCM-encrypted in the user's Application Support directory. Encryption and wrapping material are bound to a non-exportable Secure Enclave key on the current Mac.
+- Persisted authorization files use user-only permissions and are excluded from backups. Access tokens are short-lived and memory-only.
+- The app has no Keychain entitlement, creates no Keychain item, makes no SecItem call, and has no Keychain migration, plaintext fallback, or software-only cryptographic fallback.
+- Older plaintext refresh-token values are deleted rather than migrated. Keychain items created by older builds remain outside the app's access boundary and require manual user cleanup.
+- A device without the required Secure Enclave capability cannot connect Google. Non-Google app surfaces remain usable and explain the unsupported device.
+- A transient network or service failure retains the encrypted refresh credential and offers Retry. A definitive credential rejection or permanently unreadable protected representation deletes the unusable local credential and enters Reconnect Required. A permanently unreadable device-bound store deletes all affected Google-derived data and requires reconnecting and selecting calendars again.
+- Disconnect and Remove Account request real Google revocation first whenever a usable local grant exists. A transient or ambiguous revocation failure makes no local mutation and offers Retry plus a route to Google Account access settings.
+- Successful Disconnect deletes authorization and the protected event snapshot while preserving the Saved Account, Monitored Calendar choices, and same-day Protection Activity.
+- Successful Remove Account also deletes the Saved Account, calendar choices, occurrence-local state, and account-scoped Activity. When there is definitively no usable local grant, local removal may proceed without a revocation call and the app provides a route to Google Account access settings.
+- Google OAuth access is limited to calendar.calendarlist.readonly and calendar.events.readonly.
+
+### Calendar data and retention
+
+- ADR-0007 governs all persisted Google-derived data.
+- The encrypted snapshot contains eligible events only from explicitly selected Monitored Calendars: ongoing Occurrences already under protection and eligible Occurrences starting within the next twenty-four hours.
+- A retained event may include a Meeting Description only after markup, executable content, excess whitespace, control characters, and content beyond the 2,000-character display limit have been removed. The retained text stays inert and is never treated as a Recognized Meeting Link.
+- Every snapshot records its refresh time and is physically discarded when more than twenty-four hours old, including during prolonged stale coverage.
+- Occurrence-local decisions remain only while the Occurrence can affect protection. Deselecting a calendar removes its event and decision data; Remove Account removes all account-scoped data.
+- A one-time migration may import only the minimum legacy account identifiers and Monitored Calendar choices, immediately rewrite them into encrypted storage, and delete the plaintext source. Legacy tokens, event snapshots, event titles, meeting links, and Activity are not migrated.
+- Ordinary non-Google preferences, including Out-of-Office Protection, may remain in UserDefaults. Google-derived data may not.
+
+### Calendar and reminder behavior
+
+- Eligibility is accepted-or-owned and timed. Out-of-office is an event-type gate controlled by one default-off preference that applies to both Early Reminder and Strong Alert. A Recognized Meeting Link enables Join but is not an eligibility requirement.
+- Google Calendar is authoritative for calendar facts; Dismiss and Handled are reversible Occurrence-local app decisions that do not modify RSVP state.
+- Meeting Description is normalized to bounded inert plain text at the event-model boundary, persisted only inside the encrypted event snapshot, and never copied into Protection Activity. A merged commitment uses its stable canonical representation's nonblank description, otherwise the first nonblank description in stable order; descriptions are never concatenated.
+- A designated Google conference link is primary. When none is designated, every recognized candidate is presented as a choice rather than guessed.
+- Calendar cancellation, rescheduling, timing, and link changes update active protection. No new Strong Alert begins after the scheduled end.
+- Enabling Out-of-Office Protection does not adopt an already-underway occurrence. Disabling it immediately clears its active protection state and removes those events from retained snapshots.
+- A newly presented Early Reminder is suppressed when fewer than sixty seconds remain before start. An Early Reminder that is already visible remains visible inside that boundary, and exactly sixty seconds remains eligible.
+- Strong Alert presents the commitment title, current timing state, relevant calendar or account, and next action; secondary details remain secondary.
+- Stop reminders is available for both linked and linkless commitments, requires confirmation, and is the only user-facing Strong Alert action that stops the current Occurrence without joining.
+- Strong Alert remains visible in every supported display-sharing mode under ADR-0004.
+- Blocking Mode blocks interaction with other apps while the Early Reminder is open. It is permission-gated and degrades to visual-only behavior without disabling ordinary reminders.
+- Launch at Login is an explicit, default-off preference rather than an automatic requirement.
+- The menu-bar experience provides a compact upcoming-commitment view plus truthful coverage, Pause, and account states rather than a full schedule.
+- Onboarding has two setup steps—connect Google Calendar and choose Monitored Calendars—followed by readiness. Readiness lets the user enable or disable Early Reminder, choose its lead time, optionally choose Blocking Mode, and choose Launch at Login. It requests no Blocking Mode permission until the user explicitly chooses to enable that feature.
+- First-run completion is independent from account or coverage state. Later reconnect does not replay onboarding.
+
+### Distribution direction
+
+- The public-v1 target is Apple silicon on macOS 14 or later.
+- Direct distribution is intended to use Developer ID signing, hardened runtime, notarization, and a DMG. App Sandbox is not planned because optional Blocking Mode depends on Accessibility and Input Monitoring.
+- A separate production Google OAuth project must complete the publishing and verification work required for public users.
+- No telemetry, analytics SDK, advertising, or sale of calendar data is in scope.
+- Free and open source is the current direction. Any update mechanism must use signed releases, present release notes, and require user confirmation.
+- These are release requirements, not evidence that release, provider verification, or identity clearance is complete.
 
 ## Testing Decisions
 
-- Tests should verify externally observable Commitment Protection behavior rather than internal modules, state storage, timing mechanisms, or rendering implementation.
-- The single highest-level seam is the user-visible Commitment Protection flow. It should accept controlled calendar state, time, app-availability, display-sharing, coverage, and user-action conditions and expose reminders, actions, and coverage states.
-- The flow should be tested with controllable time so lead times, start boundaries, Repeat Intervals, scheduled ends, local-day expiry, time-zone display, Pause expiry, and recovery can be verified deterministically.
-- Calendar fixtures should cover multiple Connected Accounts, selected and unselected Monitored Calendars, Accepted Events, declined or unaccepted events, all-day events, recurring Occurrences, reschedules, cancellations, changed links, duplicate representations, and same-start conflicts.
-- User-visible reminder tests should cover Early Reminder, Strong Alert, Unverified Reminder, and Coverage Warning states, including their permitted and forbidden transitions.
-- Action tests should verify Join, Handled, Dismiss, Restore Protection, Snooze, Pause, and incidental surface clearing independently from the calendar source.
-- Activity tests should verify that user and system actions are distinguishable, tied to the relevant commitment when applicable, persisted through a same-day relaunch, and removed at the local-day boundary.
-- Display tests should verify that reminders remain visible across multiple displays, Full-Screen Sharing, window sharing, app sharing, sharing beginning during an active alert, all displays being shared, and Focus-mode override behavior.
-- Lifecycle tests should cover login activation, account failure, stale-to-fresh recovery, lock/sleep recovery, in-session app recovery, relaunch into Calendar Access Required, targeted reconnection, late acceptance, coverage activation near a commitment, and commitment end boundaries.
-- Conflict tests should verify primary selection, conflict lists, same-start equality, no-choice behavior, and transitions when one commitment is joined or handled.
-- Accessibility acceptance should verify that every external alert action is keyboard reachable, VoiceOver-readable, motion-safe, and sufficiently contrasted.
-- The repository currently contains no implementation or prior test suite, so there is no existing test seam or prior art to preserve. The first tests should establish this single product-flow seam rather than creating module-specific test contracts prematurely.
+- Verify externally observable Commitment Protection behavior through a product-flow seam with controlled calendar state, time, app availability, coverage, permissions, display sharing, and user actions.
+- Use controllable time for lead times, start boundaries, Repeat Intervals, scheduled ends, local-day expiry, snapshot expiry, time-zone display, Pause expiry, and recovery.
+- Cover accepted invitation events, self-organized events, linkless events, every excluded response/type, default-off and opted-in out-of-office events, selected and unselected calendars, recurring Occurrences, reschedules, cancellations, changed links, duplicates, and same-start conflicts.
+- Verify that late acceptance and newly selecting a calendar do not adopt an already-underway commitment, while recovery can restore a previously protected Overdue Commitment.
+- Verify Out-of-Office Protection preference persistence, opt-in behavior across both reminder stages, immediate clearing on disable, physical snapshot pruning, and non-retroactive adoption on enable.
+- Verify Meeting Description decoding, markup and executable-content removal, blank normalization, length bounds, canonical/fallback merge precedence, encrypted relaunch persistence, and absence from Join extraction and Protection Activity.
+- Verify first Early Reminder suppression below sixty seconds, presentation at exactly sixty seconds, and retention of an already-visible reminder below sixty seconds.
+- Verify Early Reminder, Strong Alert, Unverified Reminder, Coverage Warning, Close for now, Stop reminders, Join, Dismiss, Handled, Restore Protection, Snooze, Pause, and incidental surface clearing.
+- Verify authorization survives relaunch and simulated restart/update boundaries without a routine reconnect, while exceptional invalidation enters Reconnect Required only for the affected account.
+- Verify transient refresh failures retain authorization, definitive rejection deletes it, and revocation failure makes no partial Disconnect or Remove Account mutation.
+- Verify successful Disconnect and Remove Account have their distinct data-retention effects, including same-day Activity behavior.
+- Verify encrypted stores contain only the permitted snapshot window and Activity bounds, and that physical pruning occurs on end, cancellation, decline, deselection, expiry, day change, and account removal.
+- Verify the package and authorization path create no Keychain items, contain no Keychain entitlement, and make no SecItem calls.
+- Verify onboarding has two setup steps followed by readiness; readiness exposes the current Early Reminder enabled state and lead time, optional Blocking Mode, and Launch at Login without making any of them completion prerequisites.
+- Verify Blocking Mode explains permissions before requesting them, links to the correct System Settings panes, and preserves visual-only reminders when permission is missing.
+- Verify Launch at Login defaults off, changes only by explicit user choice, and resumes protection without reconnect when authorization remains valid.
+- Verify reminders remain visible across multiple displays, Full-Screen Sharing, window sharing, app sharing, sharing that begins during an alert, and macOS Focus.
+- Verify each external alert action is keyboard reachable and VoiceOver-readable, has visible focus and non-color state cues, respects reduced motion, and remains legible at increased text sizes.
 
 ## Out of Scope
 
@@ -140,18 +172,16 @@ The experience is intentionally narrow: Google Calendar is the source of truth f
 - Mobile, wearable, phone, or away-from-Mac fallback coverage
 - Team policies, shared administration, or workplace controls
 - Widgets, themes, alert marketplaces, or social sharing
-- Meeting preparation automation or context inspection
+- Meeting preparation automation or work-context inspection
 - Automatic importance inference, quiet hours, or complex per-event rules
-- Permanent event history, attendance analytics, or a user-facing analytics dashboard
+- Permanent event history, attendance analytics, telemetry, or a user-facing analytics dashboard
 - A full planning calendar or task-management system
 - Travel-time planning or location-based departure guidance
 - Verifying that a user actually joined after clicking Join
-- Internal architecture, storage choices, frameworks, APIs, or implementation file structure
 
 ## Further Notes
 
 - The product principle is: the least disruptive intervention that still reliably gets the user to the commitment on time.
-- The MVP boundary and sharing behavior are captured in the ADRs for calendar-only scope, visible alerts during screen sharing, and calendar truth with occurrence-local decisions.
-- The primary success outcome is behavioral: the user is no longer late. The product should not depend on a metrics dashboard to communicate value.
-- Transition Support is a later, advisory capability that helps the user wrap up current work without inspecting or managing work context.
-- This spec is intended to be published as a GitHub issue with the `ready-for-agent` label once the repository has a Git remote or an explicit GitHub repository is supplied.
+- ADR-0001 defines calendar-only scope, ADR-0003 calendar truth and occurrence-local decisions, ADR-0004 sharing visibility, ADR-0006 device-bound authorization, ADR-0007 encrypted retention, and ADR-0008 the explicit default-off Out-of-Office Protection exception to ADR-0001's original unconditional exclusion.
+- ADR-0002 and ADR-0005 remain in the repository as superseded decision history.
+- Transition Support is a later advisory capability that may help the user wrap up current work without inspecting, managing, or blocking that work.

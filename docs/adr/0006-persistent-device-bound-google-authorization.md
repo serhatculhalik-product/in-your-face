@@ -1,0 +1,15 @@
+# Google authorization is persistent, device-bound, and Keychain-free
+
+**Status**: accepted
+
+**Supersedes**: ADR-0005
+
+Google authorization must normally survive an app relaunch, a Mac restart, and an app update. The app persists each Google account's refresh credential as AES-GCM-encrypted data in the user's Application Support directory. Encryption and wrapping material are bound to a Secure Enclave key on the current Mac; the private key material is not exported. Persisted authorization files use user-only permissions and are excluded from backups.
+
+The implementation creates no macOS Keychain items and makes no `SecItem` calls. It has no Keychain entitlement, Keychain migration, password prompt, plaintext fallback, or software-only cryptographic fallback. Legacy plaintext refresh-token values are deleted rather than migrated. Keychain items created by older builds remain outside the app's boundary and require manual cleanup. If the required Secure Enclave capability is unavailable, Google connection is blocked with a clear unsupported-device explanation while non-Google app surfaces remain usable.
+
+Access tokens remain memory-only and short-lived. A refresh credential remains encrypted at rest until the user disconnects or removes the account, Google definitively rejects or revokes it, its encrypted representation is corrupt, the Secure Enclave key is reset or lost, or the data is moved to another Mac. A definitively rejected credential or permanently unreadable credential representation is deleted and enters Reconnect Required; ordinary relaunch is not a reconnect condition. If the device-bound store itself is permanently unreadable, all affected Google-derived data is deleted under ADR-0007 and the user reconnects and rebuilds calendar selection. A transient network or Google service failure retains the encrypted credential and offers Retry instead of destroying valid authorization. Failures are isolated per account when the store remains readable.
+
+Disconnect and Remove Account first request real Google revocation whenever a usable local grant exists. A successful Disconnect deletes the local credential and protected event snapshot but preserves the Saved Account, Monitored Calendar choices, and same-day Protection Activity. A successful Remove Account additionally deletes that account's saved configuration, occurrence-local state, and Protection Activity. An ambiguous or transient revocation failure makes no partial local change and offers Retry plus a route to Google Account access settings. When there is definitively no usable local grant—because Google rejected it or its protected representation is permanently unreadable—the app may delete the remaining local account data without a revocation call and provides a route to Google Account access settings for independent review.
+
+Existing installations receive one explicit, user-initiated reconnect per Saved Account after the persistent store ships. The app does not open surprise browser flows. After that transition, the product promise is no routine reconnect after relaunch—not that reconnect can never be required after a security or credential event.

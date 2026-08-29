@@ -82,8 +82,12 @@ public struct RecognizedMeetingLink: Codable, Equatable, Hashable, Identifiable,
 }
 
 public struct CalendarEvent: Codable, Equatable, Identifiable, Sendable {
+    public static let maximumMeetingDescriptionCharacterCount = 2_000
+    private static let maximumMeetingDescriptionInputCharacterCount = 20_000
+
     public let id: String
     public let title: String
+    public let meetingDescription: String?
     public let startDate: Date?
     public let endDate: Date?
     public let timeZoneIdentifier: String?
@@ -114,6 +118,7 @@ public struct CalendarEvent: Codable, Equatable, Identifiable, Sendable {
     public init(
         id: String,
         title: String,
+        meetingDescription: String? = nil,
         startDate: Date?,
         endDate: Date?,
         timeZoneIdentifier: String?,
@@ -127,6 +132,7 @@ public struct CalendarEvent: Codable, Equatable, Identifiable, Sendable {
     ) {
         self.id = id
         self.title = title
+        self.meetingDescription = Self.normalizedMeetingDescription(meetingDescription)
         self.startDate = startDate
         self.endDate = endDate
         self.timeZoneIdentifier = timeZoneIdentifier
@@ -148,6 +154,7 @@ public struct CalendarEvent: Codable, Equatable, Identifiable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case id
         case title
+        case meetingDescription
         case startDate
         case endDate
         case timeZoneIdentifier
@@ -164,6 +171,9 @@ public struct CalendarEvent: Codable, Equatable, Identifiable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
         title = try container.decode(String.self, forKey: .title)
+        meetingDescription = Self.normalizedMeetingDescription(
+            try container.decodeIfPresent(String.self, forKey: .meetingDescription)
+        )
         startDate = try container.decodeIfPresent(Date.self, forKey: .startDate)
         endDate = try container.decodeIfPresent(Date.self, forKey: .endDate)
         timeZoneIdentifier = try container.decodeIfPresent(String.self, forKey: .timeZoneIdentifier)
@@ -185,6 +195,7 @@ public struct CalendarEvent: Codable, Equatable, Identifiable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
         try container.encode(title, forKey: .title)
+        try container.encodeIfPresent(meetingDescription, forKey: .meetingDescription)
         try container.encodeIfPresent(startDate, forKey: .startDate)
         try container.encodeIfPresent(endDate, forKey: .endDate)
         try container.encodeIfPresent(timeZoneIdentifier, forKey: .timeZoneIdentifier)
@@ -194,6 +205,124 @@ public struct CalendarEvent: Codable, Equatable, Identifiable, Sendable {
         try container.encode(accountID, forKey: .accountID)
         try container.encode(recognizedMeetingLinks, forKey: .recognizedMeetingLinks)
         try container.encodeIfPresent(eventType, forKey: .eventType)
+    }
+
+    private static func normalizedMeetingDescription(_ rawDescription: String?) -> String? {
+        guard let rawDescription else { return nil }
+        let boundedInput = String(rawDescription.prefix(maximumMeetingDescriptionInputCharacterCount))
+        var plainText = ""
+        var index = boundedInput.startIndex
+        var suppressedElement: String?
+
+        func appendSeparator() {
+            guard !plainText.hasSuffix("\n") else { return }
+            plainText.append("\n")
+        }
+
+        while index < boundedInput.endIndex {
+            let character = boundedInput[index]
+            if character == "<" {
+                guard let closingBracket = boundedInput[index...].firstIndex(of: ">") else {
+                    break
+                }
+                let tagContents = boundedInput[
+                    boundedInput.index(after: index)..<closingBracket
+                ]
+                let tag = parsedHTMLTag(String(tagContents))
+                if let suppressedElementName = suppressedElement {
+                    if tag.isClosing && tag.name == suppressedElementName {
+                        suppressedElement = nil
+                    }
+                } else if !tag.isClosing && (tag.name == "script" || tag.name == "style") {
+                    suppressedElement = tag.name
+                } else if Self.blockHTMLTags.contains(tag.name) {
+                    appendSeparator()
+                }
+                index = boundedInput.index(after: closingBracket)
+                continue
+            }
+
+            if suppressedElement != nil {
+                index = boundedInput.index(after: index)
+                continue
+            }
+
+            if character == "&",
+               let semicolon = boundedInput[index...].prefix(16).firstIndex(of: ";") {
+                let entityStart = boundedInput.index(after: index)
+                let entity = String(boundedInput[entityStart..<semicolon])
+                if let decoded = decodedHTMLEntity(entity) {
+                    plainText.append(decoded)
+                    index = boundedInput.index(after: semicolon)
+                    continue
+                }
+            }
+
+            plainText.append(character)
+            index = boundedInput.index(after: index)
+        }
+
+        let sanitizedScalars = plainText.unicodeScalars.filter { scalar in
+            !CharacterSet.controlCharacters.contains(scalar) || scalar == "\n" || scalar == "\r" || scalar == "\t"
+        }
+        let normalizedLines = String(String.UnicodeScalarView(sanitizedScalars))
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .compactMap { line -> String? in
+                let normalizedLine = line
+                    .split(whereSeparator: { $0.isWhitespace })
+                    .joined(separator: " ")
+                return normalizedLine.isEmpty ? nil : normalizedLine
+            }
+        let normalized = normalizedLines.joined(separator: "\n")
+        guard !normalized.isEmpty else { return nil }
+        guard normalized.count > maximumMeetingDescriptionCharacterCount else {
+            return normalized
+        }
+        return String(normalized.prefix(maximumMeetingDescriptionCharacterCount - 1)) + "…"
+    }
+
+    private static let blockHTMLTags: Set<String> = [
+        "blockquote", "br", "div", "h1", "h2", "h3", "h4", "h5", "h6",
+        "hr", "li", "p", "pre", "tr"
+    ]
+
+    private static func parsedHTMLTag(_ contents: String) -> (name: String, isClosing: Bool) {
+        let trimmed = contents.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isClosing = trimmed.hasPrefix("/")
+        let nameStart = isClosing ? trimmed.dropFirst() : trimmed[...]
+        let name = nameStart
+            .drop(while: { $0.isWhitespace })
+            .prefix(while: { $0.isLetter || $0.isNumber })
+            .lowercased()
+        return (name, isClosing)
+    }
+
+    private static func decodedHTMLEntity(_ entity: String) -> String? {
+        switch entity.lowercased() {
+        case "amp": return "&"
+        case "apos": return "'"
+        case "gt": return ">"
+        case "lt": return "<"
+        case "nbsp": return " "
+        case "quot": return "\""
+        default:
+            let scalarValue: UInt32?
+            if entity.lowercased().hasPrefix("#x") {
+                scalarValue = UInt32(entity.dropFirst(2), radix: 16)
+            } else if entity.hasPrefix("#") {
+                scalarValue = UInt32(entity.dropFirst(), radix: 10)
+            } else {
+                scalarValue = nil
+            }
+            guard let scalarValue,
+                  let scalar = UnicodeScalar(scalarValue),
+                  !CharacterSet.controlCharacters.contains(scalar) else {
+                return nil
+            }
+            return String(scalar)
+        }
     }
 
     fileprivate static func normalizedMeetingLinkKey(_ url: URL) -> String {
@@ -284,6 +413,11 @@ public extension GoogleCalendarConnecting {
 public protocol LaunchAtLoginControlling: AnyObject {
     var isEnabled: Bool { get }
     func enable() throws
+    func disable() throws
+}
+
+public extension LaunchAtLoginControlling {
+    func disable() throws {}
 }
 
 public enum ProtectionStatus: Equatable, Sendable {
@@ -298,6 +432,17 @@ public enum PauseDuration: Equatable, Sendable {
     case custom(Date)
 }
 
+public enum AppManagedDataResetFlowError: Error, Equatable, LocalizedError, Sendable {
+    case accountPositionOutOfBounds
+
+    public var errorDescription: String? {
+        switch self {
+        case .accountPositionOutOfBounds:
+            return "The Saved Account reset step no longer matches protected storage."
+        }
+    }
+}
+
 public enum ProtectionActivityActor: String, Codable, Equatable, Sendable {
     case user
     case system
@@ -310,6 +455,7 @@ public enum ProtectionActivityKind: String, Codable, Equatable, Sendable {
     case accountDisconnectFailed
     case configurationChanged
     case blockingModeChanged
+    // Legacy decode-only: older Protection Activity records may contain these values.
     case testAlertShown
     case testAlertDismissed
     case earlyReminderShown
@@ -365,6 +511,7 @@ public struct ProtectionActivity: Codable, Equatable, Identifiable, Sendable {
     public let accountEmail: String?
     public let calendarID: String?
     public let calendarName: String?
+    public let sourceAccountIDs: [String]?
 
     public init(
         id: UUID = UUID(),
@@ -379,7 +526,8 @@ public struct ProtectionActivity: Codable, Equatable, Identifiable, Sendable {
         accountID: String? = nil,
         accountEmail: String? = nil,
         calendarID: String? = nil,
-        calendarName: String? = nil
+        calendarName: String? = nil,
+        sourceAccountIDs: [String]? = nil
     ) {
         self.id = id
         self.occurredAt = occurredAt
@@ -394,6 +542,12 @@ public struct ProtectionActivity: Codable, Equatable, Identifiable, Sendable {
         self.accountEmail = accountEmail
         self.calendarID = calendarID
         self.calendarName = calendarName
+        let normalizedSourceAccountIDs = Set(
+            (sourceAccountIDs ?? []) + (accountID.map { [$0] } ?? [])
+        ).filter { !$0.isEmpty }.sorted()
+        self.sourceAccountIDs = normalizedSourceAccountIDs.isEmpty
+            ? nil
+            : normalizedSourceAccountIDs
     }
 }
 
@@ -412,8 +566,17 @@ private extension ProtectionActivity {
             accountID: accountID,
             accountEmail: accountEmail,
             calendarID: calendarID,
-            calendarName: calendarName
+            calendarName: calendarName,
+            sourceAccountIDs: sourceAccountIDs
         )
+    }
+
+    func containsProtectedData(forAccountID accountID: String) -> Bool {
+        self.accountID == accountID || sourceAccountIDs?.contains(accountID) == true
+    }
+
+    var protectedSourceAccountIDs: Set<String> {
+        Set((sourceAccountIDs ?? []) + (accountID.map { [$0] } ?? []))
     }
 }
 
@@ -488,6 +651,86 @@ public struct EarlyReminderBlockingMode: Equatable, Sendable {
     }
 }
 
+/// Process-local storage used by unit tests and previews. Production supplies an
+/// `EncryptedGoogleVault`; this fallback deliberately never writes Google data to
+/// UserDefaults or any other plaintext persistence.
+@MainActor
+private final class VolatileGoogleDataStore {
+    private var records: [String: [EncryptedGoogleVaultRecordKind: Data]] = [:]
+
+    var accountIDs: [String] {
+        records.keys.sorted()
+    }
+
+    func load(_ kind: EncryptedGoogleVaultRecordKind, accountID: String) -> Data? {
+        records[accountID]?[kind]
+    }
+
+    func store(_ data: Data, kind: EncryptedGoogleVaultRecordKind, accountID: String) {
+        records[accountID, default: [:]][kind] = data
+    }
+
+    func remove(_ kind: EncryptedGoogleVaultRecordKind, accountID: String) {
+        records[accountID]?[kind] = nil
+        if records[accountID]?.isEmpty == true {
+            records[accountID] = nil
+        }
+    }
+
+    func removeAccount(_ accountID: String) {
+        records[accountID] = nil
+    }
+
+    func reset() {
+        records.removeAll()
+    }
+}
+
+@MainActor
+private enum VolatileGoogleDataStoreRegistry {
+    private static let identifierKey = "commitment-protection.volatile-test-store-id"
+    private static var stores: [String: VolatileGoogleDataStore] = [:]
+
+    static func store(for stateStore: UserDefaults) -> VolatileGoogleDataStore {
+        let identifier: String
+        if let existingIdentifier = stateStore.string(forKey: identifierKey) {
+            identifier = existingIdentifier
+        } else {
+            identifier = UUID().uuidString
+            stateStore.set(identifier, forKey: identifierKey)
+        }
+        if let existing = stores[identifier] {
+            return existing
+        }
+        let store = VolatileGoogleDataStore()
+        stores[identifier] = store
+        return store
+    }
+}
+
+public enum CommitmentProtectionStartupMode: Equatable, Sendable {
+    case normal
+    case activeResetRecovery
+    case committedResetRecovery
+
+    fileprivate var isResetRecovery: Bool {
+        self != .normal
+    }
+}
+
+public struct RecoveredEncryptedGoogleStorage: Sendable {
+    public let vault: EncryptedGoogleVault
+    public let connector: any GoogleCalendarConnecting
+
+    public init(
+        vault: EncryptedGoogleVault,
+        connector: any GoogleCalendarConnecting
+    ) {
+        self.vault = vault
+        self.connector = connector
+    }
+}
+
 @MainActor
 public final class CommitmentProtectionFlow: ObservableObject {
     @Published public private(set) var connectedAccount: GoogleAccount?
@@ -495,13 +738,17 @@ public final class CommitmentProtectionFlow: ObservableObject {
     @Published public private(set) var selectedCalendarIDs: Set<String> = []
     @Published public private(set) var connectionState: ConnectionState = .notConnected
     @Published public private(set) var isConnectingAccount = false
+    @Published public private(set) var connectingAccountID: String?
     @Published public private(set) var accountConnectionError: String?
     @Published public private(set) var accountDisconnectionError: String?
     @Published public private(set) var failedAccountDisconnectionID: String?
+    @Published public private(set) var terminatingAccountID: String?
+    @Published public private(set) var googleAccessReviewNotice: String?
+    @Published public private(set) var encryptedStorageError: String?
+    @Published public private(set) var requiresEncryptedStorageReset = false
     @Published public private(set) var isRestoringConnection = false
     @Published public private(set) var isProtectionConfirmed = false
     @Published public private(set) var isBlockingAvailable = true
-    @Published public private(set) var isTestAlertPresented = false
     @Published public private(set) var isStrongAlertPresented = false
     @Published public private(set) var isLaunchAtLoginEnabled = false
     @Published public private(set) var launchAtLoginError: String?
@@ -515,6 +762,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
     @Published public private(set) var lastActionMessage: String?
     @Published public private(set) var isRefreshingCoverage = false
     @Published public private(set) var isEarlyReminderEnabled: Bool
+    @Published public private(set) var isOutOfOfficeProtectionEnabled: Bool
     @Published public private(set) var isBlockingModeEnabled: Bool
     @Published public private(set) var earlyReminderLeadTimeMinutes: Int
     @Published public private(set) var strongAlertRepeatIntervalMinutes: Int
@@ -524,19 +772,35 @@ public final class CommitmentProtectionFlow: ObservableObject {
     @Published public private(set) var upcomingConflict: CommitmentConflict?
     @Published public private(set) var earlyReminderConflict: CommitmentConflict?
     @Published public private(set) var strongAlertConflict: CommitmentConflict?
+    @Published public private(set) var isAppManagedDataResetInProgress = false
+    private var appManagedDataResetMutationLockCount = 0
 
-    private let calendarConnector: any GoogleCalendarConnecting
+    private var calendarConnector: any GoogleCalendarConnecting
     private let launchAtLogin: any LaunchAtLoginControlling
     private let stateStore: UserDefaults
+    private let legacyConfigurationData: Data?
+    private var encryptedGoogleVault: EncryptedGoogleVault?
+    private let recoverEncryptedGoogleStorage: (@Sendable () throws -> RecoveredEncryptedGoogleStorage)?
+    private let volatileGoogleDataStore: VolatileGoogleDataStore
     private let now: () -> Date
     private static let stateKey = "commitment-protection.configuration"
     private static let activityLogKey = "commitment-protection.activity-log"
+    private static let legacyGoogleRefreshTokenPrefix = "google.refreshToken."
+    private static let pauseUntilKey = "commitment-protection.pause-until"
     private static let earlyReminderEnabledKey = "commitment-protection.early-reminder-enabled"
+    private static let outOfOfficeProtectionEnabledKey =
+        "commitment-protection.out-of-office-protection-enabled"
     private static let blockingModeEnabledKey = "commitment-protection.blocking-mode-enabled"
     private static let earlyReminderLeadTimeKey = "commitment-protection.early-reminder-lead-time"
     private static let strongAlertRepeatIntervalKey = "commitment-protection.strong-alert-repeat-interval"
     private static let freshEventsSchemaVersion = 1
     private static let coverageFreshnessInterval: TimeInterval = 15 * 60
+    private static let eventRetentionInterval: TimeInterval = 24 * 60 * 60
+    private static let minimumEarlyReminderPresentationLeadTime: TimeInterval = 60
+    private static let maximumPersistedEventsPerAccount = 2_000
+    private static let maximumEventSnapshotBytes = 2 * 1_024 * 1_024
+    private static let maximumActivitiesAcrossAccounts = 1_000
+    private static let maximumActivityBytesAcrossAccounts = 1_024 * 1_024
     private struct AccountRecord {
         var connection: GoogleCalendarConnection
         var selectedCalendarIDs: Set<String>
@@ -557,11 +821,15 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
     private enum AccountRefreshResult: Sendable {
         case success(accountID: String, events: [CalendarEvent])
-        case failure(accountID: String, message: String)
+        case failure(
+            accountID: String,
+            message: String,
+            credentialDisposition: GoogleCredentialFailureDisposition?
+        )
 
         var accountID: String {
             switch self {
-            case .success(let accountID, _), .failure(let accountID, _):
+            case .success(let accountID, _), .failure(let accountID, _, _):
                 return accountID
             }
         }
@@ -724,6 +992,13 @@ public final class CommitmentProtectionFlow: ObservableObject {
         let lastFreshEventsSchemaVersion: Int?
     }
 
+    private struct SavedEventSnapshot: Codable, Sendable {
+        let schemaVersion: Int
+        let capturedAt: Date
+        let lastSuccessfulRefreshAt: Date
+        let events: [CalendarEvent]
+    }
+
     private struct SavedConfiguration: Codable {
         let accounts: [SavedAccountConfiguration]
         let decisionOccurrence: SavedOccurrence?
@@ -854,17 +1129,46 @@ public final class CommitmentProtectionFlow: ObservableObject {
         }
     }
 
+    private var persistenceCoverageErrors: [String: String] = [:]
+    private var activityPersistenceErrorAccountIDs: Set<String> = []
+    private var corruptedProtectedAccountIDs: Set<String> = []
+    private var didUseLegacyConfiguration = false
+
     public init(
         calendarConnector: any GoogleCalendarConnecting,
         launchAtLogin: any LaunchAtLoginControlling,
         stateStore: UserDefaults = .standard,
+        encryptedGoogleVault: EncryptedGoogleVault? = nil,
+        initialEncryptedStorageError: String? = nil,
+        initialEncryptedStorageRequiresReset: Bool = false,
+        recoverEncryptedGoogleStorage: (@Sendable () throws -> RecoveredEncryptedGoogleStorage)? = nil,
+        startupMode: CommitmentProtectionStartupMode = .normal,
         now: @escaping () -> Date = Date.init
     ) {
         self.calendarConnector = calendarConnector
         self.launchAtLogin = launchAtLogin
         self.stateStore = stateStore
+        legacyConfigurationData = stateStore.data(forKey: Self.stateKey)
+        if !startupMode.isResetRecovery {
+            stateStore.removeObject(forKey: Self.stateKey)
+            stateStore.removeObject(forKey: Self.activityLogKey)
+        }
+        self.encryptedGoogleVault = encryptedGoogleVault
+        self.recoverEncryptedGoogleStorage = recoverEncryptedGoogleStorage
+        volatileGoogleDataStore = startupMode.isResetRecovery
+            ? VolatileGoogleDataStore()
+            : VolatileGoogleDataStoreRegistry.store(for: stateStore)
         self.now = now
+        if !startupMode.isResetRecovery {
+            for key in stateStore.dictionaryRepresentation().keys
+                where key.hasPrefix(Self.legacyGoogleRefreshTokenPrefix) {
+                stateStore.removeObject(forKey: key)
+            }
+        }
         isEarlyReminderEnabled = stateStore.object(forKey: Self.earlyReminderEnabledKey) as? Bool ?? true
+        isOutOfOfficeProtectionEnabled = stateStore.object(
+            forKey: Self.outOfOfficeProtectionEnabledKey
+        ) as? Bool ?? false
         isBlockingModeEnabled = stateStore.object(forKey: Self.blockingModeEnabledKey) as? Bool ?? false
         let savedLeadTime = stateStore.integer(forKey: Self.earlyReminderLeadTimeKey)
         earlyReminderLeadTimeMinutes = savedLeadTime == 0
@@ -874,10 +1178,15 @@ public final class CommitmentProtectionFlow: ObservableObject {
         strongAlertRepeatIntervalMinutes = savedRepeatInterval == 0
             ? 1
             : Self.clampedStrongAlertRepeatInterval(savedRepeatInterval)
-        pauseUntil = nil
-        requestLaunchAtLogin()
-        activityLog = loadActivityLog()
-        saveActivityLog()
+        pauseUntil = stateStore.object(forKey: Self.pauseUntilKey) as? Date
+        isLaunchAtLoginEnabled = launchAtLogin.isEnabled
+        encryptedStorageError = initialEncryptedStorageError
+        requiresEncryptedStorageReset = initialEncryptedStorageRequiresReset
+        activityLog = []
+        if startupMode.isResetRecovery {
+            appManagedDataResetMutationLockCount = 1
+            isAppManagedDataResetInProgress = true
+        }
     }
 
     public func refreshLaunchAtLoginStatus() {
@@ -888,15 +1197,25 @@ public final class CommitmentProtectionFlow: ObservableObject {
     }
 
     public func requestLaunchAtLogin() {
+        setLaunchAtLoginEnabled(true)
+    }
+
+    public func setLaunchAtLoginEnabled(_ isEnabled: Bool) {
+        guard !isAppManagedDataResetInProgress else { return }
+
         do {
-            try launchAtLogin.enable()
+            if isEnabled {
+                try launchAtLogin.enable()
+            } else {
+                try launchAtLogin.disable()
+            }
             isLaunchAtLoginEnabled = launchAtLogin.isEnabled
-            launchAtLoginError = isLaunchAtLoginEnabled
+            launchAtLoginError = self.isLaunchAtLoginEnabled == isEnabled
                 ? nil
-                : "macOS did not enable start at login. Try again or review Login Items in System Settings."
+                : "macOS did not update start at login. Try again or review Login Items in System Settings."
         } catch {
             isLaunchAtLoginEnabled = launchAtLogin.isEnabled
-            launchAtLoginError = error.localizedDescription
+            launchAtLoginError = Self.privacySafeUserFacingErrorDescription(error)
         }
     }
 
@@ -912,7 +1231,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
         switch coverageHealth(for: record, at: coverageEvaluationDate) {
         case .reconnectRequired:
-            return "Reconnect \(record.connection.account.protectionDisplayLabel) to resume calendar protection. Google access is kept only while In Your Face is running."
+            return "Reconnect \(record.connection.account.protectionDisplayLabel) to resume calendar protection. Routine relaunches stay connected; Google authorization or encrypted device data needs attention."
         case .stale:
             return "Calendar data for \(record.connection.account.protectionDisplayLabel) hasn’t refreshed in more than 15 minutes. Known reminders are Unverified; new reminders won’t be created until Google Calendar refreshes successfully."
         case .unavailable(let message):
@@ -923,7 +1242,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
             let otherAccountDetail = otherAccountsRemainProtected
                 ? " Other Connected Accounts remain protected."
                 : ""
-            return "Google Calendar couldn’t refresh \(record.connection.account.protectionDisplayLabel). \(message) New reminders for this account wait until access returns; In Your Face will retry automatically.\(otherAccountDetail)"
+            return "Google Calendar couldn’t refresh \(record.connection.account.protectionDisplayLabel). \(message) New reminders for this account wait until access returns; Meeting Incoming will retry automatically.\(otherAccountDetail)"
         case .noCoverage, .checking, .fresh:
             return nil
         }
@@ -962,7 +1281,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
         let currentDate = date ?? now()
         let hasImminentCommitment = record.lastFreshEvents.contains { event in
             guard event.calendarID == calendarID,
-                  event.isEligibleForProtection,
+                  isEventEligibleForProtection(event),
                   let startDate = event.startDate,
                   let endDate = event.endDate,
                   endDate > currentDate else {
@@ -1011,9 +1330,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
             if isPaused() {
                 return "Protection Paused"
             }
-            return isLaunchAtLoginEnabled
-                ? "Active Protection"
-                : "Active Protection · Login Needs Attention"
+            return "Active Protection"
         case .unavailable:
             return isCheckingCoverage ? "Checking Coverage" : "Coverage Needs Attention"
         }
@@ -1047,6 +1364,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
     @discardableResult
     public func pause(for duration: PauseDuration, at date: Date? = nil) -> Bool {
+        guard !isAppManagedDataResetInProgress else { return false }
         let currentDate = date ?? now()
         guard hasConfiguredProtection else {
             return false
@@ -1064,6 +1382,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
         guard expiration > currentDate else { return false }
 
         pauseUntil = expiration
+        stateStore.set(expiration, forKey: Self.pauseUntilKey)
         earlyReminderCommitment = nil
         earlyReminderConflictMergedCommitments = []
         earlyReminderConflict = nil
@@ -1115,15 +1434,24 @@ public final class CommitmentProtectionFlow: ObservableObject {
         await connectGoogleAccount(expectedAccountID: nil)
     }
 
+    public var isGoogleAccountOperationInProgress: Bool {
+        isConnectingAccount || isRestoringConnection || terminatingAccountID != nil ||
+            isAppManagedDataResetInProgress
+    }
+
     public func reconnectGoogleAccount(accountID: String) async {
         guard accountRecords[accountID] != nil else { return }
         await connectGoogleAccount(expectedAccountID: accountID)
     }
 
     private func connectGoogleAccount(expectedAccountID: String?) async {
-        guard !isConnectingAccount else { return }
+        guard !isGoogleAccountOperationInProgress else { return }
         isConnectingAccount = true
-        defer { isConnectingAccount = false }
+        connectingAccountID = expectedAccountID
+        defer {
+            connectingAccountID = nil
+            isConnectingAccount = false
+        }
 
         invalidateRefreshes()
         accountConnectionError = nil
@@ -1133,6 +1461,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
         do {
             let connection = try await calendarConnector.connect(expectedAccountID: expectedAccountID)
+            guard !isAppManagedDataResetInProgress else { return }
             let existingRecord = accountRecords[connection.account.id]
             if existingRecord?.isProtectionConfirmed == true {
                 shouldSuppressUntrackedPastOccurrencesOnNextRefresh = true
@@ -1160,89 +1489,221 @@ public final class CommitmentProtectionFlow: ObservableObject {
             )
             await refreshCommitmentProtection()
         } catch {
-            accountConnectionError = error.localizedDescription
+            guard !isAppManagedDataResetInProgress else { return }
+            let errorDescription = Self.privacySafeUserFacingErrorDescription(error)
+            accountConnectionError = errorDescription
             if let expectedAccountID, accountRecords[expectedAccountID] != nil {
                 accountRecords[expectedAccountID]?.connectionState = .reconnectRequired
                 activeAccountID = expectedAccountID
                 syncCoverageAndActiveAccountProjection()
             } else {
-                connectionState = .failed(error.localizedDescription)
+                connectionState = .failed(errorDescription)
             }
             recordActivity(
                 .accountConnectionFailed,
                 actor: .system,
                 title: "Google Calendar connection failed",
-                detail: "Connection could not be completed: \(error.localizedDescription)."
+                detail: "Connection could not be completed: \(errorDescription)."
             )
         }
     }
 
     @discardableResult
-    public func disconnectGoogleAccount() -> Bool {
+    public func disconnectGoogleAccount() async -> Bool {
         guard let accountID = activeAccountID ?? connectedAccount?.id else {
             return false
         }
-        return disconnectGoogleAccount(accountID: accountID)
+        return await disconnectGoogleAccount(accountID: accountID)
     }
 
     @discardableResult
-    public func disconnectGoogleAccount(accountID: String) -> Bool {
+    public func disconnectGoogleAccount(accountID: String) async -> Bool {
+        guard !isGoogleAccountOperationInProgress else {
+            return false
+        }
         invalidateRefreshes()
         accountDisconnectionError = nil
         failedAccountDisconnectionID = nil
         guard let record = accountRecords[accountID] else { return false }
+        terminatingAccountID = accountID
+        defer { terminatingAccountID = nil }
         do {
-            try calendarConnector.disconnect(accountID: accountID)
+            let result = try await revokeGoogleAuthorization(accountID: accountID)
+            guard !isAppManagedDataResetInProgress else { return false }
+            guard result != .localCredentialMissing else {
+                throw ProtectionFlowError.localCredentialMissingForRevocation
+            }
+            invalidateRefreshes()
+            try removeProtectedRecord(.eventSnapshot, accountID: accountID)
         } catch {
-            accountDisconnectionError = "Couldn’t disconnect \(record.connection.account.protectionDisplayLabel). \(error.localizedDescription)"
+            guard !isAppManagedDataResetInProgress else { return false }
+            let errorDescription = Self.privacySafeUserFacingErrorDescription(error)
+            accountDisconnectionError = "Couldn’t disconnect \(record.connection.account.protectionDisplayLabel). \(errorDescription)"
             failedAccountDisconnectionID = accountID
-            accountRecords[accountID]?.connectionState = .failed(error.localizedDescription)
-            syncCoverageAndActiveAccountProjection()
-            recordActivity(
-                .accountDisconnectFailed,
-                actor: .system,
-                title: "Google Calendar disconnect failed",
-                detail: "The account could not be disconnected: \(error.localizedDescription).",
-                account: record.connection.account
-            )
+            if error is EncryptedGoogleVaultError {
+                handleProtectedStorageError(error)
+            }
             return false
         }
 
+        guard let latestRecord = accountRecords[accountID] else { return false }
+        let retainedCalendars = latestRecord.selectedCalendars
+        accountRecords[accountID] = AccountRecord(
+            connection: GoogleCalendarConnection(
+                account: latestRecord.connection.account,
+                calendars: retainedCalendars
+            ),
+            selectedCalendarIDs: latestRecord.selectedCalendarIDs,
+            isProtectionConfirmed: latestRecord.isProtectionConfirmed,
+            connectionState: .reconnectRequired,
+            lastSuccessfulRefreshAt: nil,
+            lastFreshEvents: []
+        )
+        unverifiedAccountIDs.insert(accountID)
+        clearLocalState(forAccountID: accountID)
+        syncCoverageAndActiveAccountProjection()
         recordActivity(
             .accountDisconnected,
             actor: .user,
             title: "Google Calendar disconnected",
-            detail: "Disconnected the Google Calendar account.",
-            account: record.connection.account
+            detail: "Google access was revoked. Monitored Calendar choices and today’s local activity were retained.",
+            account: latestRecord.connection.account
         )
+        reconcileCachedProtectionAfterConfigurationChange(at: now())
+        syncCoverageAndActiveAccountProjection()
+        return true
+    }
+
+    @discardableResult
+    public func removeGoogleAccount(accountID: String) async -> Bool {
+        guard !isGoogleAccountOperationInProgress else {
+            return false
+        }
+        invalidateRefreshes()
+        accountDisconnectionError = nil
+        failedAccountDisconnectionID = nil
+        guard let record = accountRecords[accountID] else { return false }
+        terminatingAccountID = accountID
+        defer { terminatingAccountID = nil }
+
+        var unverifiedRevocationReason: String?
+        do {
+            do {
+                let result = try await revokeGoogleAuthorization(accountID: accountID)
+                guard !isAppManagedDataResetInProgress else { return false }
+                if result == .localCredentialMissing {
+                    unverifiedRevocationReason = "its local credential was missing"
+                }
+            } catch where isPermanentlyUnreadableCredential(error) {
+                guard !isAppManagedDataResetInProgress else { return false }
+                // A credential that cannot be authenticated or decoded cannot be
+                // presented to Google. User-confirmed Remove may still erase the
+                // entire local account boundary; Settings retains an independent
+                // route to review Google Account access.
+                unverifiedRevocationReason = "its protected credential was unreadable"
+            }
+            invalidateRefreshes()
+            try removeProtectedAccount(accountID)
+        } catch {
+            guard !isAppManagedDataResetInProgress else { return false }
+            let errorDescription = Self.privacySafeUserFacingErrorDescription(error)
+            accountDisconnectionError = "Couldn’t remove \(record.connection.account.protectionDisplayLabel). \(errorDescription)"
+            failedAccountDisconnectionID = accountID
+            if error is EncryptedGoogleVaultError {
+                handleProtectedStorageError(error)
+            }
+            return false
+        }
+
+        activityLog.removeAll { $0.containsProtectedData(forAccountID: accountID) }
+        clearLocalState(forAccountID: accountID)
         accountRecords.removeValue(forKey: accountID)
+        let removedCorruptedProtectedAccount = corruptedProtectedAccountIDs.contains(accountID)
+        persistenceCoverageErrors[accountID] = nil
+        activityPersistenceErrorAccountIDs.remove(accountID)
+        corruptedProtectedAccountIDs.remove(accountID)
         unverifiedAccountIDs.remove(accountID)
         newlySelectedCalendars = newlySelectedCalendars.filter { $0.accountID != accountID }
-
-        if decisionCommitment?.accountID == accountID {
-            clearLocalDecision()
-        }
         if activeAccountID == accountID {
             activeAccountID = accountRecords.keys.sorted().first
         }
         if accountRecords.isEmpty {
             pauseUntil = nil
-            clearDisplayedProtectionState()
+            stateStore.removeObject(forKey: Self.pauseUntilKey)
+            clearProtectionState()
             clearLastActionMessage()
             stateStore.removeObject(forKey: Self.stateKey)
+            stateStore.removeObject(forKey: Self.activityLogKey)
         } else {
+            saveActivityLog()
             saveConfiguration()
             reconcileCachedProtectionAfterConfigurationChange(at: now())
         }
         syncCoverageAndActiveAccountProjection()
+        if removedCorruptedProtectedAccount, corruptedProtectedAccountIDs.isEmpty {
+            requiresEncryptedStorageReset = false
+            encryptedStorageError = nil
+        }
+        if let unverifiedRevocationReason {
+            googleAccessReviewNotice = "Local data for \(record.connection.account.protectionDisplayLabel) was removed, but Google revocation could not be verified because \(unverifiedRevocationReason). Review Google Account access to remove Meeting Incoming there if it is still listed."
+        }
         if !accountRecords.isEmpty {
             Task { await refreshCommitmentProtection() }
         }
         return true
     }
 
+    @discardableResult
+    public func resetEncryptedGoogleData() -> Bool {
+        guard !isGoogleAccountOperationInProgress else {
+            return false
+        }
+        do {
+            if let encryptedGoogleVault {
+                try encryptedGoogleVault.reset()
+            } else if let recoverEncryptedGoogleStorage {
+                let recoveredStorage = try recoverEncryptedGoogleStorage()
+                encryptedGoogleVault = recoveredStorage.vault
+                calendarConnector = recoveredStorage.connector
+            } else {
+                volatileGoogleDataStore.reset()
+            }
+            accountRecords = [:]
+            activityLog = []
+            persistenceCoverageErrors = [:]
+            activityPersistenceErrorAccountIDs = []
+            corruptedProtectedAccountIDs = []
+            unverifiedAccountIDs = []
+            activeAccountID = nil
+            clearProtectionState()
+            stateStore.removeObject(forKey: Self.stateKey)
+            stateStore.removeObject(forKey: Self.activityLogKey)
+            stateStore.removeObject(forKey: Self.pauseUntilKey)
+            encryptedStorageError = nil
+            requiresEncryptedStorageReset = false
+            syncCoverageAndActiveAccountProjection()
+            return true
+        } catch {
+            handleProtectedStorageError(error)
+            return false
+        }
+    }
+
+    private func revokeGoogleAuthorization(
+        accountID: String
+    ) async throws -> GoogleAuthorizationRevocationResult {
+        if let revoker = calendarConnector as? any GoogleAuthorizationRevoking {
+            return try await revoker.revokeAuthorization(accountID: accountID)
+        } else {
+            try calendarConnector.disconnect(accountID: accountID)
+            return .revoked
+        }
+    }
+
     public func restoreSavedConnection() async {
+        guard !isAppManagedDataResetInProgress else { return }
         guard let savedConfiguration = loadConfiguration() else { return }
+        activityLog = loadActivityLog()
 
         invalidateRefreshes()
         isRestoringConnection = true
@@ -1250,10 +1711,38 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
         accountRecords = [:]
         unverifiedAccountIDs = []
+        var accountIDsRequiringLocalStateClear = corruptedProtectedAccountIDs
         for savedAccount in savedConfiguration.accounts {
+            if corruptedProtectedAccountIDs.contains(savedAccount.account.id) {
+                let message = persistenceCoverageErrors[savedAccount.account.id] ??
+                    "Protected Google data is damaged. Reset encrypted Google data or remove this account."
+                accountRecords[savedAccount.account.id] = AccountRecord(
+                    connection: GoogleCalendarConnection(
+                        account: savedAccount.account,
+                        calendars: savedAccount.calendars
+                    ),
+                    selectedCalendarIDs: Set(savedAccount.selectedCalendarIDs),
+                    isProtectionConfirmed: savedAccount.isProtectionConfirmed,
+                    connectionState: .failed(message),
+                    lastSuccessfulRefreshAt: nil,
+                    lastFreshEvents: []
+                )
+                unverifiedAccountIDs.insert(savedAccount.account.id)
+                continue
+            }
             do {
-                guard let connection = try await calendarConnector.restore(accountID: savedAccount.account.id) else {
+                let restoredConnection = try await calendarConnector.restore(
+                    accountID: savedAccount.account.id
+                )
+                guard !isAppManagedDataResetInProgress else { return }
+                guard let connection = restoredConnection else {
                     guard !savedAccount.account.id.isEmpty else { continue }
+                    do {
+                        try removeProtectedRecord(.eventSnapshot, accountID: savedAccount.account.id)
+                    } catch {
+                        markProtectedAccountStorageFailure(savedAccount.account.id, error: error)
+                    }
+                    accountIDsRequiringLocalStateClear.insert(savedAccount.account.id)
                     accountRecords[savedAccount.account.id] = AccountRecord(
                         connection: GoogleCalendarConnection(
                             account: savedAccount.account,
@@ -1262,12 +1751,8 @@ public final class CommitmentProtectionFlow: ObservableObject {
                         selectedCalendarIDs: Set(savedAccount.selectedCalendarIDs),
                         isProtectionConfirmed: savedAccount.isProtectionConfirmed,
                         connectionState: .reconnectRequired,
-                        lastSuccessfulRefreshAt: savedAccount.lastSuccessfulRefreshAt,
-                        lastFreshEvents: restoredFreshEvents(
-                            from: savedAccount,
-                            accountID: savedAccount.account.id,
-                            calendars: savedAccount.calendars
-                        )
+                        lastSuccessfulRefreshAt: nil,
+                        lastFreshEvents: []
                     )
                     unverifiedAccountIDs.insert(savedAccount.account.id)
                     continue
@@ -1289,7 +1774,30 @@ public final class CommitmentProtectionFlow: ObservableObject {
                     )
                 )
             } catch {
+                guard !isAppManagedDataResetInProgress else { return }
                 guard !savedAccount.account.id.isEmpty else { continue }
+                unverifiedAccountIDs.insert(savedAccount.account.id)
+                let connectionState: ConnectionState
+                if let connectorError = error as? GoogleCalendarConnectorError,
+                   connectorError.credentialFailureDisposition == .invalid {
+                    connectionState = .reconnectRequired
+                    do {
+                        try removeProtectedRecord(.eventSnapshot, accountID: savedAccount.account.id)
+                    } catch {
+                        markProtectedAccountStorageFailure(savedAccount.account.id, error: error)
+                    }
+                    accountIDsRequiringLocalStateClear.insert(savedAccount.account.id)
+                } else {
+                    connectionState = .failed(
+                        Self.privacySafeUserFacingErrorDescription(error)
+                    )
+                }
+                if error is EncryptedGoogleVaultError {
+                    markProtectedAccountStorageFailure(
+                        savedAccount.account.id,
+                        error: error
+                    )
+                }
                 accountRecords[savedAccount.account.id] = AccountRecord(
                     connection: GoogleCalendarConnection(
                         account: savedAccount.account,
@@ -1297,19 +1805,26 @@ public final class CommitmentProtectionFlow: ObservableObject {
                     ),
                     selectedCalendarIDs: Set(savedAccount.selectedCalendarIDs),
                     isProtectionConfirmed: savedAccount.isProtectionConfirmed,
-                    connectionState: .failed(error.localizedDescription),
-                    lastSuccessfulRefreshAt: savedAccount.lastSuccessfulRefreshAt,
-                    lastFreshEvents: restoredFreshEvents(
-                        from: savedAccount,
-                        accountID: savedAccount.account.id,
-                        calendars: savedAccount.calendars
-                    )
+                    connectionState: connectionState,
+                    lastSuccessfulRefreshAt: connectionState == .reconnectRequired
+                        ? nil
+                        : savedAccount.lastSuccessfulRefreshAt,
+                    lastFreshEvents: connectionState == .reconnectRequired
+                        ? []
+                        : restoredFreshEvents(
+                            from: savedAccount,
+                            accountID: savedAccount.account.id,
+                            calendars: savedAccount.calendars
+                        )
                 )
             }
         }
 
         activeAccountID = accountRecords.keys.sorted().first
         restoreLocalState(from: savedConfiguration)
+        for accountID in accountIDsRequiringLocalStateClear {
+            clearLocalState(forAccountID: accountID)
+        }
         syncCoverageAndActiveAccountProjection()
         saveActivityLog()
         saveConfiguration()
@@ -1329,7 +1844,8 @@ public final class CommitmentProtectionFlow: ObservableObject {
     }
 
     public func setCalendarSelected(_ isSelected: Bool, calendarID: String, accountID: String) {
-        guard var record = accountRecords[accountID],
+        guard !isGoogleAccountOperationInProgress,
+              var record = accountRecords[accountID],
               record.connection.calendars.contains(where: { $0.id == calendarID }) else { return }
 
         if isSelected {
@@ -1377,7 +1893,9 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
     @discardableResult
     public func confirmProtection(for accountID: String) -> Bool {
-        guard var record = accountRecords[accountID], !record.selectedCalendarIDs.isEmpty else {
+        guard !isGoogleAccountOperationInProgress,
+              var record = accountRecords[accountID],
+              !record.selectedCalendarIDs.isEmpty else {
             return false
         }
         record.isProtectionConfirmed = true
@@ -1397,6 +1915,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
     @discardableResult
     public func confirmAllProtection() -> Bool {
+        guard !isGoogleAccountOperationInProgress else { return false }
         let accountIDs = accountRecords.values
             .filter { !$0.selectedCalendarIDs.isEmpty }
             .map { $0.connection.account.id }
@@ -1422,10 +1941,12 @@ public final class CommitmentProtectionFlow: ObservableObject {
     }
 
     public func setBlockingAvailability(_ isAvailable: Bool) {
+        guard !isAppManagedDataResetInProgress else { return }
         isBlockingAvailable = isAvailable
     }
 
     public func setEarlyReminderEnabled(_ isEnabled: Bool) {
+        guard !isAppManagedDataResetInProgress else { return }
         guard isEnabled != isEarlyReminderEnabled else { return }
 
         isEarlyReminderEnabled = isEnabled
@@ -1445,7 +1966,39 @@ public final class CommitmentProtectionFlow: ObservableObject {
         Task { await refreshCommitmentProtection() }
     }
 
+    public func setOutOfOfficeProtectionEnabled(_ isEnabled: Bool) {
+        guard !isAppManagedDataResetInProgress else { return }
+        guard isEnabled != isOutOfOfficeProtectionEnabled else { return }
+
+        isOutOfOfficeProtectionEnabled = isEnabled
+        stateStore.set(isEnabled, forKey: Self.outOfOfficeProtectionEnabledKey)
+        invalidateRefreshes()
+        if isEnabled {
+            // A newly enabled event type follows the same non-retroactive rule as a newly
+            // selected calendar: already-started occurrences are observed but not adopted.
+            shouldSuppressUntrackedPastOccurrencesOnNextRefresh = true
+        } else {
+            for accountID in Array(accountRecords.keys) {
+                accountRecords[accountID]?.lastFreshEvents.removeAll {
+                    $0.eventType == .outOfOffice
+                }
+            }
+        }
+        reconcileCachedProtectionAfterConfigurationChange(at: now())
+        syncCoverageAndActiveAccountProjection()
+        recordActivity(
+            .configurationChanged,
+            actor: .user,
+            title: "Out-of-office protection setting changed",
+            detail: isEnabled
+                ? "Out-of-office protection enabled."
+                : "Out-of-office protection disabled."
+        )
+        Task { await refreshCommitmentProtection() }
+    }
+
     public func setBlockingModeEnabled(_ isEnabled: Bool) {
+        guard !isAppManagedDataResetInProgress else { return }
         guard isEnabled != isBlockingModeEnabled else { return }
 
         isBlockingModeEnabled = isEnabled
@@ -1459,6 +2012,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
     }
 
     public func setStrongAlertRepeatInterval(minutes: Int) {
+        guard !isAppManagedDataResetInProgress else { return }
         let clampedMinutes = Self.clampedStrongAlertRepeatInterval(minutes)
         guard clampedMinutes != strongAlertRepeatIntervalMinutes else { return }
 
@@ -1479,6 +2033,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
     }
 
     public func setEarlyReminderLeadTime(minutes: Int) {
+        guard !isAppManagedDataResetInProgress else { return }
         let clampedMinutes = Self.clampedEarlyReminderLeadTime(minutes)
         guard clampedMinutes != earlyReminderLeadTimeMinutes else { return }
 
@@ -1499,6 +2054,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
     }
 
     public func startMonitoring() {
+        guard !isAppManagedDataResetInProgress else { return }
         guard monitoringTask == nil else { return }
 
         monitoringTask = Task { [weak self] in
@@ -1514,6 +2070,74 @@ public final class CommitmentProtectionFlow: ObservableObject {
         }
     }
 
+    /// Stops every source of automatic refresh before an app-managed data reset.
+    ///
+    /// The reset coordinator must await this method before revoking authorization
+    /// or replacing storage. Invalidating the generation prevents an in-flight
+    /// provider response from writing protected data after the reset begins.
+    public func stopMonitoringForAppManagedDataReset() async {
+        monitoringTask?.cancel()
+        monitoringTask = nil
+        pendingRefreshDate = nil
+        invalidateRefreshes()
+
+        let drainingRefresh = refreshDrainTask
+        drainingRefresh?.cancel()
+        await drainingRefresh?.value
+        refreshDrainTask = nil
+        isRefreshingCoverage = false
+    }
+
+    /// Closes the production mutation gate before a durable reset is committed.
+    /// The reset coordinator calls this synchronously before its first suspension
+    /// point so UI actions cannot race journal creation or account enumeration.
+    public func lockMutationsForAppManagedDataReset() {
+        appManagedDataResetMutationLockCount += 1
+        guard appManagedDataResetMutationLockCount == 1 else { return }
+        isAppManagedDataResetInProgress = true
+        pendingRefreshDate = nil
+        invalidateRefreshes()
+    }
+
+    /// Reopens production mutations when recovery discovers that no reset is
+    /// active, or when reset setup fails before a journal is committed.
+    public func unlockMutationsForAppManagedDataReset() {
+        guard appManagedDataResetMutationLockCount > 0 else { return }
+        appManagedDataResetMutationLockCount -= 1
+        guard appManagedDataResetMutationLockCount == 0 else { return }
+        isAppManagedDataResetInProgress = false
+    }
+
+    /// Number of encrypted Saved Accounts that still need reset-time revocation.
+    /// The reset journal persists only an ordinal, never a Google-derived ID.
+    public var appManagedDataResetAccountCount: Int {
+        if !accountRecords.isEmpty {
+            return accountRecords.count
+        }
+        return (try? protectedAccountIDs().count) ?? 0
+    }
+
+    /// Revokes one Saved Account selected by a stable, sorted ordinal.
+    ///
+    /// Account records remain in encrypted storage until every revocation step
+    /// reaches a terminal result. This keeps ordinals stable across recovery while
+    /// avoiding Google-derived identifiers in the plaintext reset journal.
+    public func revokeAuthorizationForAppManagedDataReset(
+        accountPosition: Int
+    ) async throws -> GoogleAuthorizationRevocationResult {
+        let accountIDs = accountRecords.isEmpty
+            ? try protectedAccountIDs().sorted()
+            : accountRecords.keys.sorted()
+        guard accountIDs.indices.contains(accountPosition) else {
+            throw AppManagedDataResetFlowError.accountPositionOutOfBounds
+        }
+        do {
+            return try await revokeGoogleAuthorization(accountID: accountIDs[accountPosition])
+        } catch where isPermanentlyUnreadableCredential(error) {
+            return .localCredentialMissing
+        }
+    }
+
     public func refreshCommitmentProtection() async {
         await refreshCommitmentProtection(at: now())
     }
@@ -1523,6 +2147,8 @@ public final class CommitmentProtectionFlow: ObservableObject {
     }
 
     public func refreshCommitmentProtection(at currentDate: Date) async {
+        guard !isAppManagedDataResetInProgress else { return }
+
         if let pendingRefreshDate {
             self.pendingRefreshDate = max(pendingRefreshDate, currentDate)
         } else {
@@ -1555,6 +2181,10 @@ public final class CommitmentProtectionFlow: ObservableObject {
     }
 
     private func performCommitmentProtectionRefresh(at currentDate: Date) async {
+        // Revocation is transactional from the UI's perspective. A refresh that
+        // treats the pending account as absent would mutate local protection even
+        // if Google later returns a transient failure.
+        guard terminatingAccountID == nil else { return }
         lastEvaluatedCoverageDate = currentDate
         if pruneActivityLog(at: currentDate) {
             saveActivityLog()
@@ -1563,7 +2193,11 @@ public final class CommitmentProtectionFlow: ObservableObject {
         migrateLegacyActivityCalendarContext(with: [])
         let generation = beginRefresh()
         let configuredAccountIDs = accountRecords.values
-            .filter { !$0.selectedCalendars.isEmpty && $0.isProtectionConfirmed }
+            .filter {
+                !$0.selectedCalendars.isEmpty &&
+                    $0.isProtectionConfirmed &&
+                    !corruptedProtectedAccountIDs.contains($0.connection.account.id)
+            }
             .map { $0.connection.account.id }
             .sorted()
         guard !configuredAccountIDs.isEmpty else {
@@ -1610,7 +2244,12 @@ public final class CommitmentProtectionFlow: ObservableObject {
                         }
                         return .success(accountID: request.accountID, events: events)
                     } catch {
-                        return .failure(accountID: request.accountID, message: error.localizedDescription)
+                        return .failure(
+                            accountID: request.accountID,
+                            message: Self.privacySafeUserFacingErrorDescription(error),
+                            credentialDisposition: (error as? GoogleCalendarConnectorError)?
+                                .credentialFailureDisposition
+                        )
                     }
                 }
             }
@@ -1633,7 +2272,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
                         CalendarSelectionIdentity(calendarID: $0.id, accountID: accountID)
                     }).intersection(newlySelectedCalendars)
                     let protectionEvents = freshEvents.filter { event in
-                        event.isEligibleForProtection &&
+                        isEventEligibleForProtection(event) &&
                             (event.endDate ?? .distantPast) > currentDate
                     }
                     let eventsToSuppress = protectionEvents.filter { event in
@@ -1665,11 +2304,24 @@ public final class CommitmentProtectionFlow: ObservableObject {
                         )
                     }
 
-                case .failure(_, let message):
+                case .failure(_, let message, let credentialDisposition):
                     didRefreshAllConfiguredAccounts = false
                     let wasAlreadyUnavailable = record.connectionState == .failed(message) ||
                         unverifiedAccountIDs.contains(accountID)
-                    record.connectionState = .failed(message)
+                    if credentialDisposition == .invalid {
+                        record.connectionState = .reconnectRequired
+                        record.lastSuccessfulRefreshAt = nil
+                        record.lastFreshEvents = []
+                        eventsByAccount[accountID] = []
+                        do {
+                            try removeProtectedRecord(.eventSnapshot, accountID: accountID)
+                        } catch {
+                            handleProtectedStorageError(error)
+                        }
+                        clearLocalState(forAccountID: accountID)
+                    } else {
+                        record.connectionState = .failed(message)
+                    }
                     accountRecords[accountID] = record
                     unverifiedAccountIDs.insert(accountID)
                     if !wasAlreadyUnavailable {
@@ -1701,28 +2353,6 @@ public final class CommitmentProtectionFlow: ObservableObject {
                 shouldSuppressUntrackedPastOccurrencesOnNextRefresh = false
             }
         }
-    }
-
-    public func presentTestAlert() {
-        guard !isTestAlertPresented else { return }
-        isTestAlertPresented = true
-        recordActivity(
-            .testAlertShown,
-            actor: .user,
-            title: "Test Alert shown",
-            detail: "The interruption experience was opened."
-        )
-    }
-
-    public func dismissTestAlert() {
-        guard isTestAlertPresented else { return }
-        isTestAlertPresented = false
-        recordActivity(
-            .testAlertDismissed,
-            actor: .user,
-            title: "Test Alert dismissed",
-            detail: "The interruption experience was closed."
-        )
     }
 
     public var strongAlertPrimaryActionTitle: String {
@@ -1772,6 +2402,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
     @discardableResult
     public func selectPrimary(for commitment: CalendarEvent) -> Bool {
+        guard !isAppManagedDataResetInProgress else { return false }
         guard let group = conflictGroup(containing: commitment),
               let groups = displayedConflictGroups(containing: group),
               groups.count > 1,
@@ -1845,6 +2476,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
         using meetingLink: URL,
         open: (URL) -> Bool
     ) -> Bool {
+        guard !isAppManagedDataResetInProgress else { return false }
         guard let group = validatedStrongAlertJoinGroup(
             for: commitment,
             using: meetingLink
@@ -1858,6 +2490,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
             meetingLinkOpenFailure = (occurrence, message)
             return false
         }
+        guard !isAppManagedDataResetInProgress else { return false }
 
         recordDecision(
             .joined,
@@ -1916,6 +2549,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
     @discardableResult
     public func dismissCommitment(for commitment: CalendarEvent, at date: Date? = nil) -> Bool {
+        guard !isAppManagedDataResetInProgress else { return false }
         guard isActionable(commitment),
               let endDate = mergedCommitment(containing: commitment)?.endDate ?? commitment.endDate,
               endDate > (date ?? now()) else {
@@ -1932,6 +2566,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
     @discardableResult
     public func restoreProtection(at date: Date? = nil) -> Bool {
+        guard !isAppManagedDataResetInProgress else { return false }
         let currentDate = date ?? now()
         guard currentCommitmentDecision?.isRestorable == true,
               let commitment = decisionCommitment,
@@ -1961,6 +2596,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
     @discardableResult
     public func snoozeEarlyReminder(minutes: Int, at date: Date? = nil) -> Bool {
+        guard !isAppManagedDataResetInProgress else { return false }
         let currentDate = date ?? now()
         guard snoozeOptionsMinutes.contains(minutes),
               let commitment = earlyReminderCommitment,
@@ -2013,6 +2649,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
     }
 
     public func closeStrongAlertSurface(at date: Date = Date()) {
+        guard !isAppManagedDataResetInProgress else { return }
         guard isStrongAlertPresented,
               let commitment = strongAlertCommitment else { return }
         isStrongAlertPresented = false
@@ -2072,6 +2709,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
     @discardableResult
     public func clearEarlyReminder(for commitment: CalendarEvent) -> Bool {
+        guard !isAppManagedDataResetInProgress else { return false }
         guard isCurrentEarlyReminder(commitment),
               let earlyReminderCommitment else { return false }
         let group = earlyReminderMergedCommitment
@@ -2169,6 +2807,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
     }
 
     private func handle(_ commitment: CalendarEvent, at date: Date) -> Bool {
+        guard !isAppManagedDataResetInProgress else { return false }
         let endDate = mergedCommitment(containing: commitment)?.endDate ?? commitment.endDate
         guard let endDate, endDate > date else { return false }
         recordDecision(
@@ -2224,15 +2863,27 @@ public final class CommitmentProtectionFlow: ObservableObject {
     }
 
     private func makeMergedCommitment(from representations: [CalendarEvent]) -> MergedCommitment {
-        let sortedRepresentations = representations.sorted { $0.id < $1.id }
+        let sortedRepresentations = representations.sorted { left, right in
+            if left.id != right.id { return left.id < right.id }
+            if left.accountID != right.accountID { return left.accountID < right.accountID }
+            if left.calendarID != right.calendarID { return left.calendarID < right.calendarID }
+            if left.startDate != right.startDate {
+                return (left.startDate ?? .distantPast) < (right.startDate ?? .distantPast)
+            }
+            return (left.meetingDescription ?? "") < (right.meetingDescription ?? "")
+        }
         let canonical = sortedRepresentations[0]
         let endDate = sortedRepresentations.compactMap(\.endDate).max() ?? canonical.endDate ?? .distantPast
         let meetingLinks = CalendarEvent.deduplicatedMeetingLinks(
             sortedRepresentations.flatMap(\.recognizedMeetingLinks)
         )
+        let meetingDescription = canonical.meetingDescription ?? sortedRepresentations
+            .compactMap(\.meetingDescription)
+            .first
         let displayEvent = CalendarEvent(
             id: canonical.id,
             title: canonical.title,
+            meetingDescription: meetingDescription,
             startDate: canonical.startDate,
             endDate: endDate,
             timeZoneIdentifier: canonical.timeZoneIdentifier,
@@ -2384,10 +3035,21 @@ public final class CommitmentProtectionFlow: ObservableObject {
         let currentEvents = accountRecords.values
             .flatMap(\.lastFreshEvents)
             .filter { event in
-                event.isEligibleForProtection &&
+                isEventEligibleForProtection(event) &&
                     (event.endDate ?? .distantPast) > date
             }
         return mergedCommitments(from: currentEvents).first { $0.contains(commitment) }
+    }
+
+    private func hasEnabledProtectionWindow(_ event: CalendarEvent) -> Bool {
+        guard !event.isAllDay, event.startDate != nil, event.endDate != nil else {
+            return false
+        }
+        return event.eventType != .outOfOffice || isOutOfOfficeProtectionEnabled
+    }
+
+    private func isEventEligibleForProtection(_ event: CalendarEvent) -> Bool {
+        event.isAccepted && hasEnabledProtectionWindow(event)
     }
 
     private func isUpcoming(_ commitment: MergedCommitment, at date: Date) -> Bool {
@@ -2420,6 +3082,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
         at currentDate: Date,
         isCompleteSnapshot: Bool = true
     ) {
+        guard !isAppManagedDataResetInProgress else { return }
         updateTemporaryLifecycleState(at: currentDate)
         recordAcceptanceMutations(
             in: events,
@@ -2428,7 +3091,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
         )
         let eligibleEvents = events
             .filter { event in
-                guard event.isEligibleForProtection,
+                guard isEventEligibleForProtection(event),
                       event.startDate != nil,
                       let endDate = event.endDate else {
                     return false
@@ -2521,7 +3184,20 @@ public final class CommitmentProtectionFlow: ObservableObject {
             return
         }
 
-        let isNewEarlyReminder = earlyReminderMergedCommitment?.sharesOccurrence(with: nextProtectedCommitment) != true
+        let isExistingEarlyReminder = earlyReminderMergedCommitment?.sharesOccurrence(
+            with: nextProtectedCommitment
+        ) == true
+        guard isExistingEarlyReminder ||
+            startDate.timeIntervalSince(currentDate) >= Self.minimumEarlyReminderPresentationLeadTime
+        else {
+            earlyReminderMergedCommitment = nil
+            earlyReminderCommitment = nil
+            earlyReminderConflictMergedCommitments = []
+            earlyReminderConflict = nil
+            return
+        }
+
+        let isNewEarlyReminder = !isExistingEarlyReminder
         earlyReminderMergedCommitment = nextProtectedCommitment
         earlyReminderCommitment = nextProtectedCommitment.displayEvent
         earlyReminderConflictMergedCommitments = nextConflictGroups ?? []
@@ -2545,6 +3221,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
         var didChange = false
         if let pauseUntil, pauseUntil <= currentDate {
             self.pauseUntil = nil
+            stateStore.removeObject(forKey: Self.pauseUntilKey)
             recordActivity(
                 .pauseEnded,
                 actor: .system,
@@ -2565,7 +3242,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
         pruneMissingOccurrences: Bool = true
     ) {
         let trackedEvents = events.filter { event in
-            guard event.hasProtectionWindow,
+            guard hasEnabledProtectionWindow(event),
                   let endDate = event.endDate else {
                 return false
             }
@@ -2646,6 +3323,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
         group: MergedCommitment? = nil,
         message: String
     ) {
+        guard !isAppManagedDataResetInProgress else { return }
         let effectiveGroup = group ?? mergedCommitment(containing: commitment)
         let occurrence = OccurrenceIdentity(commitment)
         decisionOccurrence = OccurrenceIdentity(commitment)
@@ -2928,6 +3606,9 @@ public final class CommitmentProtectionFlow: ObservableObject {
     }
 
     private func coverageHealth(for record: AccountRecord, at date: Date) -> CoverageHealth {
+        if let persistenceError = persistenceCoverageErrors[record.connection.account.id] {
+            return .unavailable(persistenceError)
+        }
         switch record.connectionState {
         case .connected:
             guard !record.selectedCalendars.isEmpty, record.isProtectionConfirmed else {
@@ -3003,8 +3684,10 @@ public final class CommitmentProtectionFlow: ObservableObject {
         selectedCalendarIDs = record.selectedCalendarIDs
         connectionState = record.connectionState
         isProtectionConfirmed = record.isProtectionConfirmed
-        isEarlyReminderUnverified = earlyReminderConflictMergedCommitments.contains(where: isUnverified)
-        isStrongAlertUnverified = strongAlertConflictMergedCommitments.contains(where: isUnverified)
+        isEarlyReminderUnverified = earlyReminderMergedCommitment.map(isUnverified) == true ||
+            earlyReminderConflictMergedCommitments.contains(where: isUnverified)
+        isStrongAlertUnverified = strongAlertMergedCommitment.map(isUnverified) == true ||
+            strongAlertConflictMergedCommitments.contains(where: isUnverified)
     }
 
     private func isUnverified(_ commitment: MergedCommitment) -> Bool {
@@ -3037,19 +3720,333 @@ public final class CommitmentProtectionFlow: ObservableObject {
         }
     }
 
+    private func protectedAccountIDs() throws -> [String] {
+        if let encryptedGoogleVault {
+            return encryptedGoogleVault.accountIDs()
+        }
+        if recoverEncryptedGoogleStorage != nil {
+            throw unavailableProtectedStorageError()
+        }
+        return volatileGoogleDataStore.accountIDs
+    }
+
+    private func loadProtectedData(
+        _ kind: EncryptedGoogleVaultRecordKind,
+        accountID: String
+    ) throws -> Data? {
+        if let encryptedGoogleVault {
+            do {
+                return try encryptedGoogleVault.loadData(as: kind, for: accountID)
+            } catch EncryptedGoogleVaultError.accountNotFound {
+                return nil
+            }
+        }
+        if recoverEncryptedGoogleStorage != nil {
+            throw unavailableProtectedStorageError()
+        }
+        return volatileGoogleDataStore.load(kind, accountID: accountID)
+    }
+
+    private func storeProtectedData(
+        _ data: Data,
+        kind: EncryptedGoogleVaultRecordKind,
+        accountID: String
+    ) throws {
+        if let encryptedGoogleVault {
+            try encryptedGoogleVault.storeData(data, as: kind, for: accountID)
+        } else if recoverEncryptedGoogleStorage != nil {
+            throw unavailableProtectedStorageError()
+        } else {
+            volatileGoogleDataStore.store(data, kind: kind, accountID: accountID)
+        }
+    }
+
+    private func removeProtectedRecord(
+        _ kind: EncryptedGoogleVaultRecordKind,
+        accountID: String
+    ) throws {
+        if let encryptedGoogleVault {
+            do {
+                try encryptedGoogleVault.removeRecord(kind, for: accountID)
+            } catch EncryptedGoogleVaultError.accountNotFound {
+                return
+            }
+        } else if recoverEncryptedGoogleStorage != nil {
+            throw unavailableProtectedStorageError()
+        } else {
+            volatileGoogleDataStore.remove(kind, accountID: accountID)
+        }
+    }
+
+    private func removeProtectedAccount(_ accountID: String) throws {
+        if let encryptedGoogleVault {
+            do {
+                try encryptedGoogleVault.removeAccount(accountID)
+            } catch EncryptedGoogleVaultError.accountNotFound {
+                return
+            }
+        } else if recoverEncryptedGoogleStorage != nil {
+            throw unavailableProtectedStorageError()
+        } else {
+            volatileGoogleDataStore.removeAccount(accountID)
+        }
+    }
+
+    private func unavailableProtectedStorageError() -> ProtectionPersistenceError {
+        .protectedStorageUnavailable(
+            encryptedStorageError ??
+                EncryptedGoogleVaultError.secureEnclaveUnavailable.localizedDescription
+        )
+    }
+
     private func loadConfiguration() -> SavedConfiguration? {
-        guard let data = stateStore.data(forKey: Self.stateKey) else { return nil }
-        return try? JSONDecoder().decode(SavedConfiguration.self, from: data)
+        if let legacyData = legacyConfigurationData,
+           let legacy = try? JSONDecoder().decode(SavedConfiguration.self, from: legacyData) {
+            didUseLegacyConfiguration = true
+            // The old OAuth identity was an OIDC subject. The new Calendar-only
+            // identity is the primary CalendarList id (normally the account email).
+            // Preserve only user-selected configuration; legacy Google snapshots,
+            // decisions, and activity remain plaintext and are intentionally dropped.
+            let migratedAccounts = legacy.accounts.compactMap { saved -> SavedAccountConfiguration? in
+                let primaryCalendarID = saved.account.email.trimmingCharacters(in: .whitespacesAndNewlines)
+                let migratedID = primaryCalendarID.isEmpty ? saved.account.id : primaryCalendarID
+                guard !migratedID.isEmpty else { return nil }
+                let selectedIDs = Set(saved.selectedCalendarIDs)
+                let selectedCalendars = saved.calendars.compactMap { calendar -> CalendarOption? in
+                    guard selectedIDs.contains(calendar.id) else { return nil }
+                    return CalendarOption(id: calendar.id, name: calendar.name, accountID: migratedID)
+                }
+                return SavedAccountConfiguration(
+                    account: GoogleAccount(id: migratedID, email: migratedID, displayName: ""),
+                    calendars: selectedCalendars,
+                    selectedCalendarIDs: saved.selectedCalendarIDs,
+                    isProtectionConfirmed: saved.isProtectionConfirmed,
+                    lastSuccessfulRefreshAt: nil,
+                    lastFreshEvents: [],
+                    lastFreshEventsSchemaVersion: nil
+                )
+            }
+            activityLog = []
+            return SavedConfiguration(
+                accounts: migratedAccounts,
+                decisionOccurrence: nil,
+                decisionOccurrences: [],
+                decisions: [],
+                currentCommitmentDecision: nil,
+                selectedPrimaryOccurrences: [],
+                snoozedOccurrence: nil,
+                snoozedOccurrences: [],
+                snoozedUntil: nil,
+                pauseUntil: pauseUntil,
+                observedUnacceptedOccurrences: [],
+                suppressedPostStartAcceptanceOccurrences: [],
+                suppressedUntrackedPastOccurrences: []
+            )
+        }
+
+        let accountIDs: [String]
+        do {
+            accountIDs = try protectedAccountIDs()
+        } catch {
+            handleProtectedStorageError(error)
+            return nil
+        }
+
+        var savedConfigurations: [SavedConfiguration] = []
+        for accountID in accountIDs {
+            let configuration: SavedConfiguration
+            do {
+                guard let configurationData = try loadProtectedData(.configuration, accountID: accountID) else {
+                    // OAuth writes the protected credential before account choices. A process
+                    // interruption in that narrow window must still leave a visible account
+                    // that the user can reconnect, disconnect, or remove.
+                    savedConfigurations.append(emptySavedConfiguration(accountID: accountID))
+                    continue
+                }
+                configuration = try decodeProtectedRecord(
+                    SavedConfiguration.self,
+                    from: configurationData,
+                    kind: .configuration
+                )
+                guard configuration.accounts.count == 1,
+                      configuration.accounts.first?.account.id == accountID else {
+                    throw EncryptedGoogleVaultError.recordCorrupted(.configuration)
+                }
+            } catch {
+                markProtectedAccountStorageFailure(accountID, error: error)
+                savedConfigurations.append(emptySavedConfiguration(accountID: accountID))
+                continue
+            }
+
+            guard var savedAccount = configuration.accounts.first else { continue }
+            do {
+                if let snapshotData = try loadProtectedData(.eventSnapshot, accountID: accountID) {
+                    let snapshot = try decodeProtectedRecord(
+                        SavedEventSnapshot.self,
+                        from: snapshotData,
+                        kind: .eventSnapshot
+                    )
+                    let expiration = snapshot.capturedAt.addingTimeInterval(Self.eventRetentionInterval)
+                    if snapshot.schemaVersion == Self.freshEventsSchemaVersion, expiration > now() {
+                        let horizon = now().addingTimeInterval(Self.eventRetentionInterval)
+                        let selectedCalendarIDs = Set(savedAccount.selectedCalendarIDs)
+                        let retainedEvents = snapshot.events.filter { event in
+                            event.accountID == accountID &&
+                                selectedCalendarIDs.contains(event.calendarID) &&
+                                isEventEligibleForProtection(event) &&
+                                (event.endDate ?? .distantPast) > now() &&
+                                (event.startDate ?? .distantFuture) <= horizon
+                        }
+                        savedAccount = SavedAccountConfiguration(
+                            account: savedAccount.account,
+                            calendars: savedAccount.calendars,
+                            selectedCalendarIDs: savedAccount.selectedCalendarIDs,
+                            isProtectionConfirmed: savedAccount.isProtectionConfirmed,
+                            lastSuccessfulRefreshAt: snapshot.lastSuccessfulRefreshAt,
+                            lastFreshEvents: retainedEvents,
+                            lastFreshEventsSchemaVersion: snapshot.schemaVersion
+                        )
+                    } else {
+                        try removeProtectedRecord(.eventSnapshot, accountID: accountID)
+                    }
+                }
+            } catch {
+                markProtectedAccountStorageFailure(accountID, error: error)
+                savedAccount = SavedAccountConfiguration(
+                    account: savedAccount.account,
+                    calendars: savedAccount.calendars,
+                    selectedCalendarIDs: savedAccount.selectedCalendarIDs,
+                    isProtectionConfirmed: savedAccount.isProtectionConfirmed,
+                    lastSuccessfulRefreshAt: nil,
+                    lastFreshEvents: [],
+                    lastFreshEventsSchemaVersion: nil
+                )
+            }
+
+            savedConfigurations.append(
+                SavedConfiguration(
+                    accounts: [savedAccount],
+                    decisionOccurrence: configuration.decisionOccurrence,
+                    decisionOccurrences: configuration.decisionOccurrences,
+                    decisions: configuration.decisions,
+                    currentCommitmentDecision: configuration.currentCommitmentDecision,
+                    selectedPrimaryOccurrences: configuration.selectedPrimaryOccurrences,
+                    snoozedOccurrence: configuration.snoozedOccurrence,
+                    snoozedOccurrences: configuration.snoozedOccurrences,
+                    snoozedUntil: configuration.snoozedUntil,
+                    pauseUntil: nil,
+                    observedUnacceptedOccurrences: configuration.observedUnacceptedOccurrences,
+                    suppressedPostStartAcceptanceOccurrences: configuration.suppressedPostStartAcceptanceOccurrences,
+                    suppressedUntrackedPastOccurrences: configuration.suppressedUntrackedPastOccurrences
+                )
+            )
+        }
+        guard !savedConfigurations.isEmpty else { return nil }
+        return mergeSavedConfigurations(savedConfigurations)
+    }
+
+    private func emptySavedConfiguration(accountID: String) -> SavedConfiguration {
+        SavedConfiguration(
+            accounts: [
+                SavedAccountConfiguration(
+                    account: GoogleAccount(id: accountID, email: accountID, displayName: ""),
+                    calendars: [],
+                    selectedCalendarIDs: [],
+                    isProtectionConfirmed: false,
+                    lastSuccessfulRefreshAt: nil,
+                    lastFreshEvents: [],
+                    lastFreshEventsSchemaVersion: nil
+                )
+            ],
+            decisionOccurrence: nil,
+            decisionOccurrences: [],
+            decisions: [],
+            currentCommitmentDecision: nil,
+            selectedPrimaryOccurrences: [],
+            snoozedOccurrence: nil,
+            snoozedOccurrences: [],
+            snoozedUntil: nil,
+            pauseUntil: nil,
+            observedUnacceptedOccurrences: [],
+            suppressedPostStartAcceptanceOccurrences: [],
+            suppressedUntrackedPastOccurrences: []
+        )
+    }
+
+    private func decodeProtectedRecord<Value: Decodable>(
+        _ type: Value.Type,
+        from data: Data,
+        kind: EncryptedGoogleVaultRecordKind
+    ) throws -> Value {
+        do {
+            return try JSONDecoder().decode(type, from: data)
+        } catch {
+            throw EncryptedGoogleVaultError.decodingFailed(kind)
+        }
+    }
+
+    private func mergeSavedConfigurations(_ configurations: [SavedConfiguration]) -> SavedConfiguration {
+        SavedConfiguration(
+            accounts: configurations.flatMap(\.accounts).sorted { $0.account.id < $1.account.id },
+            decisionOccurrence: configurations.compactMap(\.decisionOccurrence).first,
+            decisionOccurrences: configurations.flatMap(\.decisionOccurrences),
+            decisions: configurations.flatMap(\.decisions),
+            currentCommitmentDecision: configurations.compactMap(\.currentCommitmentDecision).first,
+            selectedPrimaryOccurrences: configurations.flatMap(\.selectedPrimaryOccurrences),
+            snoozedOccurrence: configurations.compactMap(\.snoozedOccurrence).first,
+            snoozedOccurrences: configurations.flatMap(\.snoozedOccurrences),
+            snoozedUntil: configurations.compactMap(\.snoozedUntil).max(),
+            pauseUntil: pauseUntil,
+            observedUnacceptedOccurrences: configurations.flatMap(\.observedUnacceptedOccurrences),
+            suppressedPostStartAcceptanceOccurrences: configurations.flatMap(\.suppressedPostStartAcceptanceOccurrences),
+            suppressedUntrackedPastOccurrences: configurations.flatMap(\.suppressedUntrackedPastOccurrences)
+        )
     }
 
     private func loadActivityLog() -> [ProtectionActivity] {
-        guard let data = stateStore.data(forKey: Self.activityLogKey),
-              let activities = try? JSONDecoder().decode([ProtectionActivity].self, from: data) else {
+        if didUseLegacyConfiguration {
             return []
         }
-        return activities.filter {
-            isActivityFromSameLocalDay($0, as: now())
+        let accountIDs: [String]
+        do {
+            accountIDs = try protectedAccountIDs()
+        } catch {
+            handleProtectedStorageError(error)
+            return []
         }
+
+        let protectedAccountIDSet = Set(accountIDs)
+        var activitiesByID: [UUID: ProtectionActivity] = [:]
+        for accountID in accountIDs {
+            do {
+                guard let data = try loadProtectedData(.activity, accountID: accountID) else { continue }
+                let activities = try decodeProtectedRecord(
+                    [ProtectionActivity].self,
+                    from: data,
+                    kind: .activity
+                )
+                let retainedActivities = activities.filter { activity in
+                    isActivityFromSameLocalDay(activity, as: now()) &&
+                        activity.protectedSourceAccountIDs.isSubset(of: protectedAccountIDSet)
+                }
+                if retainedActivities.count != activities.count {
+                    if retainedActivities.isEmpty {
+                        try removeProtectedRecord(.activity, accountID: accountID)
+                    } else {
+                        let retainedData = try JSONEncoder().encode(retainedActivities)
+                        try storeProtectedData(retainedData, kind: .activity, accountID: accountID)
+                    }
+                }
+                for activity in retainedActivities {
+                    activitiesByID[activity.id] = activity
+                }
+            } catch {
+                markProtectedAccountStorageFailure(accountID, error: error)
+            }
+        }
+        return globallyBoundedActivities(
+            activitiesByID.values.sorted { $0.occurredAt > $1.occurredAt }
+        )
     }
 
     private func restoreLocalState(from configuration: SavedConfiguration) {
@@ -3076,7 +4073,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
         if snoozedOccurrences.isEmpty, let snoozedOccurrence {
             snoozedOccurrences = [snoozedOccurrence]
         }
-        pauseUntil = configuration.pauseUntil
+        pauseUntil = configuration.pauseUntil ?? pauseUntil
         observedUnacceptedOccurrences = Set(configuration.observedUnacceptedOccurrences.map(\.identity))
         suppressedPostStartAcceptanceOccurrences = Set(
             configuration.suppressedPostStartAcceptanceOccurrences.map(\.identity)
@@ -3087,43 +4084,260 @@ public final class CommitmentProtectionFlow: ObservableObject {
     }
 
     private func saveConfiguration() {
+        guard !isAppManagedDataResetInProgress else { return }
         guard !accountRecords.isEmpty else {
             stateStore.removeObject(forKey: Self.stateKey)
             return
         }
 
-        let configuration = SavedConfiguration(
-            accounts: accountRecords.values.map { record in
-                SavedAccountConfiguration(
-                    account: record.connection.account,
-                    calendars: record.connection.calendars,
-                    selectedCalendarIDs: record.selectedCalendarIDs.sorted(),
-                    isProtectionConfirmed: record.isProtectionConfirmed,
-                    lastSuccessfulRefreshAt: record.lastSuccessfulRefreshAt,
-                    lastFreshEvents: record.lastFreshEvents,
-                    lastFreshEventsSchemaVersion: Self.freshEventsSchemaVersion
-                )
-            }.sorted { $0.account.id < $1.account.id },
-            decisionOccurrence: decisionOccurrence.map(SavedOccurrence.init),
-            decisionOccurrences: decisionOccurrences.map(SavedOccurrence.init),
-            decisions: localDecisions.map { occurrence, decision in
-                SavedDecision(
-                    occurrence: SavedOccurrence(occurrence),
-                    decision: decision
-                )
-            },
-            currentCommitmentDecision: currentCommitmentDecision,
-            selectedPrimaryOccurrences: selectedPrimaryOccurrences.map(SavedOccurrence.init),
-            snoozedOccurrence: snoozedOccurrence.map(SavedOccurrence.init),
-            snoozedOccurrences: snoozedOccurrences.map(SavedOccurrence.init),
-            snoozedUntil: snoozedUntil,
-            pauseUntil: pauseUntil,
-            observedUnacceptedOccurrences: observedUnacceptedOccurrences.map(SavedOccurrence.init),
-            suppressedPostStartAcceptanceOccurrences: suppressedPostStartAcceptanceOccurrences.map(SavedOccurrence.init),
-            suppressedUntrackedPastOccurrences: suppressedUntrackedPastOccurrences.map(SavedOccurrence.init)
+        var didPersistEveryAccount = true
+        for accountID in accountRecords.keys.sorted() {
+            guard let record = accountRecords[accountID] else { continue }
+            guard !corruptedProtectedAccountIDs.contains(accountID) else {
+                didPersistEveryAccount = false
+                continue
+            }
+            do {
+                let configuration = savedConfiguration(for: accountID, record: record)
+                let configurationData = try JSONEncoder().encode(configuration)
+                try storeProtectedData(configurationData, kind: .configuration, accountID: accountID)
+                try saveEventSnapshot(for: accountID, record: record)
+                persistenceCoverageErrors[accountID] = nil
+            } catch {
+                didPersistEveryAccount = false
+                let safeErrorDescription = Self.privacySafeProtectedStorageErrorDescription(error)
+                let message = "Protected calendar data could not be saved. \(safeErrorDescription)"
+                persistenceCoverageErrors[accountID] = message
+                handleProtectedStorageError(error)
+            }
+        }
+        if didPersistEveryAccount {
+            stateStore.removeObject(forKey: Self.stateKey)
+            stateStore.removeObject(forKey: Self.activityLogKey)
+            if activityPersistenceErrorAccountIDs.isEmpty, !requiresEncryptedStorageReset {
+                encryptedStorageError = nil
+            }
+        }
+    }
+
+    private func savedConfiguration(
+        for accountID: String,
+        record: AccountRecord
+    ) -> SavedConfiguration {
+        let referenceDate = now()
+        let horizon = referenceDate.addingTimeInterval(Self.eventRetentionInterval)
+        let hasRetainedSnapshot = record.lastSuccessfulRefreshAt.map {
+            $0.addingTimeInterval(Self.eventRetentionInterval) > referenceDate
+        } == true
+        let retainedOccurrences = Set(
+            hasRetainedSnapshot
+                ? record.lastFreshEvents.compactMap { event -> OccurrenceIdentity? in
+                    guard event.accountID == accountID,
+                          record.selectedCalendarIDs.contains(event.calendarID),
+                          isEventEligibleForProtection(event),
+                          (event.endDate ?? .distantPast) > referenceDate,
+                          (event.startDate ?? .distantFuture) <= horizon else {
+                        return nil
+                    }
+                    return OccurrenceIdentity(event)
+                }
+                : []
         )
-        guard let data = try? JSONEncoder().encode(configuration) else { return }
-        stateStore.set(data, forKey: Self.stateKey)
+
+        func belongsToAccount(_ occurrence: OccurrenceIdentity) -> Bool {
+            occurrence.accountID == accountID && retainedOccurrences.contains(occurrence)
+        }
+
+        let accountDecisionOccurrence = decisionOccurrence.flatMap {
+            belongsToAccount($0) ? $0 : nil
+        }
+        let selectedCalendars = record.selectedCalendars.map {
+            CalendarOption(id: $0.id, name: $0.name, accountID: accountID)
+        }
+        let savedAccount = SavedAccountConfiguration(
+            account: GoogleAccount(
+                id: record.connection.account.id,
+                email: record.connection.account.email,
+                displayName: ""
+            ),
+            calendars: selectedCalendars,
+            selectedCalendarIDs: record.selectedCalendarIDs.sorted(),
+            isProtectionConfirmed: record.isProtectionConfirmed,
+            lastSuccessfulRefreshAt: nil,
+            lastFreshEvents: [],
+            lastFreshEventsSchemaVersion: nil
+        )
+        return SavedConfiguration(
+            accounts: [savedAccount],
+            decisionOccurrence: accountDecisionOccurrence.map(SavedOccurrence.init),
+            decisionOccurrences: decisionOccurrences.filter(belongsToAccount).map(SavedOccurrence.init),
+            decisions: localDecisions.compactMap { occurrence, decision in
+                guard belongsToAccount(occurrence) else { return nil }
+                return SavedDecision(occurrence: SavedOccurrence(occurrence), decision: decision)
+            },
+            currentCommitmentDecision: accountDecisionOccurrence == nil ? nil : currentCommitmentDecision,
+            selectedPrimaryOccurrences: selectedPrimaryOccurrences
+                .filter(belongsToAccount)
+                .map(SavedOccurrence.init),
+            snoozedOccurrence: snoozedOccurrence.flatMap {
+                belongsToAccount($0) ? SavedOccurrence($0) : nil
+            },
+            snoozedOccurrences: snoozedOccurrences.filter(belongsToAccount).map(SavedOccurrence.init),
+            snoozedUntil: snoozedOccurrence.map(belongsToAccount) == true ? snoozedUntil : nil,
+            pauseUntil: nil,
+            observedUnacceptedOccurrences: observedUnacceptedOccurrences
+                .filter(belongsToAccount)
+                .map(SavedOccurrence.init),
+            suppressedPostStartAcceptanceOccurrences: suppressedPostStartAcceptanceOccurrences
+                .filter(belongsToAccount)
+                .map(SavedOccurrence.init),
+            suppressedUntrackedPastOccurrences: suppressedUntrackedPastOccurrences
+                .filter(belongsToAccount)
+                .map(SavedOccurrence.init)
+        )
+    }
+
+    private func saveEventSnapshot(for accountID: String, record: AccountRecord) throws {
+        guard let lastSuccessfulRefreshAt = record.lastSuccessfulRefreshAt,
+              lastSuccessfulRefreshAt.addingTimeInterval(Self.eventRetentionInterval) > now() else {
+            try removeProtectedRecord(.eventSnapshot, accountID: accountID)
+            return
+        }
+
+        let horizon = now().addingTimeInterval(Self.eventRetentionInterval)
+        let retainedEvents = record.lastFreshEvents.filter { event in
+            event.accountID == accountID &&
+                record.selectedCalendarIDs.contains(event.calendarID) &&
+                isEventEligibleForProtection(event) &&
+                (event.endDate ?? .distantPast) > now() &&
+                (event.startDate ?? .distantFuture) <= horizon
+        }
+        guard retainedEvents.count <= Self.maximumPersistedEventsPerAccount else {
+            try removeProtectedRecord(.eventSnapshot, accountID: accountID)
+            throw ProtectionPersistenceError.eventSnapshotLimitExceeded
+        }
+        let snapshot = SavedEventSnapshot(
+            schemaVersion: Self.freshEventsSchemaVersion,
+            capturedAt: lastSuccessfulRefreshAt,
+            lastSuccessfulRefreshAt: lastSuccessfulRefreshAt,
+            events: retainedEvents
+        )
+        let data = try JSONEncoder().encode(snapshot)
+        guard data.count <= Self.maximumEventSnapshotBytes else {
+            try removeProtectedRecord(.eventSnapshot, accountID: accountID)
+            throw ProtectionPersistenceError.eventSnapshotLimitExceeded
+        }
+        try storeProtectedData(data, kind: .eventSnapshot, accountID: accountID)
+    }
+
+    private nonisolated static func privacySafeProtectedStorageErrorDescription(_ error: Error) -> String {
+        if let persistenceError = error as? ProtectionPersistenceError {
+            switch persistenceError {
+            case .eventSnapshotLimitExceeded:
+                return "The next 24 hours contain more calendar data than the protected cache can safely retain. Narrow the monitored calendars, then retry."
+            case .protectedStorageUnavailable:
+                return "Protected storage operation failed."
+            }
+        }
+        guard let vaultError = error as? EncryptedGoogleVaultError else {
+            return "Protected storage operation failed."
+        }
+        switch vaultError {
+        case .secureEnclaveUnavailable:
+            return "Secure Enclave is unavailable on this Mac. Protected Google data cannot be stored."
+        case .invalidApplicationIdentifier:
+            return "The application identifier cannot be used for protected storage."
+        case .invalidAccountIdentifier:
+            return "The Google account identifier is invalid."
+        case .accountNotFound:
+            return "The protected Google account was not found."
+        case .keyMaterialCorrupted:
+            return "The Secure Enclave key material cannot be restored."
+        case .indexCorrupted:
+            return "The protected account index is damaged or cannot be authenticated."
+        case .accountKeyCorrupted:
+            return "The protected account key is damaged or cannot be authenticated."
+        case .recordCorrupted:
+            return "The protected account record is damaged or cannot be authenticated."
+        case .encodingFailed:
+            return "The account record could not be encoded for protected storage."
+        case .decodingFailed:
+            return "The protected account record could not be decoded."
+        case .storageFailed:
+            return "Protected storage operation failed."
+        }
+    }
+
+    private nonisolated static func privacySafeUserFacingErrorDescription(_ error: Error) -> String {
+        guard error is EncryptedGoogleVaultError else {
+            return error.localizedDescription
+        }
+        return privacySafeProtectedStorageErrorDescription(error)
+    }
+
+    private func handleProtectedStorageError(_ error: Error) {
+        encryptedStorageError = Self.privacySafeProtectedStorageErrorDescription(error)
+        guard let vaultError = error as? EncryptedGoogleVaultError else { return }
+        switch vaultError {
+        case .keyMaterialCorrupted,
+             .indexCorrupted,
+             .accountKeyCorrupted,
+             .recordCorrupted,
+             .decodingFailed:
+            requiresEncryptedStorageReset = true
+        case .secureEnclaveUnavailable,
+             .invalidApplicationIdentifier,
+             .invalidAccountIdentifier,
+             .accountNotFound,
+             .encodingFailed,
+             .storageFailed:
+            break
+        }
+    }
+
+    private func markProtectedAccountStorageFailure(_ accountID: String, error: Error) {
+        let safeErrorDescription = Self.privacySafeProtectedStorageErrorDescription(error)
+        let message = "Protected Google data for \(accountID) could not be read. \(safeErrorDescription)"
+        persistenceCoverageErrors[accountID] = message
+        if let vaultError = error as? EncryptedGoogleVaultError {
+            switch vaultError {
+            case .keyMaterialCorrupted,
+                 .indexCorrupted,
+                 .accountKeyCorrupted,
+                 .recordCorrupted,
+                 .decodingFailed:
+                corruptedProtectedAccountIDs.insert(accountID)
+            case .secureEnclaveUnavailable,
+                 .invalidApplicationIdentifier,
+                 .invalidAccountIdentifier,
+                 .accountNotFound,
+                 .encodingFailed,
+                 .storageFailed:
+                break
+            }
+        }
+        handleProtectedStorageError(error)
+    }
+
+    private func isPermanentlyUnreadableCredential(_ error: Error) -> Bool {
+        guard let vaultError = error as? EncryptedGoogleVaultError else { return false }
+        switch vaultError {
+        case .recordCorrupted(.credential),
+             .decodingFailed(.credential),
+             .accountKeyCorrupted:
+            return true
+        case .secureEnclaveUnavailable,
+             .invalidApplicationIdentifier,
+             .invalidAccountIdentifier,
+             .accountNotFound,
+             .keyMaterialCorrupted,
+             .indexCorrupted,
+             .recordCorrupted,
+             .encodingFailed,
+             .decodingFailed,
+             .storageFailed:
+            return false
+        }
     }
 
     private func invalidateRefreshes() {
@@ -3140,6 +4354,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
             .filter {
                 $0.connectionState != .reconnectRequired &&
                     $0.isProtectionConfirmed &&
+                    !corruptedProtectedAccountIDs.contains($0.connection.account.id) &&
                     !$0.selectedCalendarIDs.isEmpty
             }
             .flatMap { record in
@@ -3153,6 +4368,40 @@ public final class CommitmentProtectionFlow: ObservableObject {
         reconcileCalendarSnapshot(cachedEvents, at: date, isCompleteSnapshot: false)
     }
 
+    private func clearLocalState(forAccountID accountID: String) {
+        func belongsToAccount(_ occurrence: OccurrenceIdentity) -> Bool {
+            occurrence.accountID == accountID
+        }
+
+        localDecisions = localDecisions.filter { !belongsToAccount($0.key) }
+        selectedPrimaryOccurrences = selectedPrimaryOccurrences.filter { !belongsToAccount($0) }
+        decisionOccurrences = decisionOccurrences.filter { !belongsToAccount($0) }
+        snoozedOccurrences = snoozedOccurrences.filter { !belongsToAccount($0) }
+        observedUnacceptedOccurrences = observedUnacceptedOccurrences.filter { !belongsToAccount($0) }
+        suppressedPostStartAcceptanceOccurrences = suppressedPostStartAcceptanceOccurrences
+            .filter { !belongsToAccount($0) }
+        suppressedUntrackedPastOccurrences = suppressedUntrackedPastOccurrences
+            .filter { !belongsToAccount($0) }
+        strongAlertOccurrences = strongAlertOccurrences.filter { !belongsToAccount($0) }
+        clearedEarlyReminderOccurrences = clearedEarlyReminderOccurrences
+            .filter { !belongsToAccount($0) }
+        newlySelectedCalendars = newlySelectedCalendars.filter { $0.accountID != accountID }
+
+        if decisionOccurrence.map(belongsToAccount) == true || decisionCommitment?.accountID == accountID {
+            clearCurrentDecisionProjection()
+        }
+        if snoozedOccurrence.map(belongsToAccount) == true {
+            snoozedOccurrence = nil
+            snoozedUntil = nil
+        }
+        if lastActionOccurrence.map(belongsToAccount) == true {
+            clearLastActionMessage()
+        }
+        if meetingLinkOpenFailure.map({ belongsToAccount($0.occurrence) }) == true {
+            meetingLinkOpenFailure = nil
+        }
+    }
+
     private func clearProtectionState() {
         clearDisplayedProtectionState()
         currentMergedCommitments = []
@@ -3162,6 +4411,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
         snoozedOccurrences = []
         snoozedUntil = nil
         pauseUntil = nil
+        stateStore.removeObject(forKey: Self.pauseUntilKey)
         observedUnacceptedOccurrences = []
         suppressedPostStartAcceptanceOccurrences = []
         suppressedUntrackedPastOccurrences = []
@@ -3298,12 +4548,17 @@ public final class CommitmentProtectionFlow: ObservableObject {
         calendar: CalendarOption? = nil,
         at date: Date? = nil
     ) {
+        guard !isAppManagedDataResetInProgress else { return }
         let occurredAt = date ?? now()
         let activityAccount = account ?? commitment.flatMap { self.account(for: $0) } ??
             calendar.flatMap { accountRecords[$0.accountID]?.connection.account } ?? connectedAccount
         let activityCalendarID = calendar?.id ?? commitment?.calendarID
         let activityCalendarName = calendar?.name ?? commitment.flatMap { calendarName(for: $0) }
         let contextualDetail = detail + activitySourceContext(for: commitmentGroup)
+        let sourceAccountIDs = Set(
+            (commitmentGroup?.representations.map(\.accountID) ?? []) +
+                (activityAccount.map { [$0.id] } ?? [])
+        ).sorted()
         _ = pruneActivityLog(at: occurredAt)
         activityLog.insert(
             ProtectionActivity(
@@ -3318,10 +4573,12 @@ public final class CommitmentProtectionFlow: ObservableObject {
                 accountID: activityAccount?.id,
                 accountEmail: activityAccount?.email,
                 calendarID: activityCalendarID,
-                calendarName: activityCalendarName
+                calendarName: activityCalendarName,
+                sourceAccountIDs: sourceAccountIDs
             ),
             at: 0
         )
+        activityLog = globallyBoundedActivities(activityLog)
         saveActivityLog()
         saveConfiguration()
     }
@@ -3347,8 +4604,80 @@ public final class CommitmentProtectionFlow: ObservableObject {
     }
 
     private func saveActivityLog() {
-        guard let data = try? JSONEncoder().encode(activityLog) else { return }
-        stateStore.set(data, forKey: Self.activityLogKey)
+        guard !isAppManagedDataResetInProgress else { return }
+        var currentDayActivities = globallyBoundedActivities(
+            activityLog.filter { isActivityFromSameLocalDay($0, as: now()) }
+        )
+        let payloads: [String: Data]
+        do {
+            var candidatePayloads = try encodedActivityPayloads(for: currentDayActivities)
+            while candidatePayloads.values.reduce(0, { $0 + $1.count }) >
+                Self.maximumActivityBytesAcrossAccounts,
+                !currentDayActivities.isEmpty {
+                currentDayActivities.removeLast()
+                candidatePayloads = try encodedActivityPayloads(for: currentDayActivities)
+            }
+            payloads = candidatePayloads
+        } catch {
+            activityPersistenceErrorAccountIDs.formUnion(accountRecords.keys)
+            handleProtectedStorageError(error)
+            return
+        }
+        activityLog = currentDayActivities
+        for accountID in accountRecords.keys.sorted() {
+            guard !corruptedProtectedAccountIDs.contains(accountID) else {
+                activityPersistenceErrorAccountIDs.insert(accountID)
+                continue
+            }
+            do {
+                if let data = payloads[accountID] {
+                    try storeProtectedData(data, kind: .activity, accountID: accountID)
+                } else {
+                    try removeProtectedRecord(.activity, accountID: accountID)
+                }
+                activityPersistenceErrorAccountIDs.remove(accountID)
+            } catch {
+                activityPersistenceErrorAccountIDs.insert(accountID)
+                handleProtectedStorageError(error)
+            }
+        }
+    }
+
+    private func encodedActivityPayloads(
+        for activities: [ProtectionActivity]
+    ) throws -> [String: Data] {
+        var payloads: [String: Data] = [:]
+        for accountID in accountRecords.keys.sorted() {
+            let accountActivities = activities.filter { activity in
+                activity.accountID == accountID ||
+                    (activity.accountID == nil && accountID == activeAccountID)
+            }
+            do {
+                let data = try JSONEncoder().encode(accountActivities)
+                if !accountActivities.isEmpty {
+                    payloads[accountID] = data
+                }
+            } catch {
+                throw EncryptedGoogleVaultError.encodingFailed
+            }
+        }
+        return payloads
+    }
+
+    private func globallyBoundedActivities(
+        _ activities: [ProtectionActivity]
+    ) -> [ProtectionActivity] {
+        var bounded = Array(activities.prefix(Self.maximumActivitiesAcrossAccounts))
+        while !bounded.isEmpty {
+            guard let data = try? JSONEncoder().encode(bounded) else {
+                return []
+            }
+            guard data.count > Self.maximumActivityBytesAcrossAccounts else {
+                return bounded
+            }
+            bounded.removeLast()
+        }
+        return []
     }
 
     private func isActivityFromSameLocalDay(_ activity: ProtectionActivity, as date: Date) -> Bool {
@@ -3358,11 +4687,28 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
 private enum ProtectionFlowError: LocalizedError {
     case restoredAccountMismatch
+    case localCredentialMissingForRevocation
 
     var errorDescription: String? {
         switch self {
         case .restoredAccountMismatch:
             return "Google returned a different account than the one that was saved. Reconnect the original account."
+        case .localCredentialMissingForRevocation:
+            return "The local Google credential is missing, so remote access could not be revoked. Remove the account locally, then review Google Account access."
+        }
+    }
+}
+
+private enum ProtectionPersistenceError: LocalizedError {
+    case eventSnapshotLimitExceeded
+    case protectedStorageUnavailable(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .eventSnapshotLimitExceeded:
+            return "The next 24 hours contain more calendar data than the protected cache can safely retain. Narrow the monitored calendars, then retry."
+        case .protectedStorageUnavailable(let message):
+            return message
         }
     }
 }

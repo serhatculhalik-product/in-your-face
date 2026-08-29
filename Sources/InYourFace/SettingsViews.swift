@@ -19,8 +19,21 @@ struct SettingsRootView: View {
 }
 
 private struct AccountsSettingsPane: View {
+    private enum AccountTerminationKind {
+        case disconnect
+        case remove
+    }
+
+    private struct PendingAccountTermination {
+        let coverage: AccountCoverage
+        let kind: AccountTerminationKind
+    }
+
     @EnvironmentObject private var flow: CommitmentProtectionFlow
-    @State private var pendingDisconnect: AccountCoverage?
+    @EnvironmentObject private var testToolsController: TestToolsController
+    @State private var pendingAccountTermination: PendingAccountTermination?
+    @State private var lastAccountTerminationKind: AccountTerminationKind?
+    @State private var isEncryptedStorageResetConfirmationPresented = false
 
     var body: some View {
         Form {
@@ -33,7 +46,7 @@ private struct AccountsSettingsPane: View {
                     ContentUnavailableView(
                         "No Google Accounts",
                         systemImage: "person.crop.circle.badge.exclamationmark",
-                        description: Text("Connect Google Calendar for this session to resume protection. Any saved calendar choices will be reapplied.")
+                        description: Text("Connect Google Calendar to protect selected calendars on this Mac.")
                     )
                 } else {
                     ForEach(flow.accountCoverages) { coverage in
@@ -49,17 +62,7 @@ private struct AccountsSettingsPane: View {
                                 )
                             }
                         } actions: {
-                            if coverage.connectionState == .reconnectRequired {
-                                Button("Reconnect…") {
-                                    Task {
-                                        await flow.reconnectGoogleAccount(accountID: coverage.account.id)
-                                    }
-                                }
-                                .disabled(flow.isConnectingAccount)
-                            }
-                            Button("Disconnect…") {
-                                pendingDisconnect = coverage
-                            }
+                            accountActions(for: coverage)
                         }
                     }
 
@@ -79,12 +82,53 @@ private struct AccountsSettingsPane: View {
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Label("Session-only Google access", systemImage: "lock.shield")
+                    Label(
+                        testToolsController.isTestMode
+                            ? "Isolated simulated calendar access"
+                            : "Device-bound encrypted Google access",
+                        systemImage: testToolsController.isTestMode ? "testtube.2" : "lock.shield"
+                    )
                         .font(.callout.weight(.semibold))
-                    Text("Google access is kept only while In Your Face is open. Reconnect after every relaunch.")
+                    Text(testToolsController.isTestMode
+                        ? "This account and its calendars are deterministic fixtures stored only in this test profile. No browser or Google grant is used."
+                        : "Google credentials and calendar data are encrypted for this Mac, excluded from backups, and never stored in Keychain. Routine relaunches do not require reconnection.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if let storageError = flow.encryptedStorageError {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Protected Google data needs attention", systemImage: "lock.trianglebadge.exclamationmark")
+                            .font(.callout.weight(.semibold))
+                        Text(storageError)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                        if flow.requiresEncryptedStorageReset {
+                            Button("Reset Local Encrypted Data…", role: .destructive) {
+                                isEncryptedStorageResetConfirmationPresented = true
+                            }
+                            .disabled(flow.isGoogleAccountOperationInProgress)
+                        }
+                    }
+                }
+
+                if let reviewNotice = flow.googleAccessReviewNotice {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Label("Review Google Account access", systemImage: "person.crop.circle.badge.exclamationmark")
+                            .font(.callout.weight(.semibold))
+                        Text(reviewNotice)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
+
+                if !testToolsController.isTestMode {
+                    Button("Manage Google Account Access…") {
+                        openGoogleAccessManagement()
+                    }
                 }
 
                 Button {
@@ -95,7 +139,7 @@ private struct AccountsSettingsPane: View {
                         systemImage: flow.accountConnectionError == nil ? "person.badge.plus" : "arrow.clockwise"
                     )
                 }
-                .disabled(flow.isConnectingAccount)
+                .disabled(flow.isGoogleAccountOperationInProgress)
 
                 if let message = flow.accountConnectionError {
                     VStack(alignment: .leading, spacing: 4) {
@@ -112,16 +156,19 @@ private struct AccountsSettingsPane: View {
                 if let message = flow.accountDisconnectionError {
                     VStack(alignment: .leading, spacing: 8) {
                         VStack(alignment: .leading, spacing: 4) {
-                            Label("Account couldn’t disconnect", systemImage: "exclamationmark.triangle")
+                            Label(accountTerminationFailureTitle, systemImage: "exclamationmark.triangle")
                             Text(message)
                                 .font(.callout)
                                 .textSelection(.enabled)
                         }
                         .accessibilityElement(children: .combine)
-                        .accessibilityLabel(InterfaceCopy.disconnectionFailureAnnouncement(message))
+                        .accessibilityLabel(accountTerminationFailureAnnouncement(message))
                         if let coverage = failedDisconnectionCoverage {
                             Button("Try Again…") {
-                                pendingDisconnect = coverage
+                                pendingAccountTermination = PendingAccountTermination(
+                                    coverage: coverage,
+                                    kind: lastAccountTerminationKind ?? .disconnect
+                                )
                             }
                         }
                     }
@@ -130,22 +177,14 @@ private struct AccountsSettingsPane: View {
             }
 
             Section("Availability") {
-                Label(
-                    flow.isLaunchAtLoginEnabled ? "Starts at Login" : "Won’t Start at Login",
-                    systemImage: flow.isLaunchAtLoginEnabled ? "power" : "exclamationmark.triangle"
-                )
+                Toggle("Start Meeting Incoming at login", isOn: launchAtLoginBinding)
                 Text(availabilityDetail)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                if !flow.isLaunchAtLoginEnabled {
-                    ViewThatFits(in: .horizontal) {
-                        HStack(spacing: 8) {
-                            launchAtLoginRecoveryActions
-                        }
-                        VStack(alignment: .leading, spacing: 8) {
-                            launchAtLoginRecoveryActions
-                        }
+                if flow.launchAtLoginError != nil {
+                    Button("Open Login Items…") {
+                        openLoginItemsSettings()
                     }
                 }
             }
@@ -157,40 +196,116 @@ private struct AccountsSettingsPane: View {
             announceConnectionError(message)
         }
         .onChange(of: flow.accountDisconnectionError) { _, message in
-            announceDisconnectionError(message)
+            announceAccountTerminationError(message)
         }
         .alert(
-            pendingDisconnect.map {
-                InterfaceCopy.disconnectAccountTitle(accountLabel(for: $0))
-            }
-                ?? "Disconnect this Connected Account?",
+            accountTerminationTitle,
             isPresented: Binding(
-                get: { pendingDisconnect != nil },
-                set: { if !$0 { pendingDisconnect = nil } }
+                get: { pendingAccountTermination != nil },
+                set: { if !$0 { pendingAccountTermination = nil } }
             )
         ) {
-            Button("Keep Connected", role: .cancel) {
-                pendingDisconnect = nil
+            Button(accountTerminationCancelTitle, role: .cancel) {
+                pendingAccountTermination = nil
             }
-            Button("Disconnect Account", role: .destructive) {
-                guard let pendingDisconnect else { return }
-                _ = flow.disconnectGoogleAccount(accountID: pendingDisconnect.account.id)
-                self.pendingDisconnect = nil
+            Button(accountTerminationConfirmTitle, role: .destructive) {
+                confirmAccountTermination()
             }
         } message: {
-            Text(InterfaceCopy.disconnectAccountMessage(
-                hasOtherConnectedAccounts: flow.accountCoverages.count > 1
-            ))
+            Text(accountTerminationMessage)
+        }
+        .alert(
+            "Reset all local encrypted Google data?",
+            isPresented: $isEncryptedStorageResetConfirmationPresented
+        ) {
+            Button("Cancel", role: .cancel) {}
+            Button("Reset Local Data", role: .destructive) {
+                _ = flow.resetEncryptedGoogleData()
+            }
+        } message: {
+            Text("First review Google Account access if you want to revoke Meeting Incoming remotely. This permanently removes every locally encrypted credential, calendar choice, event snapshot, and activity entry from this Mac. You’ll need to connect each account again.")
         }
     }
 
     @ViewBuilder
-    private var launchAtLoginRecoveryActions: some View {
-        Button("Try Again") {
-            flow.requestLaunchAtLogin()
-        }
-        Button("Open Login Items…") {
-            openLoginItemsSettings()
+    private func accountActions(for coverage: AccountCoverage) -> some View {
+        let presentation = AccountRowActionPresentation.make(
+            connectionState: coverage.connectionState,
+            isConnectingThisAccount: flow.connectingAccountID == coverage.account.id
+        )
+
+        switch presentation.connectionAction {
+        case .connecting:
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Connecting…")
+            }
+            .foregroundStyle(.secondary)
+            .accessibilityElement(children: .combine)
+
+        case .reconnect:
+            HStack(spacing: 6) {
+                Button("Reconnect…") {
+                    Task {
+                        await flow.reconnectGoogleAccount(accountID: coverage.account.id)
+                    }
+                }
+                .disabled(flow.isGoogleAccountOperationInProgress)
+
+                if presentation.showsRemoveAccountAction {
+                    Menu {
+                        Button("Remove Account…", role: .destructive) {
+                            pendingAccountTermination = PendingAccountTermination(
+                                coverage: coverage,
+                                kind: .remove
+                            )
+                        }
+                    } label: {
+                        Label(
+                            "More actions for \(accountLabel(for: coverage))",
+                            systemImage: "ellipsis.circle"
+                        )
+                        .labelStyle(.iconOnly)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .disabled(flow.isGoogleAccountOperationInProgress)
+                    .help("More actions for \(accountLabel(for: coverage))")
+                }
+            }
+
+        case .disconnect:
+            HStack(spacing: 6) {
+                Button("Disconnect…") {
+                    pendingAccountTermination = PendingAccountTermination(
+                        coverage: coverage,
+                        kind: .disconnect
+                    )
+                }
+                .disabled(flow.isGoogleAccountOperationInProgress)
+
+                if presentation.showsRemoveAccountAction {
+                    Menu {
+                        Button("Remove Account…", role: .destructive) {
+                            pendingAccountTermination = PendingAccountTermination(
+                                coverage: coverage,
+                                kind: .remove
+                            )
+                        }
+                    } label: {
+                        Label(
+                            "More actions for \(accountLabel(for: coverage))",
+                            systemImage: "ellipsis.circle"
+                        )
+                        .labelStyle(.iconOnly)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .disabled(flow.isGoogleAccountOperationInProgress)
+                    .help("More actions for \(accountLabel(for: coverage))")
+                }
+            }
         }
     }
 
@@ -198,18 +313,35 @@ private struct AccountsSettingsPane: View {
         if flow.isConnectingAccount {
             return "Connecting…"
         }
-        return flow.accountConnectionError == nil ? "Add Google Account…" : "Try Again…"
+        if flow.accountConnectionError != nil {
+            return "Try Again…"
+        }
+        return testToolsController.isTestMode
+            ? "Add Simulated Account"
+            : "Add Google Account…"
     }
 
     private var availabilityDetail: String {
+        if testToolsController.isTestMode {
+            return flow.isLaunchAtLoginEnabled
+                ? "Simulated as enabled for this test profile. The real macOS Login Item is unchanged."
+                : "Simulated as disabled for this test profile. The real macOS Login Item is unchanged."
+        }
         if flow.isLaunchAtLoginEnabled {
-            return "In Your Face opens at login. Calendar protection begins after you connect Google Calendar for that session."
+            return "Meeting Incoming opens after sign-in and restores protection automatically while Google authorization remains valid."
         }
         let launchDetail = InterfaceCopy.sentence(
             flow.launchAtLoginError ??
-                "In Your Face is open now, but it may not start automatically after your next sign-in"
+                "Meeting Incoming is open now but won’t start automatically after your next sign-in"
         )
-        return "\(launchDetail) After opening, connect Google Calendar for that session to start protection."
+        return "\(launchDetail) Open it manually whenever you want protection."
+    }
+
+    private var launchAtLoginBinding: Binding<Bool> {
+        Binding(
+            get: { flow.isLaunchAtLoginEnabled },
+            set: { flow.setLaunchAtLoginEnabled($0) }
+        )
     }
 
     private var failedDisconnectionCoverage: AccountCoverage? {
@@ -248,13 +380,77 @@ private struct AccountsSettingsPane: View {
         )
     }
 
-    private func announceDisconnectionError(_ message: String?) {
+    private func announceAccountTerminationError(_ message: String?) {
         guard let message else { return }
         NSAccessibility.post(
             element: NSApplication.shared,
             notification: .announcementRequested,
-            userInfo: [.announcement: InterfaceCopy.disconnectionFailureAnnouncement(message)]
+            userInfo: [.announcement: accountTerminationFailureAnnouncement(message)]
         )
+    }
+
+    private var accountTerminationTitle: String {
+        guard let pendingAccountTermination else {
+            return "Manage this Google Account?"
+        }
+        let label = accountLabel(for: pendingAccountTermination.coverage)
+        switch pendingAccountTermination.kind {
+        case .disconnect:
+            return InterfaceCopy.disconnectAccountTitle(label)
+        case .remove:
+            return InterfaceCopy.removeAccountTitle(label)
+        }
+    }
+
+    private var accountTerminationCancelTitle: String {
+        pendingAccountTermination?.kind == .remove ? "Keep Account" : "Keep Connected"
+    }
+
+    private var accountTerminationConfirmTitle: String {
+        pendingAccountTermination?.kind == .remove ? "Remove Account" : "Disconnect Account"
+    }
+
+    private var accountTerminationMessage: String {
+        if pendingAccountTermination?.kind == .remove {
+            return InterfaceCopy.removeAccountMessage(
+                hasOtherAccounts: flow.accountCoverages.count > 1
+            )
+        }
+        return InterfaceCopy.disconnectAccountMessage(
+            hasOtherConnectedAccounts: flow.accountCoverages.count > 1
+        )
+    }
+
+    private func confirmAccountTermination() {
+        guard let pendingAccountTermination else { return }
+        lastAccountTerminationKind = pendingAccountTermination.kind
+        self.pendingAccountTermination = nil
+        Task {
+            let accountID = pendingAccountTermination.coverage.account.id
+            let didTerminate: Bool
+            switch pendingAccountTermination.kind {
+            case .disconnect:
+                didTerminate = await flow.disconnectGoogleAccount(accountID: accountID)
+            case .remove:
+                didTerminate = await flow.removeGoogleAccount(accountID: accountID)
+            }
+            if didTerminate {
+                lastAccountTerminationKind = nil
+            }
+        }
+    }
+
+    private func accountTerminationFailureAnnouncement(_ message: String) -> String {
+        if lastAccountTerminationKind == .remove {
+            return InterfaceCopy.removalFailureAnnouncement(message)
+        }
+        return InterfaceCopy.disconnectionFailureAnnouncement(message)
+    }
+
+    private var accountTerminationFailureTitle: String {
+        lastAccountTerminationKind == .remove
+            ? "Account couldn’t be removed"
+            : "Account couldn’t disconnect"
     }
 
     private func openLoginItemsSettings() {
@@ -262,6 +458,11 @@ private struct AccountsSettingsPane: View {
             string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension"
         ) else { return }
         NSWorkspace.shared.open(settingsURL)
+    }
+
+    private func openGoogleAccessManagement() {
+        guard let url = URL(string: "https://myaccount.google.com/connections") else { return }
+        NSWorkspace.shared.open(url)
     }
 }
 
@@ -276,7 +477,7 @@ private struct CalendarsSettingsPane: View {
                 ContentUnavailableView(
                     "No Google Account",
                     systemImage: "calendar.badge.exclamationmark",
-                    description: Text("Connect Google Calendar for this session in Accounts. Any saved Monitored Calendar choices will be applied when the account returns.")
+                    description: Text("Connect Google Calendar in Accounts. Authorization stays encrypted on this Mac across routine relaunches.")
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let coverage = selectedCoverage {
@@ -301,6 +502,7 @@ private struct CalendarsSettingsPane: View {
                     coverage: coverage,
                     searchText: $searchText
                 )
+                .disabled(flow.isGoogleAccountOperationInProgress)
 
                 Divider()
 
@@ -321,7 +523,8 @@ private struct CalendarsSettingsPane: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(
                         coverage.isProtectionConfirmed ||
-                            flow.selectedCalendarIDs(for: coverage.account.id).isEmpty
+                            flow.selectedCalendarIDs(for: coverage.account.id).isEmpty ||
+                            flow.isGoogleAccountOperationInProgress
                     )
                 }
             }
@@ -359,8 +562,6 @@ private struct CalendarsSettingsPane: View {
 
 private struct RemindersSettingsPane: View {
     @EnvironmentObject private var flow: CommitmentProtectionFlow
-    @Environment(\.openWindow) private var openWindow
-    @ObservedObject private var windowController = EarlyReminderWindowController.shared
 
     var body: some View {
         Form {
@@ -381,25 +582,16 @@ private struct RemindersSettingsPane: View {
             }
 
             Section("Early Reminder") {
-                Toggle(
-                    "Show Early Reminder",
-                    isOn: Binding(
+                EarlyReminderTimingControls(
+                    isEnabled: Binding(
                         get: { flow.isEarlyReminderEnabled },
                         set: { flow.setEarlyReminderEnabled($0) }
-                    )
-                )
-                Stepper(
-                    InterfaceCopy.remindMeBefore(flow.earlyReminderLeadTimeMinutes),
-                    value: Binding(
+                    ),
+                    leadTimeMinutes: Binding(
                         get: { flow.earlyReminderLeadTimeMinutes },
                         set: { flow.setEarlyReminderLeadTime(minutes: $0) }
-                    ),
-                    in: 5...30,
-                    step: 5
+                    )
                 )
-                .disabled(!flow.isEarlyReminderEnabled)
-                .accessibilityLabel("Early Reminder lead time")
-                .accessibilityValue(InterfaceCopy.minuteDuration(flow.earlyReminderLeadTimeMinutes))
             }
 
             Section("Strong Alert") {
@@ -413,64 +605,30 @@ private struct RemindersSettingsPane: View {
                 )
                 .accessibilityLabel("Strong Alert repeat interval")
                 .accessibilityValue(InterfaceCopy.minuteDuration(flow.strongAlertRepeatIntervalMinutes))
+            }
 
-                Button("Show Test Alert") {
-                    flow.presentTestAlert()
-                    openWindow(id: "test-alert")
-                }
-                .disabled(flow.isTestAlertPresented)
+            Section("Event Types") {
+                Toggle(
+                    "Protect out-of-office events",
+                    isOn: Binding(
+                        get: { flow.isOutOfOfficeProtectionEnabled },
+                        set: { flow.setOutOfOfficeProtectionEnabled($0) }
+                    )
+                )
+                Text(
+                    "Off by default. When on, timed out-of-office events receive Strong Alerts and Early Reminders when Early Reminder is enabled."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             }
 
             Section("Optional Blocking Mode") {
-                Toggle(
-                    "Block other apps while an Early Reminder is open",
-                    isOn: Binding(
-                        get: { flow.isBlockingModeEnabled },
-                        set: { isEnabled in
-                            flow.setBlockingModeEnabled(isEnabled)
-                            windowController.setBlockingModeEnabled(isEnabled)
-                        }
-                    )
-                )
-
-                if flow.isBlockingModeEnabled {
-                    Text("Blocking Mode needs Accessibility and Input Monitoring permissions. Without both, the Early Reminder stays visible but cannot block interaction with other apps.")
-                        .foregroundStyle(.secondary)
-                    if flow.earlyReminderCommitment != nil {
-                        Label(
-                            flow.isBlockingAvailable
-                                ? "Blocking Mode is active for the current Early Reminder."
-                                : "Blocking Mode is unavailable for the current Early Reminder. It remains visible in visual-only mode.",
-                            systemImage: flow.isBlockingAvailable
-                                ? "checkmark.circle"
-                                : "exclamationmark.triangle"
-                        )
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    }
-                    ViewThatFits(in: .horizontal) {
-                        HStack {
-                            blockingPermissionButtons
-                        }
-                        VStack(alignment: .leading) {
-                            blockingPermissionButtons
-                        }
-                    }
-                }
+                BlockingModeControls(showsCurrentReminderStatus: true)
             }
         }
         .formStyle(.grouped)
         .padding(20)
-    }
-
-    @ViewBuilder
-    private var blockingPermissionButtons: some View {
-        Button("Open Accessibility Settings") {
-            windowController.openAccessibilitySettings()
-        }
-        Button("Open Input Monitoring Settings") {
-            windowController.openInputMonitoringSettings()
-        }
     }
 }
 
@@ -528,7 +686,7 @@ private struct SettingsProtectionSummary: View {
 
     private var statusTitle: String {
         flow.connectionState == .reconnectRequired
-            ? "Calendar Access Required"
+            ? "Reconnect Required"
             : flow.menuBarTitle
     }
 
@@ -554,7 +712,7 @@ private struct SettingsProtectionSummary: View {
             return flow.pauseExpirationText()
         }
         if flow.connectionState == .reconnectRequired {
-            return "Reconnect Google Calendar for this session to resume protection."
+            return "Reconnect Google Calendar to resume protection. Routine relaunches keep valid authorization."
         }
         switch flow.status {
         case .active:

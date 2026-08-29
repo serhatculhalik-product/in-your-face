@@ -5,23 +5,43 @@ import SwiftUI
 private enum OnboardingStep: Int {
     case connect
     case calendars
-    case testAlert
     case ready
 
     var progressValue: Int {
-        min(rawValue + 1, 3)
+        min(rawValue + 1, 2)
+    }
+}
+
+struct OnboardingReminderPreferences: Equatable {
+    var isEarlyReminderEnabled: Bool
+    var earlyReminderLeadTimeMinutes: Int
+
+    @MainActor
+    init(flow: CommitmentProtectionFlow) {
+        isEarlyReminderEnabled = flow.isEarlyReminderEnabled
+        earlyReminderLeadTimeMinutes = flow.earlyReminderLeadTimeMinutes
+    }
+
+    @MainActor
+    func commit(to flow: CommitmentProtectionFlow) -> Bool {
+        flow.setEarlyReminderEnabled(isEarlyReminderEnabled)
+        flow.setEarlyReminderLeadTime(minutes: earlyReminderLeadTimeMinutes)
+        guard flow.isProtectionConfirmationRequired else { return true }
+        return flow.confirmAllProtection()
     }
 }
 
 struct OnboardingView: View {
     @EnvironmentObject private var flow: CommitmentProtectionFlow
     @EnvironmentObject private var onboardingState: OnboardingState
-    @Environment(\.openWindow) private var openWindow
+    @EnvironmentObject private var testToolsController: TestToolsController
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AccessibilityFocusState private var isHeadingFocused: Bool
     @State private var step: OnboardingStep = .connect
     @State private var selectedAccountID: String?
     @State private var calendarSearch = ""
+    @State private var lastReconnectAccountID: String?
+    @State private var reminderPreferencesDraft: OnboardingReminderPreferences?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -40,6 +60,7 @@ struct OnboardingView: View {
             maxHeight: 760
         )
         .onAppear {
+            initializeReminderPreferencesIfNeeded()
             synchronizeStepWithProtection()
             focusHeading()
             OnboardingWindowController.shared.bringToFront()
@@ -56,11 +77,6 @@ struct OnboardingView: View {
         .onChange(of: flow.accountConnectionError) { _, message in
             announceConnectionError(message)
         }
-        .onChange(of: onboardingState.didHandleTestAlert) { _, didHandle in
-            if didHandle {
-                move(to: .ready)
-            }
-        }
         .transaction { transaction in
             if reduceMotion {
                 transaction.animation = nil
@@ -70,7 +86,7 @@ struct OnboardingView: View {
 
     private var onboardingHeader: some View {
         HStack(spacing: 12) {
-            Label("In Your Face", systemImage: "checkmark.shield")
+            Label(AppIdentity.displayName, systemImage: "checkmark.shield")
                 .font(.headline)
             Spacer()
             if step != .ready {
@@ -97,7 +113,12 @@ struct OnboardingView: View {
         VStack(alignment: .leading, spacing: 8) {
             onboardingFooter
             if step != .ready {
-                Text("Calendars you haven’t confirmed remain unprotected. Resume later from In Your Face in the menu bar, then choose Finish Setup…")
+                Text("Calendars you haven’t confirmed remain unprotected. Resume later from Meeting Incoming in the menu bar, then choose Finish Setup…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if reconnectPresentation.requiresReconnect {
+                Text("Reconnect the remaining Saved Accounts to restore all protection. Finish Later keeps setup available from the menu bar.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -117,18 +138,33 @@ struct OnboardingView: View {
         switch step {
         case .connect:
             onboardingSection(
-                title: "Connect Google Calendar",
-                detail: "Connect Google Calendar for this app session, then choose which calendars In Your Face protects. You’ll reconnect after the app relaunches."
+                title: testToolsController.isTestMode
+                    ? "Connect Simulated Calendar"
+                    : "Connect Google Calendar",
+                detail: testToolsController.isTestMode
+                    ? "Use the deterministic Test Mode fixture, then choose simulated calendars. No browser opens and no Google authorization is created."
+                    : "Connect Google Calendar once, then choose which calendars Meeting Incoming protects. Access stays encrypted on this Mac until you disconnect it or Google requires authorization again."
             ) {
                 VStack(alignment: .leading, spacing: 16) {
-                    Label("Session-only calendar access", systemImage: "lock.shield")
+                    Label(
+                        testToolsController.isTestMode
+                            ? "Isolated fixture data"
+                            : "Device-bound encrypted access",
+                        systemImage: testToolsController.isTestMode ? "testtube.2" : "lock.shield"
+                    )
                         .foregroundStyle(.secondary)
-                    Text("In Your Face can read your calendar but cannot change events or RSVPs. Google access is kept only while the app is open and is discarded when it quits.")
+                    Text(testToolsController.isTestMode
+                        ? "The fixture behaves like a calendar connection only inside this test profile. Your production accounts, settings, and encrypted data remain untouched."
+                        : "Meeting Incoming can read selected calendar lists and events but cannot change events or RSVPs. Credentials and calendar data are encrypted for this Mac and never stored in Keychain.")
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
 
                     if flow.isConnectingAccount {
-                        ProgressView("Connecting to Google…")
+                        ProgressView(
+                            testToolsController.isTestMode
+                                ? "Connecting fixture…"
+                                : "Connecting to Google…"
+                        )
                             .controlSize(.small)
                     } else if let message = flow.accountConnectionError {
                         Label("Google Calendar couldn’t connect", systemImage: "exclamationmark.triangle")
@@ -144,7 +180,7 @@ struct OnboardingView: View {
         case .calendars:
             onboardingSection(
                 title: "Choose Monitored Calendars",
-                detail: "In Your Face protects accepted, timed commitments only from the calendars you select. Nothing is selected automatically."
+                detail: "Meeting Incoming protects accepted or self-organized timed commitments only from the calendars you select. A video-meeting link is optional, and nothing is selected automatically."
             ) {
                 VStack(alignment: .leading, spacing: 12) {
                     if flow.accountCoverages.count > 1 {
@@ -170,6 +206,7 @@ struct OnboardingView: View {
                             searchText: $calendarSearch,
                             maximumHeight: 205
                         )
+                        .disabled(flow.isGoogleAccountOperationInProgress)
                     } else {
                         ContentUnavailableView(
                             "No Connected Account",
@@ -180,49 +217,174 @@ struct OnboardingView: View {
                 }
             }
 
-        case .testAlert:
-            onboardingSection(
-                title: "Try a Test Alert",
-                detail: "See what a Strong Alert looks like before you rely on it. This test won’t change any calendar event or RSVP."
-            ) {
-                VStack(alignment: .leading, spacing: 16) {
-                    Label("What to check", systemImage: "display.2")
-                        .font(.headline)
-                    Text("Make sure the alert is noticeable, readable, and keyboard-accessible. Real Strong Alerts appear on every display, remain visible during Full-Screen Sharing, window sharing, and app sharing, and repeat until you act. People who can see a shared surface may also see the alert and commitment title.")
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Label("Press Return in the Test Alert to finish.", systemImage: "return")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
         case .ready:
             onboardingSection(
                 title: readinessTitle,
                 detail: readinessDetail
             ) {
                 VStack(alignment: .leading, spacing: 14) {
-                    Label(
-                        InterfaceCopy.protectedCalendarCount(protectedCalendarCount),
-                        systemImage: "calendar.badge.checkmark"
-                    )
-                    Label(
-                        flow.isEarlyReminderEnabled
-                            ? InterfaceCopy.earlyReminderTiming(flow.earlyReminderLeadTimeMinutes)
-                            : "Early Reminder off",
-                        systemImage: "bell"
-                    )
-                    Label(
-                        InterfaceCopy.strongAlertRepeatTiming(flow.strongAlertRepeatIntervalMinutes),
-                        systemImage: "bell.and.waves.left.and.right"
-                    )
-                    Text("In Your Face will now stay in the menu bar until a commitment needs you. Ongoing controls are available in Settings.")
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.top, 6)
+                    if reconnectPresentation.requiresReconnect {
+                        reconnectAccountProgress
+                        Divider()
+                            .padding(.vertical, 2)
+                    } else {
+                        Label(
+                            InterfaceCopy.protectedCalendarCount(
+                                reconnectPresentation.activelyProtectedCalendarCount
+                            ),
+                            systemImage: "calendar.badge.checkmark"
+                        )
+                        Label(
+                            InterfaceCopy.strongAlertRepeatTiming(flow.strongAlertRepeatIntervalMinutes),
+                            systemImage: "bell.and.waves.left.and.right"
+                        )
+
+                        Divider()
+                            .padding(.vertical, 2)
+
+                        readinessPreferenceSection(title: "Early Reminder") {
+                            EarlyReminderTimingControls(
+                                isEnabled: earlyReminderEnabledDraftBinding,
+                                leadTimeMinutes: earlyReminderLeadTimeDraftBinding
+                            )
+                        }
+
+                        Divider()
+                            .padding(.vertical, 2)
+
+                        readinessPreferenceSection(title: "Optional Blocking Mode") {
+                            BlockingModeControls(showsCurrentReminderStatus: false)
+                        }
+                    }
+
+                    Divider()
+                        .padding(.vertical, 2)
+
+                    Toggle(isOn: launchAtLoginBinding) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Start Meeting Incoming at login")
+                            Text(testToolsController.isTestMode
+                                ? "Simulated in this test profile; no macOS Login Item is changed."
+                                : "Off by default. You can change this anytime in Settings.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .toggleStyle(.switch)
+                    if let launchAtLoginError = flow.launchAtLoginError {
+                        Text(launchAtLoginError)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if !reconnectPresentation.requiresReconnect {
+                        Text("Meeting Incoming stays quiet in the menu bar until a commitment needs you. Ongoing controls are available in Settings.")
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.top, 6)
+                    }
                 }
             }
+        }
+    }
+
+    private var reconnectAccountProgress: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label(
+                InterfaceCopy.googleAccountConnectionProgress(
+                    connectedCount: reconnectPresentation.connectedAccountCount,
+                    totalCount: reconnectPresentation.savedAccountCount
+                ),
+                systemImage: "person.2"
+            )
+            .font(.headline)
+
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(reconnectPresentation.accounts) { account in
+                    reconnectAccountRow(account)
+                    if account.id != reconnectPresentation.accounts.last?.id {
+                        Divider()
+                            .padding(.leading, 28)
+                    }
+                }
+            }
+
+            Label(
+                InterfaceCopy.monitoredCalendarProtectionProgress(
+                    protectedCount: reconnectPresentation.activelyProtectedCalendarCount,
+                    savedCount: reconnectPresentation.savedCalendarCount
+                ),
+                systemImage: "calendar.badge.clock"
+            )
+            .font(.callout)
+            .foregroundStyle(.secondary)
+
+            if let message = reconnectPresentation.connectionError {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label(
+                        "Couldn’t reconnect \(failedReconnectAccountLabel)",
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.red)
+                    Text(message)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(InterfaceCopy.connectionFailureAnnouncement(message))
+            }
+        }
+    }
+
+    private func reconnectAccountRow(
+        _ account: OnboardingReconnectAccountPresentation
+    ) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: "person.crop.circle")
+                .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(account.label)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(account.label)
+                Text(InterfaceCopy.savedMonitoredCalendarCount(account.savedCalendarCount))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 16)
+            reconnectAccountState(account)
+        }
+        .padding(.vertical, 7)
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private func reconnectAccountState(
+        _ account: OnboardingReconnectAccountPresentation
+    ) -> some View {
+        if flow.connectingAccountID == account.id {
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Reconnecting…")
+            }
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.secondary)
+        } else if account.isConnected {
+            Label("Connected", systemImage: "checkmark.circle.fill")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.green)
+        } else if account.requiresReconnect {
+            Label("Reconnect Required", systemImage: "exclamationmark.circle.fill")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.orange)
+        } else {
+            Label("Needs Attention", systemImage: "exclamationmark.circle")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -247,6 +409,18 @@ struct OnboardingView: View {
             }
             content()
             Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func readinessPreferenceSection<Content: View>(
+        title: LocalizedStringKey,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.headline)
+            content()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -283,9 +457,9 @@ struct OnboardingView: View {
 
     @ViewBuilder
     private var onboardingSecondaryActions: some View {
-        if step == .calendars || step == .testAlert {
+        if step == .calendars {
             Button("Back") {
-                move(to: step == .testAlert ? .calendars : .connect)
+                move(to: .connect)
             }
         }
 
@@ -294,10 +468,9 @@ struct OnboardingView: View {
                 onboardingState.deferUntilRequested()
                 OnboardingWindowController.shared.close()
             }
-        } else if flow.status != .active {
+        } else if reconnectPresentation.requiresReconnect || flow.status != .active {
             Button("Finish Later") {
-                onboardingState.deferUntilRequested()
-                OnboardingWindowController.shared.close()
+                finishLater()
             }
         }
     }
@@ -317,7 +490,7 @@ struct OnboardingView: View {
             }
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.defaultAction)
-            .disabled(flow.isConnectingAccount)
+            .disabled(flow.isGoogleAccountOperationInProgress)
 
         case .calendars:
             Button("Turn On Protection") {
@@ -325,31 +498,26 @@ struct OnboardingView: View {
             }
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.defaultAction)
-            .disabled(selectedCalendarCount == 0)
-
-        case .testAlert:
-            Button("Show Test Alert") {
-                flow.presentTestAlert()
-                openWindow(id: "test-alert")
-            }
-            .buttonStyle(.borderedProminent)
-            .keyboardShortcut(.defaultAction)
-            .disabled(flow.isTestAlertPresented)
+            .disabled(
+                selectedCalendarCount == 0 ||
+                    flow.isGoogleAccountOperationInProgress
+            )
 
         case .ready:
-            if let coverage = reconnectRequiredCoverage {
-                Button("Reconnect Google Calendar…") {
+            if let target = reconnectPresentation.currentTarget {
+                Button("Reconnect \(target.label)…") {
+                    lastReconnectAccountID = target.id
                     Task {
-                        await flow.reconnectGoogleAccount(accountID: coverage.account.id)
+                        await flow.reconnectGoogleAccount(accountID: target.id)
                     }
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
-                .disabled(flow.isConnectingAccount)
-            } else if flow.status == .active {
+                .disabled(flow.isGoogleAccountOperationInProgress)
+                .accessibilityLabel("Reconnect Google Account \(target.label)")
+            } else if flow.status == .active || flow.isProtectionConfirmationRequired {
                 Button("Finish Setup") {
-                    guard onboardingState.complete() else { return }
-                    OnboardingWindowController.shared.close()
+                    finishSetup()
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
@@ -379,11 +547,16 @@ struct OnboardingView: View {
         if flow.isConnectingAccount {
             return "Connecting…"
         }
-        return flow.accountConnectionError == nil ? "Connect Google Calendar" : "Try Again"
+        if flow.accountConnectionError != nil {
+            return "Try Again"
+        }
+        return testToolsController.isTestMode
+            ? "Connect Simulated Calendar"
+            : "Connect Google Calendar"
     }
 
     private var progressLabel: LocalizedStringKey {
-        "Step \(step.progressValue) of 3"
+        "Step \(step.progressValue) of 2"
     }
 
     private var selectedAccountBinding: Binding<String?> {
@@ -396,14 +569,6 @@ struct OnboardingView: View {
     private var selectedCoverage: AccountCoverage? {
         let resolvedID = selectedAccountID ?? flow.accountCoverages.first?.id
         return flow.accountCoverages.first { $0.id == resolvedID }
-    }
-
-    private var reconnectRequiredCoverage: AccountCoverage? {
-        if let selectedCoverage,
-           selectedCoverage.connectionState == .reconnectRequired {
-            return selectedCoverage
-        }
-        return flow.accountCoverages.first { $0.connectionState == .reconnectRequired }
     }
 
     private func accountLabel(for coverage: AccountCoverage) -> String {
@@ -419,15 +584,27 @@ struct OnboardingView: View {
         }
     }
 
-    private var protectedCalendarCount: Int {
-        flow.accountCoverages.reduce(0) { count, coverage in
-            count + (coverage.isProtectionConfirmed ? coverage.selectedCalendarIDs.count : 0)
+    private var reconnectPresentation: OnboardingReconnectPresentation {
+        OnboardingReconnectPresentation.make(
+            coverages: flow.accountCoverages,
+            preferredAccountID: selectedAccountID,
+            connectionError: flow.accountConnectionError
+        )
+    }
+
+    private var failedReconnectAccountLabel: String {
+        if let lastReconnectAccountID,
+           let account = reconnectPresentation.accounts.first(where: {
+               $0.id == lastReconnectAccountID
+           }) {
+            return account.label
         }
+        return reconnectPresentation.currentTarget?.label ?? "Google Account"
     }
 
     private var readinessTitle: LocalizedStringKey {
-        if reconnectRequiredCoverage != nil {
-            return "Calendar Access Required"
+        if reconnectPresentation.requiresReconnect {
+            return "Reconnect Required"
         }
         switch flow.status {
         case .active:
@@ -440,15 +617,15 @@ struct OnboardingView: View {
     }
 
     private var readinessDetail: LocalizedStringKey {
-        if reconnectRequiredCoverage != nil {
-            return "Reconnect every saved Google account before finishing setup. Your Monitored Calendar choices will be reapplied."
+        if reconnectPresentation.requiresReconnect {
+            return "Reconnect each Saved Account once—not each calendar. Meeting Incoming restores its Monitored Calendar choices automatically after each reconnect."
         }
         switch flow.status {
         case .active:
-            return "Your selected calendars are protected while In Your Face remains open. Reconnect Google Calendar after the app relaunches."
+            return "Your selected calendars stay protected across app relaunches and Mac restarts while Google authorization remains valid."
         case .unavailable:
             return isCheckingCoverage
-                ? "Your choices are saved. In Your Face is checking Google Calendar before it marks protection active."
+                ? "Your choices are saved. Meeting Incoming is checking Google Calendar before it marks protection active."
                 : "Your choices are saved, but Google Calendar could not refresh. Known reminders may be unverified, and new reminders will not be created until coverage returns."
         case .noCoverage:
             return "Choose and confirm at least one calendar before finishing setup."
@@ -459,6 +636,39 @@ struct OnboardingView: View {
         flow.isCheckingCoverage
     }
 
+    private var launchAtLoginBinding: Binding<Bool> {
+        Binding(
+            get: { flow.isLaunchAtLoginEnabled },
+            set: { flow.setLaunchAtLoginEnabled($0) }
+        )
+    }
+
+    private var earlyReminderEnabledDraftBinding: Binding<Bool> {
+        Binding(
+            get: { reminderPreferences.isEarlyReminderEnabled },
+            set: { isEnabled in
+                var draft = reminderPreferences
+                draft.isEarlyReminderEnabled = isEnabled
+                reminderPreferencesDraft = draft
+            }
+        )
+    }
+
+    private var earlyReminderLeadTimeDraftBinding: Binding<Int> {
+        Binding(
+            get: { reminderPreferences.earlyReminderLeadTimeMinutes },
+            set: { minutes in
+                var draft = reminderPreferences
+                draft.earlyReminderLeadTimeMinutes = minutes
+                reminderPreferencesDraft = draft
+            }
+        )
+    }
+
+    private var reminderPreferences: OnboardingReminderPreferences {
+        reminderPreferencesDraft ?? OnboardingReminderPreferences(flow: flow)
+    }
+
     private func synchronizeStepWithProtection() {
         synchronizeSelectedAccount()
         if flow.accountCoverages.isEmpty {
@@ -467,10 +677,8 @@ struct OnboardingView: View {
             !$0.selectedCalendarIDs.isEmpty && $0.isProtectionConfirmed
         }) {
             step = .calendars
-        } else if onboardingState.didHandleTestAlert {
-            step = .ready
         } else {
-            step = .testAlert
+            step = .ready
         }
     }
 
@@ -484,8 +692,34 @@ struct OnboardingView: View {
 
     private func turnOnProtection() {
         if flow.confirmAllProtection() {
-            move(to: .testAlert)
+            move(to: .ready)
         }
+    }
+
+    private func initializeReminderPreferencesIfNeeded() {
+        guard reminderPreferencesDraft == nil else { return }
+        reminderPreferencesDraft = OnboardingReminderPreferences(flow: flow)
+    }
+
+    private func commitReminderPreferences() -> Bool {
+        let preferences = reminderPreferences
+        guard preferences.commit(to: flow) else { return false }
+        reminderPreferencesDraft = OnboardingReminderPreferences(flow: flow)
+        return true
+    }
+
+    private func finishSetup() {
+        guard commitReminderPreferences() else { return }
+        guard onboardingState.complete() else { return }
+        OnboardingWindowController.shared.close()
+    }
+
+    private func finishLater() {
+        if !reconnectPresentation.requiresReconnect {
+            guard commitReminderPreferences() else { return }
+        }
+        onboardingState.deferUntilRequested()
+        OnboardingWindowController.shared.close()
     }
 
     private func move(to newStep: OnboardingStep) {

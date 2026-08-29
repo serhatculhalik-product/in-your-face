@@ -30,8 +30,8 @@ The visual authority is native macOS: system typography, semantic colors, SF Sym
 ### Baseline Classification
 
 - **Preserve:** semantic system typography and color; native controls and SF Symbols; named, icon-plus-text status; a finite assistant with stable header, scrollable content, and fixed action footer; grouped native Settings panes; one default action per decision context; consequence copy and native confirmation; truthful loading, empty, error, retry, and saved states; menu-bar → Early Reminder → Strong Alert escalation; content wrapping and content-fit alert sizing; keyboard access, VoiceOver focus and announcements, and Reduce Motion accommodation.
-- **Implementation only:** literal spacing, corner radii, line limits, search thresholds, animation durations, popover and window dimensions, fixed list heights, individual shortcut letters, exact material opacities, source-file boundaries, and small differences among primary, fallback, test, and additional-display alert paths.
-- **Revisit before canonizing:** overloaded orange semantics; cross-surface status-symbol drift; menu-bar density and fixed width; inconsistent error emphasis and action wording; alert chrome and action placement; parity among alert paths and Test Alert; Protection Activity scanability; Blocking Mode permission communication; multi-display accessibility duplication; and contrast/material behavior under macOS accessibility settings.
+- **Implementation only:** literal spacing, corner radii, line limits, search thresholds, animation durations, popover and window dimensions, fixed list heights, individual shortcut letters, exact material opacities, source-file boundaries, and small differences among primary, fallback, and additional-display alert paths.
+- **Revisit before canonizing:** overloaded orange semantics; cross-surface status-symbol drift; menu-bar density and fixed width; inconsistent error emphasis and action wording; alert chrome and action placement; parity among alert paths; Protection Activity scanability; Blocking Mode permission communication; multi-display accessibility duplication; and contrast/material behavior under macOS accessibility settings.
 
 ## Colors
 
@@ -79,13 +79,13 @@ The palette is platform-semantic and adaptive. No fixed color values are defined
 The system has three density bands: compact glanceable status, standard configuration, and generous interruption surfaces. These relationships are durable; current literal padding, gaps, radii, and widths are not.
 
 - **Menu bar:** The glance-and-act layer for the next commitment, Pause, restorable decisions, protection truth, account health, and app-level commands.
-- **Onboarding:** A three-step activation path plus a readiness result. It uses stable header/content/footer bands, visible progress, one real task per step, scrollable variable content, and a fixed action region.
-- **Settings:** The ongoing inspect-and-configure layer. Accounts, Calendars, Reminders, and Activity use native panes and surface-appropriate Form, List, and ScrollView containers rather than a feed of equal cards.
+- **Onboarding:** Two setup steps—connect Google Calendar and choose Monitored Calendars—followed by a readiness result. It uses stable header/content/footer bands, visible progress, one real task per setup step, scrollable variable content, and a fixed action region.
+- **Settings:** The ongoing inspect-and-configure layer. Accounts, Calendars, Reminders, and Activity use native panes and surface-appropriate Form, List, and ScrollView containers rather than a feed of equal cards. Reminders owns the default-off Out-of-Office Protection choice because it changes both reminder stages and is ongoing configuration, not onboarding.
 - **Alerts:** Focused interventions that center commitment, timing, state, consequence, and next action. Early Reminder stays calmer; Strong Alert is larger, persistent, and present across every available display.
 
-Long titles, translated copy, user-formatted dates, diagnostic text, and conflicts must wrap without hiding actions. Onboarding keeps variable content scrollable while its footer remains stable; Settings remains resizable within useful bounds; alert windows fit content and available display space. Universal resizability is not required.
+Long titles, Meeting Descriptions, translated copy, user-formatted dates, diagnostic text, and conflicts must wrap without hiding actions. Onboarding keeps variable content scrollable while its footer remains stable; Settings remains resizable within useful bounds; alert windows fit content and available display space. Universal resizability is not required.
 
-**The Responsibility Rule.** Keep glanceable protection truth and immediate actions in the menu bar, teach only activation in onboarding, and keep detailed inspection and configuration in native Settings.
+**The Responsibility Rule.** Keep glanceable protection truth and immediate actions in the menu bar, teach activation and collect only first-run readiness choices in onboarding, and keep detailed inspection and ongoing configuration in native Settings.
 
 **The Content-Fit Rule.** Let native windows and controls adapt to content, localization, and available display space; do not promote current fixed dimensions into reusable rules.
 
@@ -131,15 +131,15 @@ Order content by operational urgency: upcoming commitment or conflict; active Pa
 
 ### Onboarding and Settings
 
-Onboarding teaches one real action at a time and ends with truthful first value; it never becomes a second Settings surface. It discloses that Google authorization lasts only until the app quits. Settings uses native tabs, grouped Forms, Lists, sections, LabeledContent, and platform controls. Accounts, Calendars, Reminders, and Activity remain distinct responsibilities; Accounts provides targeted reconnection after relaunch. Both surfaces show loading, error, empty, recovery, and confirmation states in context.
+Onboarding teaches one real action in each of two setup steps—connect Google Calendar, then choose Monitored Calendars—and ends with a truthful readiness result; it never becomes a second Settings surface. Readiness limits itself to the initial protection choices: whether Early Reminder is enabled, its lead time, optional Blocking Mode, and Launch at Login. Showing readiness never requests system permissions. When the user explicitly chooses Blocking Mode, explain Accessibility and Input Monitoring before requesting either permission, and preserve visual-only Early Reminder behavior when either permission is missing. Onboarding discloses that Google authorization is encrypted for this Mac and normally survives relaunch. Settings uses native tabs, grouped Forms, Lists, sections, LabeledContent, and platform controls. Accounts, Calendars, Reminders, and Activity remain distinct responsibilities; Accounts provides targeted reconnection only when authorization genuinely requires it. Reminders places Out-of-Office Protection in an Event Types section with a native Toggle and concise default-off consequence copy. Both surfaces show loading, error, empty, recovery, and confirmation states in context.
 
 ### Early Reminder
 
-Present alert identity, explicit uncertainty or conflict state, commitment title, timing, and the consequence of the passive action before controls. Snooze remains a menu. **Close for now** dismisses only the current surface and makes the later Strong Alert consequence visible. Stop reminders applies to the occurrence and requires confirmation. Preserve semantics and hierarchy, not current chrome, dimensions, or button arrangement.
+Present alert identity, explicit uncertainty or conflict state, commitment title, timing, optional Meeting Description, and the consequence of the passive action before controls. Meeting Description is bounded, selectable plain text with secondary emphasis; it wraps instead of becoming an active link or competing with actions. Do not introduce a new Early Reminder during the final minute before start; an already-visible reminder may remain as the start approaches. Snooze remains a menu. **Close for now** dismisses only the current surface and makes the later Strong Alert consequence visible. Stop reminders applies to the occurrence and requires confirmation. Preserve semantics and hierarchy, not current chrome, dimensions, or button arrangement.
 
 ### Strong Alert
 
-Make the commitment title and timing the strongest content, followed by concise context and one default next action. When Join exists, it is primary and Stop reminders is secondary. Without a recognized meeting link, Stop reminders may become the main next action while confirmation communicates its consequence. Got it remains quieter with repeat behavior visible; Pause stays grouped as a menu. Preserve multi-display presence, repetition, keyboard access, and VoiceOver support—not duplicated interaction trees or current panel chrome.
+Make the commitment title and timing the strongest content, followed by concise context, an optional secondary Meeting Description, and one default next action. When Join exists, it is primary and Stop reminders is secondary. **I joined another way** remains a nearby secondary alternative that records the current Occurrence as Handled. Without a recognized meeting link, Stop reminders may become the main next action while confirmation communicates its consequence. Got it remains quieter with repeat behavior visible; Pause stays grouped as a menu. Preserve multi-display presence, repetition, keyboard access, and VoiceOver support—not duplicated interaction trees or current panel chrome.
 
 ### Commitment Conflicts
 
@@ -169,7 +169,7 @@ Show provenance in a consistent order: actor symbol, semibold event title and ti
 - **Don't** use orange as a generic marker for anything important, or rely on color alone to distinguish state.
 - **Don't** reintroduce the superseded rounded setup feed, a one-off decorative headline, hard-coded locale, or a second configuration surface disguised as onboarding.
 - **Don't** wrap every Settings or onboarding group in a card, elevated container, or decorative material.
-- **Don't** treat the current centered Strong Alert shell, title-bar strategy, Test Alert environment, or fallback variants as final visual authority.
+- **Don't** treat the current centered Strong Alert shell, title-bar strategy, or fallback variants as final visual authority.
 - **Don't** translate this native macOS system into web or enlarged-iOS conventions.
 - **Don't** alter product scope, reminder semantics, multi-display presence, sharing visibility, persistence, or alert lifecycle merely to simplify the visual system.
 
@@ -178,6 +178,6 @@ Show provenance in a consistent order: actor symbol, semibold event title and ti
 - Cross-surface icon and color mappings for Active Protection, Pause, No Coverage, stale/unavailable coverage, uncertainty, conflict, and primary selection.
 - Menu-bar width, account density, repeated commands, and information compression at longer localized strings.
 - Error-stack emphasis and action wording across connection, authorization, refresh, and disconnection failures.
-- Alert title-bar/chrome strategy, action-region layout, Test Alert fidelity, and parity among primary, fallback, conflict, and additional-display paths.
+- Alert title-bar/chrome strategy, action-region layout, and parity among primary, fallback, conflict, and additional-display paths.
 - Protection Activity metadata density, filtering clarity, and scanability at realistic event volume.
 - Multi-display interaction ownership and accessibility, Blocking Mode permission communication, and contrast/material legibility under every macOS accessibility setting.

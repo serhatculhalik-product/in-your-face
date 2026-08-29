@@ -1,6 +1,69 @@
 import AppKit
+@preconcurrency import ObjectiveC
+
+private final class WindowResizeObservation: @unchecked Sendable {
+    let token: NSObjectProtocol
+
+    init(token: NSObjectProtocol) {
+        self.token = token
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(token)
+    }
+}
+
+@MainActor
+private final class WindowContentMinimumEnforcer {
+    private weak var window: NSWindow?
+    private var minimumContentSize: CGSize
+    private var resizeObservation: WindowResizeObservation?
+    private var isEnforcing = false
+
+    init(window: NSWindow, minimumContentSize: CGSize) {
+        self.window = window
+        self.minimumContentSize = minimumContentSize
+        resizeObservation = WindowResizeObservation(
+            token: NotificationCenter.default.addObserver(
+                forName: NSWindow.didResizeNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.enforceMinimumContentSize()
+                }
+            }
+        )
+        enforceMinimumContentSize()
+    }
+
+    func update(minimumContentSize: CGSize) {
+        self.minimumContentSize = minimumContentSize
+        enforceMinimumContentSize()
+    }
+
+    private func enforceMinimumContentSize() {
+        guard !isEnforcing, let window else { return }
+        let currentSize = window.contentLayoutRect.size
+        let constrainedSize = CGSize(
+            width: max(currentSize.width, minimumContentSize.width),
+            height: max(currentSize.height, minimumContentSize.height)
+        )
+        guard abs(currentSize.width - constrainedSize.width) > 0.5 ||
+                abs(currentSize.height - constrainedSize.height) > 0.5 else {
+            return
+        }
+
+        isEnforcing = true
+        window.setContentSize(constrainedSize)
+        isEnforcing = false
+    }
+}
 
 enum WindowFrameFitter {
+    @MainActor
+    private static var minimumEnforcerAssociationKey: UInt8 = 0
+
     static func centeredFrame(
         preferredSize: CGSize,
         minimumSize: CGSize,
@@ -104,7 +167,18 @@ enum WindowFrameFitter {
             visibleFrame: visibleFrame,
             margin: margin
         )
+        let maximumContentSize = window.contentRect(
+            forFrameRect: CGRect(origin: .zero, size: maximumFrame.size)
+        ).size
+        let displayClampedMinimumContentSize = CGSize(
+            width: min(max(minimumContentSize.width, 0), max(maximumContentSize.width, 0)),
+            height: min(max(minimumContentSize.height, 0), max(maximumContentSize.height, 0))
+        )
 
+        installMinimumContentSizeEnforcer(
+            on: window,
+            minimumContentSize: displayClampedMinimumContentSize
+        )
         window.maxSize = maximumFrame.size
         let currentFrame = window.frame
         let needsUpdate = abs(currentFrame.minX - fittedFrame.minX) > 0.5 ||
@@ -114,5 +188,31 @@ enum WindowFrameFitter {
         if needsUpdate {
             window.setFrame(fittedFrame, display: true)
         }
+    }
+
+    @MainActor
+    private static func installMinimumContentSizeEnforcer(
+        on window: NSWindow,
+        minimumContentSize: CGSize
+    ) {
+        window.contentMinSize = minimumContentSize
+        if let enforcer = objc_getAssociatedObject(
+            window,
+            &minimumEnforcerAssociationKey
+        ) as? WindowContentMinimumEnforcer {
+            enforcer.update(minimumContentSize: minimumContentSize)
+            return
+        }
+
+        let enforcer = WindowContentMinimumEnforcer(
+            window: window,
+            minimumContentSize: minimumContentSize
+        )
+        objc_setAssociatedObject(
+            window,
+            &minimumEnforcerAssociationKey,
+            enforcer,
+            .OBJC_ASSOCIATION_RETAIN_NONATOMIC
+        )
     }
 }

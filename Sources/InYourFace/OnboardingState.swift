@@ -17,28 +17,36 @@ final class OnboardingState: ObservableObject {
 
     static let currentCompletionVersion = 1
     private static let completionVersionKey = "in-your-face.onboarding-completed-version"
-    private static let testAlertHandledKey = "in-your-face.onboarding-test-alert-handled"
+    private static let launchAtLoginChoiceKey = "in-your-face.launch-at-login-choice-recorded"
 
     @Published private(set) var phase: Phase
     @Published private(set) var isInitialLaunchResolved = false
-    @Published private(set) var didHandleTestAlert: Bool
+    @Published private(set) var didChooseLaunchAtLogin: Bool
 
     private let stateStore: UserDefaults
+    private let allowsPreferenceMutation: @MainActor () -> Bool
 
-    init(stateStore: UserDefaults = .standard) {
+    init(
+        stateStore: UserDefaults = .standard,
+        allowsPreferenceMutation: @escaping @MainActor () -> Bool = { true }
+    ) {
         self.stateStore = stateStore
+        self.allowsPreferenceMutation = allowsPreferenceMutation
         let savedValue = stateStore.object(forKey: Self.completionVersionKey) as? NSNumber
         if let savedValue, savedValue.intValue >= Self.currentCompletionVersion {
             phase = .completed
         } else {
             phase = savedValue.flatMap { Phase(rawValue: $0.intValue) } ?? .pending
         }
-        didHandleTestAlert = stateStore.bool(forKey: Self.testAlertHandledKey)
+        didChooseLaunchAtLogin = stateStore.bool(forKey: Self.launchAtLoginChoiceKey)
     }
 
     var initialSurface: InitialSurface {
         guard isInitialLaunchResolved else { return .waiting }
-        return phase == .pending ? .onboarding : .menuBarOnly
+        if phase == .pending || (phase == .completed && !didChooseLaunchAtLogin) {
+            return .onboarding
+        }
+        return .menuBarOnly
     }
 
     var isCompleted: Bool {
@@ -46,10 +54,11 @@ final class OnboardingState: ObservableObject {
     }
 
     var needsSetup: Bool {
-        isInitialLaunchResolved && !isCompleted
+        isInitialLaunchResolved && (!isCompleted || !didChooseLaunchAtLogin)
     }
 
     func resolveInitialLaunch(hasConfiguredProtection: Bool) {
+        guard allowsPreferenceMutation() else { return }
         guard !isInitialLaunchResolved else { return }
 
         if stateStore.object(forKey: Self.completionVersionKey) == nil {
@@ -60,26 +69,29 @@ final class OnboardingState: ObservableObject {
     }
 
     func resume() {
-        guard isInitialLaunchResolved, !isCompleted else { return }
+        guard allowsPreferenceMutation() else { return }
+        guard isInitialLaunchResolved else { return }
+        if isCompleted && !didChooseLaunchAtLogin {
+            return
+        }
+        guard !isCompleted else { return }
         phase = .pending
         persistPhase()
     }
 
     func deferUntilRequested() {
+        guard allowsPreferenceMutation() else { return }
         guard !isCompleted else { return }
         phase = .deferred
         persistPhase()
     }
 
-    func markTestAlertHandled() {
-        didHandleTestAlert = true
-        stateStore.set(true, forKey: Self.testAlertHandledKey)
-    }
-
     @discardableResult
     func complete() -> Bool {
-        guard didHandleTestAlert else { return false }
+        guard allowsPreferenceMutation() else { return false }
         phase = .completed
+        didChooseLaunchAtLogin = true
+        stateStore.set(true, forKey: Self.launchAtLoginChoiceKey)
         persistPhase()
         return true
     }

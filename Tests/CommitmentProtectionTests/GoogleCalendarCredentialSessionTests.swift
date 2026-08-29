@@ -48,7 +48,7 @@ final class GoogleCalendarCredentialSessionTests: XCTestCase {
         let restored = try await copiedConnector.restore(accountID: accountID)
         XCTAssertEqual(restored?.account.id, accountID)
         let requestsAfterRestore = await requests.count
-        XCTAssertEqual(requestsAfterRestore, 3)
+        XCTAssertEqual(requestsAfterRestore, 2)
 
         let newSession = GoogleSessionCredentialStore(legacyDefaults: legacyDefaults)
         let relaunchedConnector = makeConnector(
@@ -168,7 +168,7 @@ final class GoogleCalendarCredentialSessionTests: XCTestCase {
         XCTAssertEqual(relaunch.accountCoverages.map(\.account.id), [savedAccount.id])
         XCTAssertEqual(
             relaunch.accountConnectionError,
-            "That is a different Google account. Choose the account shown in In Your Face to reconnect it."
+            "That is a different Google account. Choose the account shown in Meeting Incoming to reconnect it."
         )
     }
 
@@ -411,10 +411,8 @@ final class GoogleCalendarCredentialSessionTests: XCTestCase {
                 switch url.host {
                 case "oauth2.googleapis.com":
                     body = #"{"access_token":"access-token"}"#
-                case "openidconnect.googleapis.com":
-                    body = #"{"sub":"\#(accountID)","email":"person@example.com"}"#
                 case "www.googleapis.com":
-                    body = #"{"items":[]}"#
+                    body = #"{"items":[{"id":"\#(accountID)","summary":"Primary","primary":true}]}"#
                 default:
                     throw URLError(.unsupportedURL)
                 }
