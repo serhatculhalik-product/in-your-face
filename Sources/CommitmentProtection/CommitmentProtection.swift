@@ -4277,7 +4277,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
         if let persistenceError = error as? ProtectionPersistenceError {
             switch persistenceError {
             case .eventSnapshotLimitExceeded:
-                return "The next 24 hours contain more calendar data than the protected cache can safely retain. Narrow the monitored calendars, then retry."
+                return ProtectionPersistenceError.eventSnapshotLimitExceededDescription
             case .protectedStorageUnavailable:
                 return "Protected storage operation failed."
             }
@@ -4748,10 +4748,13 @@ private enum ProtectionPersistenceError: LocalizedError {
     case eventSnapshotLimitExceeded
     case protectedStorageUnavailable(String)
 
+    static let eventSnapshotLimitExceededDescription =
+        "The next 24 hours contain more calendar data than Meeting Incoming can safely retain as Protected Calendar Data. Narrow the Monitored Calendars, then retry."
+
     var errorDescription: String? {
         switch self {
         case .eventSnapshotLimitExceeded:
-            return "The next 24 hours contain more calendar data than the protected cache can safely retain. Narrow the monitored calendars, then retry."
+            return Self.eventSnapshotLimitExceededDescription
         case .protectedStorageUnavailable(let message):
             return message
         }

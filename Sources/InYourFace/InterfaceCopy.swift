@@ -225,12 +225,12 @@ enum InterfaceCopy {
         let value: AttributedString
         if canJoin {
             value = AttributedString(
-                localized: "Closes this alert now. Protection stays active, and Strong Alert returns in \(interval) unless you Join, Stop reminders, or Pause All Protection.",
+                localized: "Closes this alert now. Protection stays active, and Strong Alert returns in \(interval) unless you Join, choose I joined another way, Stop reminders, or Pause All Protection.",
                 locale: locale
             )
         } else {
             value = AttributedString(
-                localized: "Closes this alert now. Protection stays active, and Strong Alert returns in \(interval) unless you Stop reminders or Pause All Protection.",
+                localized: "Closes this alert now. Protection stays active, and Strong Alert returns in \(interval) unless you choose I joined another way, Stop reminders, or Pause All Protection.",
                 locale: locale
             )
         }

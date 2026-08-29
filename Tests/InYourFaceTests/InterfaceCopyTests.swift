@@ -136,14 +136,15 @@ final class InterfaceCopyTests: XCTestCase {
 
         XCTAssertEqual(
             InterfaceCopy.strongAlertRepeatConsequence(minutes: 1, locale: locale),
-            "Closes this alert now. Protection stays active, and Strong Alert returns in 1 minute unless you Join, Stop reminders, or Pause All Protection."
+            "Closes this alert now. Protection stays active, and Strong Alert returns in 1 minute unless you Join, choose I joined another way, Stop reminders, or Pause All Protection."
         )
-        XCTAssertFalse(
+        XCTAssertEqual(
             InterfaceCopy.strongAlertRepeatConsequence(
                 minutes: 1,
                 canJoin: false,
                 locale: locale
-            ).contains("Join")
+            ),
+            "Closes this alert now. Protection stays active, and Strong Alert returns in 1 minute unless you choose I joined another way, Stop reminders, or Pause All Protection."
         )
         XCTAssertTrue(InterfaceCopy.pauseAllProtectionDetail(locale: locale).contains("every Monitored Calendar"))
         XCTAssertTrue(InterfaceCopy.stopRemindersConfirmationMessage(locale: locale).contains("Restore Protection"))

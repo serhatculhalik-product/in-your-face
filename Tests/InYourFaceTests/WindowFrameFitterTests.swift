@@ -1,4 +1,5 @@
 import AppKit
+import CommitmentProtection
 import SwiftUI
 import XCTest
 @testable import InYourFace
@@ -168,7 +169,7 @@ final class WindowFrameFitterTests: XCTestCase {
         XCTAssertLessThanOrEqual(panel.frame.height, allowedFrame.height + 0.5)
     }
 
-    func testEarlyReminderSchedulesASecondFitAfterWindowRegistration() {
+    func testEarlyReminderSchedulesASecondFitAfterWindowRegistration() async {
         let registry = WindowRegistry()
         var scheduledFit: (@MainActor () -> Void)?
         var fittedWindows: [NSWindow] = []
@@ -192,19 +193,11 @@ final class WindowFrameFitterTests: XCTestCase {
             panel.close()
         }
 
+        let flow = await makeWindowFittingEarlyReminderFlow()
         controller.present(
-            content: EarlyReminderFallbackContent(
-                title: "A commitment with enough content to need its natural window size",
-                timing: "Aug 25, 2026 at 20:30 local time",
-                meetingDescription: nil,
-                snoozeOptionsMinutes: [5, 10],
-                verificationLabel: nil
-            ),
+            flow: flow,
             reopen: {},
-            clear: {},
-            canSnooze: true,
-            snooze: { _ in },
-            dismiss: {}
+            closingActionCompleted: { _ in }
         )
 
         registry.register(panel, for: .earlyReminder)
@@ -219,6 +212,62 @@ final class WindowFrameFitterTests: XCTestCase {
         XCTAssertEqual(fittedWindows.count, 2)
         XCTAssertTrue(fittedWindows.last === panel)
     }
+}
+
+@MainActor
+private func makeWindowFittingEarlyReminderFlow() async -> CommitmentProtectionFlow {
+    let now = Date(timeIntervalSince1970: 1_000_000)
+    let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+    let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+    let commitment = CalendarEvent(
+        id: "event-1",
+        title: "A commitment with enough content to need its natural window size",
+        startDate: now.addingTimeInterval(5 * 60),
+        endDate: now.addingTimeInterval(65 * 60),
+        timeZoneIdentifier: nil,
+        isAllDay: false,
+        isAccepted: true,
+        calendarID: calendar.id,
+        accountID: account.id
+    )
+    let flow = CommitmentProtectionFlow(
+        calendarConnector: WindowFittingCalendarConnector(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            commitment: commitment
+        ),
+        launchAtLogin: WindowFittingLaunchAtLoginController(),
+        stateStore: UserDefaults(suiteName: "WindowFrameFitterTests.\(UUID().uuidString)")!,
+        now: { now }
+    )
+    await flow.connectGoogleAccount()
+    flow.setCalendarSelected(true, calendarID: calendar.id)
+    _ = flow.confirmProtection()
+    for _ in 0..<10 { await Task.yield() }
+    await flow.refreshCommitmentProtection(at: now)
+    return flow
+}
+
+private struct WindowFittingCalendarConnector: GoogleCalendarConnecting {
+    let connection: GoogleCalendarConnection
+    let commitment: CalendarEvent
+
+    func connect() async throws -> GoogleCalendarConnection { connection }
+    func restore(accountID: String) async throws -> GoogleCalendarConnection? { connection }
+    func disconnect(accountID: String) throws {}
+    func loadEvents(
+        accountID: String,
+        calendarID: String,
+        from startDate: Date,
+        to endDate: Date
+    ) async throws -> [CalendarEvent] {
+        [commitment]
+    }
+}
+
+@MainActor
+private final class WindowFittingLaunchAtLoginController: LaunchAtLoginControlling {
+    var isEnabled = false
+    func enable() throws { isEnabled = true }
 }
 
 private final class VariableFittingView: NSView {

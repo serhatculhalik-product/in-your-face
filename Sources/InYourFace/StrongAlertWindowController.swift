@@ -13,6 +13,8 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
     private let windowRegistry: WindowRegistry
     private let scheduleAfterLayout: (@escaping @MainActor () -> Void) -> Void
     private let fitWindow: @MainActor (NSWindow?, NSScreen?) -> Void
+    private let notificationCenter: NotificationCenter
+    private let availableScreens: @MainActor () -> [NSScreen]
     private let presentationContract = AlertPresentationContract(variant: .strongAlert)
     private weak var primaryWindow: NSWindow?
     private var additionalWindows: [NSWindow] = []
@@ -43,12 +45,20 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
                 on: screen,
                 minimumContentSize: NSSize(width: 360, height: 300)
             )
-        }
+        },
+        notificationCenter: NotificationCenter = .default,
+        availableScreens: @escaping @MainActor () -> [NSScreen] = { NSScreen.screens }
     ) {
         self.windowRegistry = windowRegistry
         self.scheduleAfterLayout = scheduleAfterLayout
         self.fitWindow = fitWindow
+        self.notificationCenter = notificationCenter
+        self.availableScreens = availableScreens
         super.init()
+    }
+
+    var isObservingApplicationActivation: Bool {
+        !applicationObservers.isEmpty
     }
 
     func present(
@@ -58,7 +68,7 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
         if windowRegistry.window(for: .strongAlert) == nil {
             _ = lifecycle.present(
                 surface: .strongAlert,
-                displayCount: NSScreen.screens.count,
+                displayCount: availableScreens().count,
                 primaryIndex: nil,
                 surfaceDiscovered: false
             )
@@ -78,7 +88,7 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
         closeAdditionalWindows()
         primaryWindow = window
         configure(window)
-        let screens = NSScreen.screens
+        let screens = availableScreens()
         let primaryScreen = window.screen ?? NSScreen.main
         guard let displayPlan = lifecycle.present(
             surface: .strongAlert,
@@ -184,7 +194,7 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
 
     private func createAdditionalWindows(using displayPlan: StrongAlertDisplayPlan) {
         guard let content else { return }
-        let screens = NSScreen.screens
+        let screens = availableScreens()
 
         let resolvedPrimaryScreen = screens[displayPlan.primaryIndex]
         if primaryScreenIndex(in: screens, matching: primaryWindow?.screen) != displayPlan.primaryIndex {
@@ -250,7 +260,7 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
     }
 
     private func startScreenObservation() {
-        screenObserver = NotificationCenter.default.addObserver(
+        screenObserver = notificationCenter.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
             queue: .main
@@ -263,7 +273,7 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
 
     private func stopScreenObservation() {
         if let screenObserver {
-            NotificationCenter.default.removeObserver(screenObserver)
+            notificationCenter.removeObserver(screenObserver)
             self.screenObserver = nil
         }
     }
@@ -273,7 +283,7 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
             NSApplication.didBecomeActiveNotification,
             NSApplication.didResignActiveNotification
         ].map { notificationName in
-            NotificationCenter.default.addObserver(
+            notificationCenter.addObserver(
                 forName: notificationName,
                 object: nil,
                 queue: .main
@@ -287,7 +297,7 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
     }
 
     private func stopApplicationObservation() {
-        applicationObservers.forEach(NotificationCenter.default.removeObserver)
+        applicationObservers.forEach(notificationCenter.removeObserver)
         applicationObservers.removeAll()
     }
 
@@ -295,7 +305,7 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
         guard isPresented || lifecycle.requiresSurfaceRecovery || lifecycle.requiresSurfaceCreation else {
             return
         }
-        let screens = NSScreen.screens
+        let screens = availableScreens()
         let primaryScreen = primaryWindow?.screen ?? NSScreen.main
         fitAlertWindow(
             primaryWindow,
@@ -306,13 +316,21 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
             primaryIndex: primaryScreenIndex(in: screens, matching: primaryScreen)
         ), lifecycle.isPresented else {
             isPresented = false
+            stopApplicationObservation()
             closeAdditionalWindows()
             return
         }
         isPresented = true
         closeAdditionalWindows()
         createAdditionalWindows(using: displayPlan)
+        restartApplicationObservation()
         bringAlertToFront()
+    }
+
+    private func restartApplicationObservation() {
+        stopApplicationObservation()
+        guard !isInteractionSuspendedForTestTools else { return }
+        startApplicationObservation()
     }
 
     private func preserveAlertFocus() {

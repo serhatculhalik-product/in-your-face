@@ -419,6 +419,38 @@ final class StrongAlertDisplayPlanTests: XCTestCase {
         XCTAssertEqual(normalConflict.flow.lastActionMessage, fallbackConflict.flow.lastActionMessage)
     }
 
+    @MainActor
+    func testFallbackEarlyReminderExposesSameStartConflictSelectionThroughItsProductionModel() async {
+        let fixture = await makeEarlyReminderConflictTestFlow()
+
+        let presentation = EarlyReminderSurfaceModel.fallback(
+            flow: fixture.flow,
+            commitment: fixture.primary
+        )
+
+        XCTAssertEqual(
+            Set(presentation.primarySelectionOptions.map(\.occurrenceID)),
+            Set([fixture.primary.occurrenceID, fixture.secondary.occurrenceID])
+        )
+        XCTAssertTrue(presentation.actions.selectPrimary(fixture.secondary))
+        XCTAssertEqual(
+            fixture.flow.lastActionMessage,
+            "Primary commitment selected for this conflict."
+        )
+        await settleScheduledRefreshes()
+        await fixture.flow.refreshCommitmentProtection(at: fixture.now)
+
+        let selectedPresentation = EarlyReminderSurfaceModel.fallback(
+            flow: fixture.flow,
+            commitment: fixture.secondary
+        )
+        XCTAssertTrue(selectedPresentation.primarySelectionOptions.isEmpty)
+        XCTAssertEqual(
+            selectedPresentation.secondaryConflictCommitments.map(\.occurrenceID),
+            [fixture.primary.occurrenceID]
+        )
+    }
+
     func testEarlyReminderInteractionBarrierRestoresItsTrackedWindowState() {
         var lifecycle = EarlyReminderInteractionBarrierLifecycle()
 

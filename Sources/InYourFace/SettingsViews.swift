@@ -664,10 +664,9 @@ private struct AdaptiveSettingsActionRow<Status: View, Actions: View>: View {
 
 private struct ActivitySettingsPane: View {
     var body: some View {
-        ScrollView {
-            ProtectionActivityCard(isCard: false)
-                .padding(24)
-        }
+        ProtectionActivityCard(isCard: false)
+            .padding(24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 
