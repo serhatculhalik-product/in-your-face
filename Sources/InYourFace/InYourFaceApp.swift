@@ -351,11 +351,12 @@ struct InYourFaceApp: App {
             )
                 .registerWindow(.strongAlert)
                 .runtimeWindowState(applicationWindowStatePolicy)
+                .fixedSize(horizontal: true, vertical: true)
         }
         .windowStyle(.hiddenTitleBar)
-        // StrongAlertWindowController owns the final frame across displays. Let SwiftUI
-        // contribute only its minimum; contentSize creates a competing resize loop.
-        .windowResizability(.contentMinSize)
+        // SwiftUI owns the primary window's size. StrongAlertWindowController sizes only
+        // the AppKit replicas it creates for additional displays.
+        .windowResizability(.contentSize)
 
         Window("Test Tools", id: "test-tools") {
             Group {
@@ -1312,7 +1313,10 @@ private struct StrongAlertContentView: View {
                                 finishStrongAlertAction(flow)
                             }
                             return didPause
-                        }
+                        },
+                        maximumContentHeight: StrongAlertDisplayMetrics.maximumContentHeight(
+                            visibleFrameHeights: NSScreen.screens.map(\.visibleFrame.height)
+                        )
                     )
                 }
             } else {
@@ -1419,8 +1423,14 @@ private struct StrongAlertConflictContentView: View {
     @State private var isCustomPausePresented = false
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
+        IntrinsicHeightCappedLayout(
+            minimumHeight: StrongAlertDisplayMetrics.minimumContentHeight,
+            maximumHeight: StrongAlertDisplayMetrics.maximumContentHeight(
+                visibleFrameHeights: NSScreen.screens.map(\.visibleFrame.height)
+            )
+        ) {
+            ScrollView {
+                VStack(spacing: 16) {
             Label("Strong Alert", systemImage: "bell.and.waves.left.and.right.fill")
                 .font(.headline)
             if flow.isStrongAlertUnverified {
@@ -1507,10 +1517,11 @@ private struct StrongAlertConflictContentView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+                }
+                .padding(28)
             }
-            .padding(28)
         }
-        .frame(minWidth: 360, idealWidth: 560, maxWidth: 620, maxHeight: 680)
+        .frame(minWidth: 360, idealWidth: 560, maxWidth: 620)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
         .sheet(isPresented: $isCustomPausePresented) {
             if let pauseAction {
@@ -2832,15 +2843,20 @@ struct StrongAlertView: View {
     var tertiaryActionTitle: String? = nil
     var tertiaryAction: (() -> Void)? = nil
     var pauseAction: ((PauseDuration) -> Bool)? = nil
+    var maximumContentHeight: CGFloat = StrongAlertDisplayMetrics.maximumContentHeightLimit
     @State private var customPauseExpiration = Date().addingTimeInterval(60 * 60)
     @State private var isCustomPausePresented = false
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: true) {
-            alertContent
+        IntrinsicHeightCappedLayout(
+            minimumHeight: StrongAlertDisplayMetrics.minimumContentHeight,
+            maximumHeight: maximumContentHeight
+        ) {
+            ScrollView(.vertical, showsIndicators: true) {
+                alertContent
+            }
         }
         .frame(minWidth: 360, idealWidth: 500, maxWidth: 620)
-        .frame(minHeight: 300, maxHeight: 680)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
         .sheet(isPresented: $isCustomPausePresented) {
             if let pauseAction {
@@ -2980,6 +2996,70 @@ struct StrongAlertView: View {
             .accessibilityLabel(primaryActionTitle)
             .accessibilityHint(primaryActionHint)
         }
+    }
+}
+
+enum StrongAlertDisplayMetrics {
+    static let minimumContentHeight: CGFloat = 300
+    static let maximumContentHeightLimit: CGFloat = 680
+
+    // Preserve the fitter's 40-point margins above and below, with room for
+    // title-bar chrome, on the shortest connected display.
+    private static let verticalWindowAllowance: CGFloat = 120
+
+    static func maximumContentHeight(visibleFrameHeights: [CGFloat]) -> CGFloat {
+        guard let shortestVisibleHeight = visibleFrameHeights
+            .filter(\.isFinite)
+            .min() else {
+            return maximumContentHeightLimit
+        }
+        return Swift.min(
+            maximumContentHeightLimit,
+            Swift.max(
+                minimumContentHeight,
+                shortestVisibleHeight - verticalWindowAllowance
+            )
+        )
+    }
+}
+
+private struct IntrinsicHeightCappedLayout: Layout {
+    let minimumHeight: CGFloat
+    let maximumHeight: CGFloat
+
+    func sizeThatFits(
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) -> CGSize {
+        guard let subview = subviews.first else { return .zero }
+        let naturalSize = subview.sizeThatFits(ProposedViewSize(
+            width: proposal.width,
+            height: nil
+        ))
+        let resolvedMinimum = Swift.max(minimumHeight, 0)
+        let resolvedMaximum = Swift.max(maximumHeight, resolvedMinimum)
+        return CGSize(
+            width: proposal.width ?? naturalSize.width,
+            height: Swift.min(
+                Swift.max(naturalSize.height, resolvedMinimum),
+                resolvedMaximum
+            )
+        )
+    }
+
+    func placeSubviews(
+        in bounds: CGRect,
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) {
+        guard let subview = subviews.first else { return }
+        subview.place(
+            at: bounds.origin,
+            anchor: .topLeading,
+            proposal: ProposedViewSize(width: bounds.width, height: bounds.height)
+        )
     }
 }
 

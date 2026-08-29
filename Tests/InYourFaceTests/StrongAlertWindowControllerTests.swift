@@ -46,9 +46,11 @@ final class StrongAlertWindowControllerTests: XCTestCase {
         XCTAssertTrue(controller.isObservingApplicationActivation)
     }
 
-    func testPrimaryWindowIsFittedInitiallyAndAgainAfterHostedContentLayout() {
+    func testPrimaryWindowSizingIsNeverPassedToControllerFrameFitter() async throws {
         _ = NSApplication.shared
+        let screen = try XCTUnwrap(NSScreen.screens.first)
         let registry = WindowRegistry()
+        let notificationCenter = NotificationCenter()
         var scheduledFits: [@MainActor () -> Void] = []
         var fittedWindows: [NSWindow] = []
         let controller = StrongAlertWindowController(
@@ -58,29 +60,32 @@ final class StrongAlertWindowControllerTests: XCTestCase {
                 if let window {
                     fittedWindows.append(window)
                 }
-            }
+            },
+            notificationCenter: notificationCenter,
+            availableScreens: { [screen, screen] }
         )
-        let content = ConstraintUpdatingStrongAlertProbe()
-        let hostingView = NSHostingView(rootView: content)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 300),
+            contentRect: NSRect(x: 100_000, y: 100_000, width: 460, height: 300),
             styleMask: [.titled],
             backing: .buffered,
             defer: false
         )
         window.isReleasedWhenClosed = false
-        window.contentView = hostingView
+        window.contentView = NSHostingView(rootView: Text("Strong Alert"))
+        controller.suspendInteractionForTestTools()
         defer {
             controller.close()
             window.close()
         }
 
-        controller.present(content: AnyView(content), surfaceDidClose: {})
+        controller.present(content: AnyView(Text("Strong Alert")), surfaceDidClose: {})
         registry.register(window, for: .strongAlert)
 
         XCTAssertTrue(window.isVisible)
-        XCTAssertEqual(fittedWindows.filter { $0 === window }.count, 1)
-        XCTAssertFalse(scheduledFits.isEmpty)
+        XCTAssertEqual(window.frame.midX, screen.visibleFrame.midX, accuracy: 0.5)
+        XCTAssertEqual(window.frame.midY, screen.visibleFrame.midY, accuracy: 0.5)
+        XCTAssertFalse(fittedWindows.isEmpty, "The additional-display replica should be fitted.")
+        XCTAssertFalse(fittedWindows.contains(where: { $0 === window }))
 
         for _ in 0..<10 where !scheduledFits.isEmpty {
             let pendingFits = scheduledFits
@@ -88,11 +93,89 @@ final class StrongAlertWindowControllerTests: XCTestCase {
             pendingFits.forEach { $0() }
         }
 
+        notificationCenter.post(
+            name: NSApplication.didChangeScreenParametersNotification,
+            object: nil
+        )
+        for _ in 0..<10 {
+            await Task.yield()
+        }
+        for _ in 0..<10 where !scheduledFits.isEmpty {
+            let pendingFits = scheduledFits
+            scheduledFits.removeAll()
+            pendingFits.forEach { $0() }
+        }
+
         XCTAssertTrue(scheduledFits.isEmpty)
-        XCTAssertGreaterThanOrEqual(fittedWindows.filter { $0 === window }.count, 2)
+        XCTAssertFalse(
+            fittedWindows.contains(where: { $0 === window }),
+            "SwiftUI Scene must remain the sole size owner for the primary Strong Alert window."
+        )
     }
 
-    func testEveryDisplayWindowFitsContentThatGrowsAfterHostedLayout() async throws {
+    func testReplicaResizeDelegateCallbackDoesNotRefitWindow() async throws {
+        _ = NSApplication.shared
+        let screen = try XCTUnwrap(NSScreen.screens.first)
+        let registry = WindowRegistry()
+        var scheduledFits: [@MainActor () -> Void] = []
+        var fittedWindows: [NSWindow] = []
+        var fitCounts: [ObjectIdentifier: Int] = [:]
+        let controller = StrongAlertWindowController(
+            windowRegistry: registry,
+            scheduleAfterLayout: { scheduledFits.append($0) },
+            fitWindow: { window, _ in
+                guard let window else { return }
+                fitCounts[ObjectIdentifier(window), default: 0] += 1
+                if !fittedWindows.contains(where: { $0 === window }) {
+                    fittedWindows.append(window)
+                }
+            },
+            availableScreens: { [screen, screen] }
+        )
+        let primaryWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 460, height: 300),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        primaryWindow.isReleasedWhenClosed = false
+        primaryWindow.contentView = NSHostingView(rootView: Text("Strong Alert"))
+        controller.suspendInteractionForTestTools()
+        defer {
+            controller.close()
+            primaryWindow.close()
+        }
+
+        controller.present(content: AnyView(Text("Strong Alert")), surfaceDidClose: {})
+        registry.register(primaryWindow, for: .strongAlert)
+        let replicaWindow = try XCTUnwrap(
+            fittedWindows.first(where: { $0 !== primaryWindow })
+        )
+        for _ in 0..<10 where !scheduledFits.isEmpty {
+            let pendingFits = scheduledFits
+            scheduledFits.removeAll()
+            pendingFits.forEach { $0() }
+        }
+        XCTAssertTrue(scheduledFits.isEmpty)
+        let fitCountBeforeResize = fitCounts[ObjectIdentifier(replicaWindow)]
+
+        replicaWindow.delegate?.windowDidResize?(Notification(
+            name: NSWindow.didResizeNotification,
+            object: replicaWindow
+        ))
+        for _ in 0..<10 {
+            await Task.yield()
+        }
+
+        XCTAssertEqual(
+            fitCounts[ObjectIdentifier(replicaWindow)],
+            fitCountBeforeResize,
+            "A replica resize notification must not synchronously refit the same AppKit panel."
+        )
+        XCTAssertTrue(scheduledFits.isEmpty)
+    }
+
+    func testAdditionalDisplayWindowFitsContentThatGrowsAfterHostedLayout() async throws {
         _ = NSApplication.shared
         let screen = try XCTUnwrap(NSScreen.screens.first)
         let registry = WindowRegistry()
@@ -137,7 +220,8 @@ final class StrongAlertWindowControllerTests: XCTestCase {
         controller.present(content: AnyView(content), surfaceDidClose: {})
         registry.register(primaryWindow, for: .strongAlert)
 
-        let additionalWindows = fittedWindows.filter { $0 !== primaryWindow }
+        XCTAssertFalse(fittedWindows.contains(where: { $0 === primaryWindow }))
+        let additionalWindows = fittedWindows
         XCTAssertEqual(additionalWindows.count, 1)
 
         for _ in 0..<10 where !scheduledFits.isEmpty {
@@ -151,6 +235,7 @@ final class StrongAlertWindowControllerTests: XCTestCase {
         for _ in 0..<10 {
             await Task.yield()
         }
+        primaryWindow.contentView?.layoutSubtreeIfNeeded()
         fittedWindows.forEach { $0.contentView?.layoutSubtreeIfNeeded() }
 
         XCTAssertFalse(
@@ -168,11 +253,7 @@ final class StrongAlertWindowControllerTests: XCTestCase {
         )
         fittedWindows.forEach { $0.contentView?.layoutSubtreeIfNeeded() }
 
-        let primaryRequiredHeight = try XCTUnwrap(primaryWindow.contentView).fittingSize.height
-        XCTAssertGreaterThanOrEqual(
-            primaryWindow.contentLayoutRect.height,
-            primaryRequiredHeight - 0.5
-        )
+        let primaryRequiredSize = try XCTUnwrap(primaryWindow.contentView).fittingSize
         let additionalWindow = additionalWindows[0]
         let additionalRequiredHeight = try XCTUnwrap(additionalWindow.contentView).fittingSize.height
         XCTAssertGreaterThanOrEqual(
@@ -182,15 +263,15 @@ final class StrongAlertWindowControllerTests: XCTestCase {
         )
         XCTAssertEqual(
             additionalWindow.contentLayoutRect.width,
-            primaryWindow.contentLayoutRect.width,
+            primaryRequiredSize.width,
             accuracy: 0.5,
-            "Every display should use the same logical Strong Alert content width."
+            "The replica should use the primary SwiftUI content's logical width."
         )
         XCTAssertEqual(
             additionalWindow.contentLayoutRect.height,
-            primaryWindow.contentLayoutRect.height,
+            primaryRequiredSize.height,
             accuracy: 0.5,
-            "Every display should use the same logical Strong Alert content height."
+            "The replica should use the primary SwiftUI content's logical height."
         )
     }
 
@@ -259,6 +340,7 @@ final class StrongAlertWindowControllerTests: XCTestCase {
 
         scheduledFits.forEach { $0() }
 
+        XCTAssertNil(fitCounts[ObjectIdentifier(primaryWindow)])
         XCTAssertEqual(fitCounts[ObjectIdentifier(replacementAdditionalWindow)], 2)
         XCTAssertEqual(fitCounts[ObjectIdentifier(staleAdditionalWindow)], 1)
     }
@@ -338,6 +420,8 @@ final class StrongAlertWindowControllerTests: XCTestCase {
         let additionalWindow = try XCTUnwrap(
             fittedWindows.first(where: { $0 !== primaryWindow })
         )
+        let primaryRequiredSize = primaryHostingView.fittingSize
+        XCTAssertFalse(fittedWindows.contains(where: { $0 === primaryWindow }))
         XCTAssertGreaterThan(
             additionalWindow.contentLayoutRect.height,
             300.5,
@@ -345,7 +429,12 @@ final class StrongAlertWindowControllerTests: XCTestCase {
         )
         XCTAssertEqual(
             additionalWindow.contentLayoutRect.height,
-            primaryWindow.contentLayoutRect.height,
+            primaryRequiredSize.height,
+            accuracy: 0.5
+        )
+        XCTAssertEqual(
+            additionalWindow.contentLayoutRect.width,
+            primaryRequiredSize.width,
             accuracy: 0.5
         )
         XCTAssertGreaterThanOrEqual(
@@ -407,18 +496,13 @@ final class StrongAlertWindowControllerTests: XCTestCase {
         }
         XCTAssertTrue(scheduledFits.isEmpty)
 
-        XCTAssertEqual(fitScreens.count, 2)
-        let screenIDsByWindow = fitScreens.values.map { calls in
-            Set(calls.map(ObjectIdentifier.init))
-        }
-        XCTAssertTrue(
-            screenIDsByWindow.allSatisfy { $0.count == 1 },
-            "Initial and deferred fits for a window must keep using its planned screen."
-        )
+        XCTAssertNil(fitScreens[ObjectIdentifier(primaryWindow)])
+        XCTAssertEqual(fitScreens.count, 1)
+        let replicaScreenCalls = try XCTUnwrap(fitScreens.values.first)
         XCTAssertEqual(
-            Set(screenIDsByWindow.compactMap(\.first)).count,
-            2,
-            "The two Strong Alert windows must target two distinct physical displays."
+            Set(replicaScreenCalls.map(ObjectIdentifier.init)),
+            [ObjectIdentifier(screens[1])],
+            "The replica's initial and deferred fits must stay on its planned display."
         )
     }
 
@@ -482,52 +566,13 @@ final class StrongAlertWindowControllerTests: XCTestCase {
             2,
             "The initial and first hosted-layout fits are sufficient when the late fitting size is unchanged."
         )
+        XCTAssertNil(fitCounts[ObjectIdentifier(primaryWindow)])
     }
 }
 
 @MainActor
 private final class MutableStrongAlertScreenProvider {
     var screens: [NSScreen] = []
-}
-
-private struct ConstraintUpdatingStrongAlertProbe: View {
-    @State private var measuredContentHeight: CGFloat = 280
-
-    var body: some View {
-        ScrollView {
-            VStack(spacing: 24) {
-                Text("Strong Alert")
-                    .font(.headline)
-                Text("A commitment with enough content to exercise the production alert layout")
-                    .font(.largeTitle.bold())
-                    .fixedSize(horizontal: false, vertical: true)
-                Button("Stop reminders") {}
-                    .buttonStyle(.borderedProminent)
-            }
-            .padding(32)
-            .background {
-                GeometryReader { proxy in
-                    Color.clear.preference(
-                        key: ConstraintUpdatingHeightKey.self,
-                        value: proxy.size.height
-                    )
-                }
-            }
-        }
-        .frame(minWidth: 360, idealWidth: 500, maxWidth: 620)
-        .frame(height: min(measuredContentHeight, 680))
-        .onPreferenceChange(ConstraintUpdatingHeightKey.self) { height in
-            measuredContentHeight = max(240, height)
-        }
-    }
-}
-
-private struct ConstraintUpdatingHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 280
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
 }
 
 @MainActor
