@@ -353,7 +353,9 @@ struct InYourFaceApp: App {
                 .runtimeWindowState(applicationWindowStatePolicy)
         }
         .windowStyle(.hiddenTitleBar)
-        .windowResizability(.contentSize)
+        // StrongAlertWindowController owns the final frame across displays. Let SwiftUI
+        // contribute only its minimum; contentSize creates a competing resize loop.
+        .windowResizability(.contentMinSize)
 
         Window("Test Tools", id: "test-tools") {
             Group {
