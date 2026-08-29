@@ -31,7 +31,7 @@ Ordinary calendar notifications are easy to miss during focused work. A personal
 8. As a user, I can Remove Account when I want all local data for that account deleted.
 9. As a user, a failed or ambiguous Google revocation does not leave me with a partially disconnected or partially removed account.
 10. As a user with definitively no usable local grant, I can remove the remaining local account data and reach Google Account access settings for independent review.
-11. As a user with no selected calendars, I see No Coverage rather than a false Active Protection state.
+11. As a user with no Monitored Calendar confirmed for protection, I see No Coverage rather than a false Active Protection state.
 12. As a user with calendar data older than fifteen minutes, I see Stale Coverage and a persistent, non-interruptive Coverage Warning.
 13. As a user, a stale account produces no newly discovered reminders, while a previously known commitment may remain an Unverified Reminder only within the retained snapshot window.
 
@@ -41,14 +41,14 @@ Ordinary calendar notifications are easy to miss during focused work. A personal
 15. As a user, timed events I organize are eligible even when Google does not provide a separate accepted self-attendee response.
 16. As a user, linkless timed commitments remain protected and offer Stop reminders rather than Join.
 17. As a user, all-day, cancelled, declined, tentative, unanswered, and unselected-calendar events remain quiet. Timed out-of-office events also remain quiet by default, and I can explicitly enable or disable their Early Reminder and Strong Alert protection in Settings.
-18. As a user, selecting a calendar does not retroactively adopt a commitment already underway.
+18. As a user, initial Protection Confirmation evaluates eligible commitments already underway, while a calendar added to previously confirmed coverage does not retroactively adopt an Occurrence first discovered after its start.
 19. As a user, accepting an invitation after its scheduled start does not retroactively create an alert.
 20. As a user, a commitment protected before temporary app unavailability may return as an Overdue Commitment while it is still ongoing.
 21. As a user, Google Calendar remains authoritative for acceptance, cancellation, rescheduling, timing, time zones, Meeting Description, and meeting links. When a Meeting Description exists, I see it as secondary plain text without it changing eligibility or becoming a Join action.
 22. As a user, I see the commitment's scheduled instant in my current local time, with a time-zone label when relevant.
 23. As a user, recurring events are evaluated by Occurrence, and a rescheduled Occurrence receives a fresh protection decision.
-24. As a user, duplicate representations merge only when they share a Recognized Meeting Link and matching start time.
-25. As a user with overlapping commitments, I see every conflict. The commitment needing attention now is primary, and equal same-start choices remain available unless I choose one.
+24. As a user, duplicate eligible representations merge only when all share a Recognized Meeting Link and the same scheduled start instant, and protection continues until the latest scheduled end among them.
+25. As a user with overlapping Commitments after duplicate representations have merged, I see every distinct conflict. The Commitment needing attention now is primary, and equal same-start choices remain available unless I choose one.
 
 ### Reminder flow
 
@@ -95,7 +95,7 @@ Ordinary calendar notifications are easy to miss during focused work. A personal
 
 ### Authorization and accounts
 
-- ADR-0006 supersedes the session-only model in ADR-0005.
+- ADR-0010 supersedes the session-only model in ADR-0009.
 - Each Google refresh credential is AES-GCM-encrypted in the user's Application Support directory. Encryption and wrapping material are bound to a non-exportable Secure Enclave key on the current Mac.
 - Persisted authorization files use user-only permissions and are excluded from backups. Access tokens are short-lived and memory-only.
 - The app has no Keychain entitlement, creates no Keychain item, makes no SecItem call, and has no Keychain migration, plaintext fallback, or software-only cryptographic fallback.
@@ -109,7 +109,7 @@ Ordinary calendar notifications are easy to miss during focused work. A personal
 
 ### Calendar data and retention
 
-- ADR-0007 governs all persisted Google-derived data.
+- ADR-0011 governs all persisted Google-derived data.
 - The encrypted snapshot contains eligible events only from explicitly selected Monitored Calendars: ongoing Occurrences already under protection and eligible Occurrences starting within the next twenty-four hours.
 - A retained event may include a Meeting Description only after markup, executable content, excess whitespace, control characters, and content beyond the 2,000-character display limit have been removed. The retained text stays inert and is never treated as a Recognized Meeting Link.
 - Every snapshot records its refresh time and is physically discarded when more than twenty-four hours old, including during prolonged stale coverage.
@@ -119,16 +119,21 @@ Ordinary calendar notifications are easy to miss during focused work. A personal
 
 ### Calendar and reminder behavior
 
+- Selecting or changing Monitored Calendars requires Protection Confirmation before they produce protection; deselection ends their protection immediately. Initial Protection Confirmation evaluates current eligible Commitments, including those already underway, while an Occurrence first discovered after its start through recovery, relaunch, reconnect, or coverage added after prior confirmation remains an Untracked Past Occurrence.
 - Eligibility is accepted-or-owned and timed. Out-of-office is an event-type gate controlled by one default-off preference that applies to both Early Reminder and Strong Alert. A Recognized Meeting Link enables Join but is not an eligibility requirement.
+- A Late Acceptance does not create a new Early Reminder or Strong Alert for the current Occurrence. A previously protected ongoing Commitment may resume as overdue after Pause or temporary unavailability, but an Untracked Past Occurrence remains quiet.
 - Google Calendar is authoritative for calendar facts; Dismiss and Handled are reversible Occurrence-local app decisions that do not modify RSVP state.
 - Meeting Description is normalized to bounded inert plain text at the event-model boundary, persisted only inside the encrypted event snapshot, and never copied into Protection Activity. A merged commitment uses its stable canonical representation's nonblank description, otherwise the first nonblank description in stable order; descriptions are never concatenated.
+- Eligible representations form a Merged Commitment only when all share a Recognized Meeting Link and the same scheduled start instant. Merging precedes Commitment Conflict detection, and protection continues until the latest scheduled end among the representations.
 - A designated Google conference link is primary. When none is designated, every recognized candidate is presented as a choice rather than guessed.
 - Calendar cancellation, rescheduling, timing, and link changes update active protection. No new Strong Alert begins after the scheduled end.
 - Enabling Out-of-Office Protection does not adopt an already-underway occurrence. Disabling it immediately clears its active protection state and removes those events from retained snapshots.
 - A newly presented Early Reminder is suppressed when fewer than sixty seconds remain before start. An Early Reminder that is already visible remains visible inside that boundary, and exactly sixty seconds remains eligible.
 - Strong Alert presents the commitment title, current timing state, relevant calendar or account, and next action; secondary details remain secondary.
+- I joined another way records Handled for the current Occurrence without changing its Google Calendar RSVP.
 - Stop reminders is available for both linked and linkless commitments, requires confirmation, and is the only user-facing Strong Alert action that stops the current Occurrence without joining.
 - Strong Alert remains visible in every supported display-sharing mode under ADR-0004.
+- Alert presentation uses one internal lifecycle seam for window discovery or creation, activation, surface disappearance, display-topology changes, fallback recovery, and Blocking Mode availability. StrongAlertDisplayPlan remains the authoritative display-coverage rule.
 - Blocking Mode blocks interaction with other apps while the Early Reminder is open. It is permission-gated and degrades to visual-only behavior without disabling ordinary reminders.
 - Launch at Login is an explicit, default-off preference rather than an automatic requirement.
 - The menu-bar experience provides a compact upcoming-commitment view plus truthful coverage, Pause, and account states rather than a full schedule.
@@ -148,8 +153,8 @@ Ordinary calendar notifications are easy to miss during focused work. A personal
 
 - Verify externally observable Commitment Protection behavior through a product-flow seam with controlled calendar state, time, app availability, coverage, permissions, display sharing, and user actions.
 - Use controllable time for lead times, start boundaries, Repeat Intervals, scheduled ends, local-day expiry, snapshot expiry, time-zone display, Pause expiry, and recovery.
-- Cover accepted invitation events, self-organized events, linkless events, every excluded response/type, default-off and opted-in out-of-office events, selected and unselected calendars, recurring Occurrences, reschedules, cancellations, changed links, duplicates, and same-start conflicts.
-- Verify that late acceptance and newly selecting a calendar do not adopt an already-underway commitment, while recovery can restore a previously protected Overdue Commitment.
+- Cover accepted invitation events, self-organized events, linkless events, every excluded response/type, default-off and opted-in out-of-office events, selected, unselected, pending-confirmation, and confirmed calendars, recurring Occurrences, reschedules, cancellations, changed links, duplicates, and same-start conflicts.
+- Verify that initial Protection Confirmation can adopt an eligible ongoing Commitment, while Late Acceptance, an Occurrence introduced by a calendar added to previously confirmed coverage, and other Untracked Past Occurrences remain quiet; recovery can restore a previously protected Overdue Commitment.
 - Verify Out-of-Office Protection preference persistence, opt-in behavior across both reminder stages, immediate clearing on disable, physical snapshot pruning, and non-retroactive adoption on enable.
 - Verify Meeting Description decoding, markup and executable-content removal, blank normalization, length bounds, canonical/fallback merge precedence, encrypted relaunch persistence, and absence from Join extraction and Protection Activity.
 - Verify first Early Reminder suppression below sixty seconds, presentation at exactly sixty seconds, and retention of an already-visible reminder below sixty seconds.
@@ -163,6 +168,7 @@ Ordinary calendar notifications are easy to miss during focused work. A personal
 - Verify Blocking Mode explains permissions before requesting them, links to the correct System Settings panes, and preserves visual-only reminders when permission is missing.
 - Verify Launch at Login defaults off, changes only by explicit user choice, and resumes protection without reconnect when authorization remains valid.
 - Verify reminders remain visible across multiple displays, Full-Screen Sharing, window sharing, app sharing, sharing that begins during an alert, and macOS Focus.
+- Verify presentation lifecycle behavior deterministically for window discovery or creation, activation, surface disappearance, display-topology changes, fallback recovery, and Blocking Mode availability while retaining StrongAlertDisplayPlan as the authoritative display-coverage rule.
 - Verify each external alert action is keyboard reachable and VoiceOver-readable, has visible focus and non-color state cues, respects reduced motion, and remains legible at increased text sizes.
 
 ## Out of Scope
@@ -182,6 +188,8 @@ Ordinary calendar notifications are easy to miss during focused work. A personal
 ## Further Notes
 
 - The product principle is: the least disruptive intervention that still reliably gets the user to the commitment on time.
-- ADR-0001 defines calendar-only scope, ADR-0003 calendar truth and occurrence-local decisions, ADR-0004 sharing visibility, ADR-0006 device-bound authorization, ADR-0007 encrypted retention, and ADR-0008 the explicit default-off Out-of-Office Protection exception to ADR-0001's original unconditional exclusion.
-- ADR-0002 and ADR-0005 remain in the repository as superseded decision history.
+- ADR-0001 defines calendar-only scope, ADR-0003 calendar truth and occurrence-local decisions, ADR-0004 sharing visibility, ADR-0005 Late Acceptance, ADR-0006 passive missed-state exclusion, ADR-0007 Merged Commitment end behavior, ADR-0008 overdue recovery, ADR-0010 device-bound authorization, ADR-0011 encrypted retention, and ADR-0012 the explicit default-off Out-of-Office Protection exception to ADR-0001's original unconditional exclusion.
+- ADR-0002 and ADR-0009 remain in the repository as superseded decision history.
+- The primary success outcome is behavioral: the user is no longer late. The product does not depend on an analytics dashboard to communicate value.
 - Transition Support is a later advisory capability that may help the user wrap up current work without inspecting, managing, or blocking that work.
+- Final behavior changes made during implementation and UAT are recorded in CONTEXT.md, the accepted ADRs, and completed issue decisions.

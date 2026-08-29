@@ -37,7 +37,10 @@ let package = Package(
             dependencies: ["MeetingIncomingHelperSupport"]
         ),
         .testTarget(name: "CommitmentProtectionTests", dependencies: ["CommitmentProtection"]),
-        .testTarget(name: "InYourFaceTests", dependencies: ["InYourFace"]),
+        .testTarget(
+            name: "InYourFaceTests",
+            dependencies: ["InYourFace", "CommitmentProtection"]
+        ),
         .testTarget(
             name: "MeetingIncomingHelperSupportTests",
             dependencies: ["MeetingIncomingHelperSupport"]

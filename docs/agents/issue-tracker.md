@@ -11,7 +11,7 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 - **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
 - **Close**: `gh issue close <number> --comment "..."`
 
-The repository currently has no Git remote. Configure one before using `gh` without an explicit repository.
+This repository uses GitHub Issues through its configured Git remote. If the remote is unavailable in another checkout, configure it before using `gh` without an explicit repository.
 
 ## Pull requests as a triage surface
 

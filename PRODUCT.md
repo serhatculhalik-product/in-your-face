@@ -99,9 +99,9 @@ No public name, logo, icon, imagery, custom typeface, domain, bundle identifier,
 - docs/adr/0001-calendar-only-mvp.md fixes the narrow Google Calendar-only MVP boundary.
 - docs/adr/0003-calendar-truth-with-occurrence-local-decisions.md fixes the boundary between calendar truth and local protection decisions.
 - docs/adr/0004-alerts-remain-visible-during-screen-sharing.md is the accepted sharing policy and supersedes ADR-0002.
-- docs/adr/0006-persistent-device-bound-google-authorization.md supersedes ADR-0005 and fixes the persistent, Keychain-free authorization boundary.
-- docs/adr/0007-encrypted-google-data-and-bounded-retention.md fixes the storage and retention boundary for Google-derived data.
-- docs/adr/0008-optional-out-of-office-protection.md supersedes only ADR-0001's unconditional out-of-office exclusion and keeps that broader calendar-only boundary intact.
+- docs/adr/0010-persistent-device-bound-google-authorization.md supersedes ADR-0009 and fixes the persistent, Keychain-free authorization boundary.
+- docs/adr/0011-encrypted-google-data-and-bounded-retention.md fixes the storage and retention boundary for Google-derived data.
+- docs/adr/0012-optional-out-of-office-protection.md supersedes only ADR-0001's unconditional out-of-office exclusion and keeps that broader calendar-only boundary intact.
 - Sources and tests document the current implementation. Where implementation still reflects a superseded decision, the accepted ADRs and current spec define the intended behavior.
 
 ## Product Principles

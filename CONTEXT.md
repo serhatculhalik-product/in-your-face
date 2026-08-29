@@ -35,11 +35,11 @@ Calendar coverage whose account data is more than fifteen minutes old. It cannot
 _Avoid_: Offline mode, disconnected calendar
 
 **No Coverage**:
-The state in which no calendars are selected for protection. The app clearly asks the user to select a calendar and does not imply that commitments are protected.
+The state in which no Monitored Calendar is currently confirmed for protection. This includes no calendars selected and selected calendars awaiting Protection Confirmation; the app clearly asks the user to select and confirm calendars and does not imply that commitments are protected.
 _Avoid_: Inactive, empty calendar
 
 **Recognized Meeting Link**:
-A supported video-meeting URL that can be offered through Join. A designated conference link is primary and other recognized links may be choices, but a link is optional and does not determine eligibility.
+A supported video-meeting URL that can be offered through Join. A designated conference link is primary; when no single primary can be established, multiple Recognized Meeting Links are presented as choices rather than guessed, but a link remains optional and never determines eligibility.
 _Avoid_: Event URL, arbitrary link
 
 **Meeting Description**:
@@ -47,11 +47,11 @@ Optional Google Calendar detail shown as secondary context for a Commitment. It 
 _Avoid_: Join link, alert instruction
 
 **Commitment**:
-An accepted or self-organized, timed Google Calendar event from a Monitored Calendar that the app is responsible for helping the user attend on time. All-day, cancelled, declined, tentative, and unanswered invitation events are excluded; out-of-office events are excluded unless Out-of-Office Protection is enabled.
+An accepted or self-organized Google Calendar event with a scheduled start and end from a confirmed Monitored Calendar that the app is responsible for helping the user attend on time. Its scheduled instant remains authoritative across time zones; all-day, cancelled, declined, tentative, and unanswered invitation events are excluded, while an Out-of-Office Event is eligible only when Out-of-Office Protection is enabled.
 _Avoid_: Meeting, appointment, event (when referring to the product's responsibility)
 
 **Accepted Event**:
-A timed Google Calendar event whose RSVP status is Yes or Accepted.
+A timed Google Calendar event whose RSVP status is Yes or Accepted. An Accepted Event can become a Commitment only when it is otherwise eligible for protection; an event first observed as unaccepted and accepted after its start is a Late Acceptance and does not create new protection.
 _Avoid_: Confirmed meeting, active event
 
 **Self-Organized Event**:
@@ -59,19 +59,35 @@ A timed Google Calendar event organized by the connected Google account. It is e
 _Avoid_: Auto-accepted event
 
 **Monitored Calendar**:
-A calendar the user explicitly selects for commitment protection within a Saved Account. Deselecting it immediately ends protection for its events; selecting it evaluates eligible commitments without newly adopting one already underway.
+A calendar the user explicitly selects for commitment protection within a Saved Account; it can produce protection only while that account is a Connected Account and the selection has Protection Confirmation. Deselecting it immediately ends protection for its events; initial Protection Confirmation evaluates current eligible commitments, including those already underway, whereas an Occurrence first discovered after its start through recovery, relaunch, reconnect, or coverage added after prior confirmation is an Untracked Past Occurrence and remains quiet.
 _Avoid_: Tracked calendar, active calendar
+
+**Protection Confirmation**:
+The user's explicit confirmation that the selected Monitored Calendars and global reminder settings should become Active Protection. Until confirmation, the selected calendars do not produce reminders.
+_Avoid_: Enable, activate (when referring to reviewing protection settings)
+
+**Out-of-Office Event**:
+A Google Calendar out-of-office block that is excluded from commitment protection by default even when accepted or self-organized. It can become a Commitment only when Out-of-Office Protection is enabled and every other eligibility condition is satisfied.
+_Avoid_: Automatically protected event, absence reminder
+
+**Late Acceptance**:
+An Accepted Event first observed as unaccepted after its scheduled start. It remains quiet for that Occurrence and does not create a new Early Reminder or Strong Alert.
+_Avoid_: Overdue acceptance, late commitment
 
 **Occurrence**:
 One instance of a recurring commitment. If its scheduled time changes, the rescheduled instance receives a fresh protection decision.
 _Avoid_: Recurring event (when referring to one specific instance)
 
+**Untracked Past Occurrence**:
+An otherwise eligible Occurrence first discovered after its scheduled start by an already confirmed calendar or account during recovery, relaunch, reconnect, or newly added coverage. It remains quiet for that Occurrence and is not treated as an Overdue Commitment solely because it was discovered late.
+_Avoid_: Missed commitment, late commitment
+
 **Merged Commitment**:
-One real-world commitment represented by multiple eligible events across monitored accounts or calendars and protected through a single reminder flow. Entries qualify when they share a Recognized Meeting Link and matching start time.
+One real-world commitment represented by multiple eligible calendar events across Connected Accounts or Monitored Calendars and protected through a single reminder flow. Representations qualify only when all share a Recognized Meeting Link and the same scheduled start instant; protection ends at the latest scheduled end among them.
 _Avoid_: Duplicate event, duplicate reminder
 
 **Commitment Conflict**:
-Two or more eligible commitments whose active time windows overlap. The commitment needing attention now becomes the single primary commitment, while the others remain visible in a conflict list. Commitments with the same start time are equal choices until the user selects a primary; if none is selected, the Strong Alert presents the equal choices rather than guessing.
+Two or more distinct Commitments whose active time windows overlap after Merged Commitments have been formed. The Commitment needing attention now becomes primary while the others remain visible; same-start Commitments stay equal choices until the user selects one, and the Strong Alert does not guess when no choice exists.
 _Avoid_: Overlap, double booking
 
 ## Reminder language
@@ -85,7 +101,7 @@ The passive Early Reminder action that closes only the current surface while kee
 _Avoid_: Dismiss, Dismiss for now, Got it
 
 **Unverified Reminder**:
-A reminder retained from the last fresh calendar data after that account becomes stale. It keeps the normal action path and makes its uncertainty visible, but exists only within the retained protection window.
+A reminder retained from the last fresh calendar data after that account becomes stale or unavailable. It may fire only for a known Commitment within the retained protection window, keeps the normal action path, and makes its uncertainty visible.
 _Avoid_: Cached reminder, stale reminder
 
 **Strong Alert**:
@@ -93,7 +109,7 @@ The urgent start-time intervention that presents the next action across the user
 _Avoid_: Notification, popup, takeover (as the canonical product term)
 
 **Overdue Commitment**:
-A previously protected commitment whose scheduled start has passed but whose scheduled end has not. It remains eligible for repeating Strong Alerts until it is handled or reaches its end, including when protection resumes after the app was temporarily unavailable. A commitment first discovered after it was already underway is not adopted retroactively.
+A previously protected Commitment from a confirmed Monitored Calendar whose scheduled start has passed but whose scheduled end has not. It remains eligible for repeating Strong Alerts until handled or ended, including after Pause or temporary app or Mac unavailability; an Untracked Past Occurrence does not become overdue solely through late discovery.
 _Avoid_: Late meeting (while the commitment is still ongoing)
 
 **Join**:
@@ -101,7 +117,7 @@ The primary action for a commitment with a Recognized Meeting Link. The user's c
 _Avoid_: Attend, launch, open link
 
 **Handled**:
-An occurrence-local acknowledgment that ends protection without changing the Google Calendar RSVP. The decision lasts through the current occurrence even if the calendar refreshes.
+An occurrence-local acknowledgment that ends protection without changing the Google Calendar RSVP. The Strong Alert's I joined another way action records this outcome, and the decision survives calendar refreshes until the current Occurrence ends.
 _Avoid_: Complete, done
 
 **Dismiss**:
@@ -134,9 +150,13 @@ _Avoid_: Session-only access, saved login, Keychain credential
 Private Google-derived account, calendar, event, decision, and Activity data retained only while it can support current or near-term protection. Data that leaves that boundary is deleted rather than retained as hidden history.
 _Avoid_: Cache (when describing the privacy promise), permanent history
 
+**Display Sharing**:
+Full-Screen Sharing, window sharing, or app sharing. None of these modes suppresses, relocates, or resets visual reminders.
+_Avoid_: Screen sharing (when the sharing mode matters)
+
 **Full-Screen Sharing**:
-Sharing an entire display. Visual reminders remain visible during Full-Screen Sharing, window sharing, and app sharing; the app does not use sharing state to suppress or relocate a reminder. If sharing begins while a reminder is active, the reminder remains visible and protection continues.
-_Avoid_: Screen sharing (when the distinction matters)
+Sharing an entire display. It is one form of Display Sharing; visual reminders remain visible, and protection continues if sharing begins while a reminder is active.
+_Avoid_: Private display, shared-display suppression
 
 **Blocking Mode**:
 An optional, default-off Early Reminder behavior that blocks interaction with other apps while the reminder is open. The app requests no system permission until the user explicitly chooses to enable it; without the required permissions, reminders remain available in visual-only mode.
@@ -155,11 +175,11 @@ A user-requested global suspension of protection until a specified time, offered
 _Avoid_: Quiet hours, disable (unless referring to a permanent setting)
 
 **Active Protection**:
-The availability state in which at least one Saved Account has usable authorization and fresh selected-calendar coverage, and the app is ready to protect commitments. Reconnect Required, No Coverage, Stale Coverage, and Pause remain explicit, truthful exceptions for the affected scope.
+The availability state in which at least one Connected Account has usable authorization and Fresh Coverage for a confirmed Monitored Calendar, no global Pause applies, and the app is ready to protect Commitments. It may coexist with a Coverage Warning for another account; Reconnect Required, No Coverage, Stale Coverage, and Pause remain explicit, truthful exceptions for the affected scope.
 _Avoid_: Running, enabled
 
 **Coverage Warning**:
-A persistent, non-interruptive indication in menu-bar and setup surfaces that a Saved Account's calendar coverage is stale or unavailable. It never becomes a Strong Alert.
+A persistent, non-interruptive indication in menu-bar and setup surfaces that a Connected Account's calendar coverage is stale or unavailable. It never becomes a Strong Alert.
 _Avoid_: Calendar error notification, alarm
 
 **Transition Support**:

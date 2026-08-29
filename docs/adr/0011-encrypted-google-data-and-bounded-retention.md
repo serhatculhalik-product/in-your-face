@@ -2,7 +2,7 @@
 
 **Status**: accepted
 
-All persisted Google-derived data is encrypted at rest using the device-bound storage boundary established by ADR-0006. This includes account identity and calendar metadata, Monitored Calendar choices, eligible event snapshots, occurrence-local decisions, and Protection Activity fields that identify an account, calendar, or commitment. Google-derived values must not be duplicated in plaintext UserDefaults, logs, temporary files, crash metadata, or analytics. Ordinary non-Google preferences may remain in UserDefaults.
+All persisted Google-derived data is encrypted at rest using the device-bound storage boundary established by ADR-0010. This includes account identity and calendar metadata, Monitored Calendar choices, eligible event snapshots, occurrence-local decisions, and Protection Activity fields that identify an account, calendar, or commitment. Google-derived values must not be duplicated in plaintext UserDefaults, logs, temporary files, crash metadata, or analytics. Ordinary non-Google preferences may remain in UserDefaults.
 
 The encrypted event snapshot contains only eligible events from explicitly selected Monitored Calendars: currently ongoing protected occurrences plus occurrences beginning in the next twenty-four hours. It may contain a Recognized Meeting Link when one exists, but a link is not required for eligibility. Ended, cancelled, declined, deselected, removed-account, and otherwise out-of-scope events are physically deleted, not merely hidden. Every snapshot records its refresh time and is physically discarded once it is more than twenty-four hours old, even when Calendar coverage remains stale. Unverified Reminders may use only a still-retained snapshot.
 

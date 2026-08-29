@@ -1313,7 +1313,7 @@ private struct StrongAlertContentView: View {
                         },
                         handledActionTitle: "I joined another way",
                         handledAction: {
-                            guard flow.handleCommitment(for: commitment) else { return }
+                            guard flow.handleStrongAlert(for: commitment) else { return }
                             announceActionResult(flow.lastActionMessage)
                             finishStrongAlertAction(flow)
                         },
@@ -1594,7 +1594,7 @@ private struct StrongAlertConflictContentView: View {
         }
 
         Button("I joined another way") {
-            guard flow.handleCommitment(for: commitment) else { return }
+            guard flow.handleStrongAlert(for: commitment) else { return }
             announceActionResult(flow.lastActionMessage)
             finishStrongAlertAction(flow)
         }
