@@ -261,6 +261,7 @@ final class AppManagedDataResetCoordinator: ObservableObject {
     @discardableResult
     func resume() async throws -> AppManagedDataResetCoordinatorState {
         guard !isDriving else { return state }
+        if case .completed = state { return state }
         isDriving = true
         operations.lockMutations()
         var resetWasCommitted = false
@@ -284,6 +285,8 @@ final class AppManagedDataResetCoordinator: ObservableObject {
                 break
             case .finished(let snapshot):
                 try Self.validateErasePlan(snapshot)
+                state = .idle
+                return state
             }
             return try await drive(resuming: true)
         } catch {

@@ -518,29 +518,46 @@ final class AppManagedDataResetCoordinatorTests: XCTestCase {
         XCTAssertEqual(snapshot.entries[0].attemptCount, 1)
     }
 
-    func testFinishedResumeIsIdempotentAndDoesNotRepeatEffects() async throws {
+    func testFreshCoordinatorTreatsFinishedJournalAsIdleWithoutRepeatingEffects() async throws {
         let fixture = try makeFixture()
         defer { fixture.cleanup() }
-        let recorder = ResetOperationRecorder(accountCount: 0)
+        let firstRecorder = ResetOperationRecorder(accountCount: 0)
         let journal = ResetJournal(fileURL: fixture.journalURL)
         let firstCoordinator = AppManagedDataResetCoordinator(
             journal: journal,
-            operations: recorder.operations
+            operations: firstRecorder.operations
         )
         _ = try await firstCoordinator.begin()
-        recorder.events.removeAll()
+        guard case .completed = firstCoordinator.state else {
+            return XCTFail("Expected the coordinator that finished the reset to stay complete")
+        }
+        let sameProcessState = try await firstCoordinator.resume()
+        guard case .completed = sameProcessState else {
+            return XCTFail("Expected same-process completion to remain visible")
+        }
+        XCTAssertEqual(firstRecorder.lockCallCount, 1)
+        XCTAssertEqual(firstRecorder.unlockCallCount, 0)
 
+        let resumedRecorder = ResetOperationRecorder(accountCount: 0)
         let resumedCoordinator = AppManagedDataResetCoordinator(
             journal: ResetJournal(fileURL: fixture.journalURL),
-            operations: recorder.operations
+            operations: resumedRecorder.operations
         )
         let state = try await resumedCoordinator.resume()
 
-        guard case .completed(let progress) = state else {
-            return XCTFail("Expected the finished journal to remain complete")
+        guard case .idle = state else {
+            return XCTFail("Expected a finished journal from a previous process to be idle")
         }
-        XCTAssertEqual(progress.completedStepCount, 3)
-        XCTAssertTrue(recorder.events.isEmpty)
+        guard case .completed = firstCoordinator.state else {
+            return XCTFail("Expected same-process completion to remain visible")
+        }
+        XCTAssertTrue(resumedRecorder.events.isEmpty)
+        XCTAssertEqual(resumedRecorder.lockCallCount, 1)
+        XCTAssertEqual(resumedRecorder.unlockCallCount, 1)
+        XCTAssertFalse(resumedRecorder.mutationsLocked)
+        guard case .finished = try await journal.resumeResolution() else {
+            return XCTFail("Expected startup inspection to preserve the finished journal")
+        }
     }
 
     func testResumeRefusesAnotherResetKindBeforeInvokingAnyEffect() async throws {
