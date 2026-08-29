@@ -2,8 +2,29 @@ import AppKit
 import SwiftUI
 
 @MainActor
+private final class StrongAlertHostingView: NSHostingView<AnyView> {
+    var intrinsicContentSizeDidInvalidate: (@MainActor () -> Void)?
+
+    override func invalidateIntrinsicContentSize() {
+        super.invalidateIntrinsicContentSize()
+        intrinsicContentSizeDidInvalidate?()
+    }
+}
+
+@MainActor
 final class StrongAlertWindowController: NSObject, NSWindowDelegate {
     static let shared = StrongAlertWindowController()
+
+    private struct ScheduledRefit {
+        enum Phase {
+            case pending
+            case running
+        }
+
+        let generation: UInt
+        var phase: Phase
+        var needsTrailingPass: Bool
+    }
 
     private struct PresentationRequest {
         let content: AnyView
@@ -26,6 +47,9 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
     private var isInteractionSuspendedForTestTools = false
     private var content: AnyView?
     private var fittingWindowIDs: Set<ObjectIdentifier> = []
+    private var windowLayoutGeneration: UInt = 0
+    private var scheduledRefits: [ObjectIdentifier: ScheduledRefit] = [:]
+    private var lastFittedContentSizes: [ObjectIdentifier: CGSize] = [:]
     private var lifecycle = AlertPresentationLifecycle()
     private lazy var pendingPresentation = PendingWindowPresentation<PresentationRequest>(
         registry: windowRegistry,
@@ -86,6 +110,10 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
         stopScreenObservation()
         stopApplicationObservation()
         closeAdditionalWindows()
+        windowLayoutGeneration &+= 1
+        scheduledRefits.removeAll()
+        lastFittedContentSizes.removeAll()
+        let layoutGeneration = windowLayoutGeneration
         primaryWindow = window
         configure(window)
         let screens = availableScreens()
@@ -100,12 +128,14 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
             startScreenObservation()
             return
         }
-        fitAlertWindow(
-            window,
-            on: primaryScreen
-        )
+        let intendedPrimaryScreen = screens[displayPlan.primaryIndex]
+        fitAlertWindow(window, on: intendedPrimaryScreen)
         isPresented = true
-        createAdditionalWindows(using: displayPlan)
+        createAdditionalWindows(
+            using: displayPlan,
+            screens: screens,
+            layoutGeneration: layoutGeneration
+        )
         startScreenObservation()
         if isInteractionSuspendedForTestTools {
             window.orderFront(nil)
@@ -116,7 +146,11 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
             window.orderFrontRegardless()
             lifecycle.markActivated()
         }
-        refitPrimaryWindowAfterLayout(window)
+        refitAlertWindowAfterLayout(
+            window,
+            on: intendedPrimaryScreen,
+            layoutGeneration: layoutGeneration
+        )
     }
 
     func close() {
@@ -131,6 +165,9 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
         content = nil
         surfaceDidClose = nil
         isPresented = false
+        windowLayoutGeneration &+= 1
+        scheduledRefits.removeAll()
+        lastFittedContentSizes.removeAll()
         lifecycle.close()
         allowsWindowClose = false
     }
@@ -192,22 +229,17 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
         window.isMovable = false
     }
 
-    private func createAdditionalWindows(using displayPlan: StrongAlertDisplayPlan) {
+    private func createAdditionalWindows(
+        using displayPlan: StrongAlertDisplayPlan,
+        screens: [NSScreen],
+        layoutGeneration: UInt
+    ) {
         guard let content else { return }
-        let screens = availableScreens()
-
-        let resolvedPrimaryScreen = screens[displayPlan.primaryIndex]
-        if primaryScreenIndex(in: screens, matching: primaryWindow?.screen) != displayPlan.primaryIndex {
-            fitAlertWindow(
-                primaryWindow,
-                on: resolvedPrimaryScreen
-            )
-        }
 
         additionalWindows = displayPlan.additionalIndices.map { index in
             let screen = screens[index]
-            let hostingView = NSHostingView(
-                rootView: content.accessibilityHidden(true)
+            let hostingView = StrongAlertHostingView(
+                rootView: AnyView(content.accessibilityHidden(true))
             )
             hostingView.sizingOptions = [.intrinsicContentSize]
             let panel = NSPanel(
@@ -232,6 +264,14 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
             panel.isReleasedWhenClosed = false
             panel.setAccessibilityElement(false)
             panel.contentView = hostingView
+            hostingView.intrinsicContentSizeDidInvalidate = { [weak self, weak panel] in
+                guard let self, let panel else { return }
+                self.refitAlertWindowAfterLayout(
+                    panel,
+                    on: screen,
+                    layoutGeneration: layoutGeneration
+                )
+            }
             fitAlertWindow(
                 panel,
                 on: screen
@@ -239,6 +279,13 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
             panel.delegate = self
             panel.orderFrontRegardless()
             return panel
+        }
+        for (window, screenIndex) in zip(additionalWindows, displayPlan.additionalIndices) {
+            refitAlertWindowAfterLayout(
+                window,
+                on: screens[screenIndex],
+                layoutGeneration: layoutGeneration
+            )
         }
     }
 
@@ -307,10 +354,10 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
         }
         let screens = availableScreens()
         let primaryScreen = primaryWindow?.screen ?? NSScreen.main
-        fitAlertWindow(
-            primaryWindow,
-            on: primaryScreen
-        )
+        windowLayoutGeneration &+= 1
+        scheduledRefits.removeAll()
+        lastFittedContentSizes.removeAll()
+        let layoutGeneration = windowLayoutGeneration
         guard let displayPlan = lifecycle.displayTopologyChanged(
             displayCount: screens.count,
             primaryIndex: primaryScreenIndex(in: screens, matching: primaryScreen)
@@ -320,9 +367,22 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
             closeAdditionalWindows()
             return
         }
+        let intendedPrimaryScreen = screens[displayPlan.primaryIndex]
+        fitAlertWindow(primaryWindow, on: intendedPrimaryScreen)
         isPresented = true
         closeAdditionalWindows()
-        createAdditionalWindows(using: displayPlan)
+        createAdditionalWindows(
+            using: displayPlan,
+            screens: screens,
+            layoutGeneration: layoutGeneration
+        )
+        if let primaryWindow {
+            refitAlertWindowAfterLayout(
+                primaryWindow,
+                on: intendedPrimaryScreen,
+                layoutGeneration: layoutGeneration
+            )
+        }
         restartApplicationObservation()
         bringAlertToFront()
     }
@@ -377,14 +437,106 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
         fitWindow(window, screen)
     }
 
-    private func refitPrimaryWindowAfterLayout(_ window: NSWindow) {
+    private func refitAlertWindowAfterLayout(
+        _ window: NSWindow,
+        on screen: NSScreen,
+        layoutGeneration: UInt
+    ) {
+        let windowID = ObjectIdentifier(window)
+        if var scheduledRefit = scheduledRefits[windowID],
+           scheduledRefit.generation == layoutGeneration {
+            if scheduledRefit.phase == .running {
+                scheduledRefit.needsTrailingPass = true
+                scheduledRefits[windowID] = scheduledRefit
+            }
+            return
+        }
+        scheduledRefits[windowID] = ScheduledRefit(
+            generation: layoutGeneration,
+            phase: .pending,
+            needsTrailingPass: false
+        )
+        enqueueAlertWindowRefit(
+            window,
+            on: screen,
+            layoutGeneration: layoutGeneration
+        )
+    }
+
+    private func enqueueAlertWindowRefit(
+        _ window: NSWindow,
+        on screen: NSScreen,
+        layoutGeneration: UInt
+    ) {
+        let windowID = ObjectIdentifier(window)
         scheduleAfterLayout { [weak self, weak window] in
             guard let self,
-                  let window,
+                  var scheduledRefit = self.scheduledRefits[windowID],
+                  scheduledRefit.generation == layoutGeneration,
+                  scheduledRefit.phase == .pending else { return }
+            guard let window,
                   self.isPresented,
-                  self.primaryWindow === window else { return }
-            self.fitAlertWindow(window, on: window.screen)
+                  self.windowLayoutGeneration == layoutGeneration,
+                  self.isManagedAlertWindow(window) else {
+                self.removeScheduledRefit(
+                    for: windowID,
+                    layoutGeneration: layoutGeneration
+                )
+                return
+            }
+
+            window.contentView?.layoutSubtreeIfNeeded()
+            let contentSize = window.contentView?.fittingSize ?? window.contentLayoutRect.size
+            if let lastFittedContentSize = self.lastFittedContentSizes[windowID],
+               self.contentSizesAreEquivalent(contentSize, lastFittedContentSize) {
+                self.removeScheduledRefit(
+                    for: windowID,
+                    layoutGeneration: layoutGeneration
+                )
+                return
+            }
+
+            scheduledRefit.phase = .running
+            scheduledRefit.needsTrailingPass = false
+            self.scheduledRefits[windowID] = scheduledRefit
+            self.fitAlertWindow(window, on: screen)
+            self.lastFittedContentSizes[windowID] = contentSize
+            window.contentView?.layoutSubtreeIfNeeded()
+            let settledContentSize = window.contentView?.fittingSize ?? window.contentLayoutRect.size
+
+            guard let completedRefit = self.scheduledRefits[windowID],
+                  completedRefit.generation == layoutGeneration else { return }
+            if completedRefit.needsTrailingPass ||
+                !self.contentSizesAreEquivalent(contentSize, settledContentSize) {
+                self.scheduledRefits[windowID] = ScheduledRefit(
+                    generation: layoutGeneration,
+                    phase: .pending,
+                    needsTrailingPass: false
+                )
+                self.enqueueAlertWindowRefit(
+                    window,
+                    on: screen,
+                    layoutGeneration: layoutGeneration
+                )
+            } else {
+                self.removeScheduledRefit(
+                    for: windowID,
+                    layoutGeneration: layoutGeneration
+                )
+            }
         }
+    }
+
+    private func removeScheduledRefit(
+        for windowID: ObjectIdentifier,
+        layoutGeneration: UInt
+    ) {
+        guard scheduledRefits[windowID]?.generation == layoutGeneration else { return }
+        scheduledRefits.removeValue(forKey: windowID)
+    }
+
+    private func contentSizesAreEquivalent(_ lhs: CGSize, _ rhs: CGSize) -> Bool {
+        abs(lhs.width - rhs.width) <= 0.5 && abs(lhs.height - rhs.height) <= 0.5
     }
 
     private func bringAlertToFront() {

@@ -2810,7 +2810,7 @@ private struct MeetingDescriptionView: View {
     }
 }
 
-private struct StrongAlertView: View {
+struct StrongAlertView: View {
     let title: String
     let timing: String
     let detail: String
@@ -2838,7 +2838,7 @@ private struct StrongAlertView: View {
             alertContent
         }
         .frame(minWidth: 360, idealWidth: 500, maxWidth: 620)
-        .frame(minHeight: 500, idealHeight: 560, maxHeight: 680)
+        .frame(minHeight: 300, maxHeight: 680)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
         .sheet(isPresented: $isCustomPausePresented) {
             if let pauseAction {
@@ -3665,7 +3665,7 @@ private struct MenuBarLabel: View {
         .onReceive(NotificationCenter.default.publisher(
             for: .inYourFaceApplicationDidRequestReopen
         )) { _ in
-            presentApplicationWindowAfterCurrentEvent()
+            presentReopenedApplicationWindowAfterCurrentEvent()
         }
     }
 
@@ -3690,6 +3690,21 @@ private struct MenuBarLabel: View {
         Task { @MainActor in
             await Task.yield()
             ApplicationWindowPresenter.shared.applicationDidBecomeActive(
+                initialSurface: onboardingState.initialSurface,
+                hasEarlyReminder: hasEarlyReminder,
+                hasStrongAlert: hasStrongAlert,
+                triggeringWindow: triggeringWindow
+            ) {
+                openSettings()
+            }
+        }
+    }
+
+    private func presentReopenedApplicationWindowAfterCurrentEvent() {
+        let triggeringWindow = NSApp.currentEvent?.window
+        Task { @MainActor in
+            await Task.yield()
+            ApplicationWindowPresenter.shared.applicationDidRequestReopen(
                 initialSurface: onboardingState.initialSurface,
                 hasEarlyReminder: hasEarlyReminder,
                 hasStrongAlert: hasStrongAlert,

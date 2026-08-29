@@ -1,4 +1,5 @@
 import AppKit
+import CommitmentProtection
 import Foundation
 import XCTest
 @testable import InYourFace
@@ -70,7 +71,7 @@ final class ApplicationWindowPresenterTests: XCTestCase {
         XCTAssertTrue(foregroundedWindows.first === settingsWindow)
     }
 
-    func testApplicationActivationForegroundsSettingsWhenSetupIsComplete() {
+    func testDockReopenForegroundsSettingsWhenSetupIsComplete() {
         let registry = WindowRegistry()
         let settingsWindow = makeWindow(title: "Settings")
         var foregroundedWindows: [NSWindow] = []
@@ -83,7 +84,7 @@ final class ApplicationWindowPresenterTests: XCTestCase {
         )
         registry.register(settingsWindow, for: .settings)
 
-        presenter.applicationDidBecomeActive(
+        presenter.applicationDidRequestReopen(
             initialSurface: .menuBarOnly,
             hasEarlyReminder: false,
             hasStrongAlert: false
@@ -94,6 +95,32 @@ final class ApplicationWindowPresenterTests: XCTestCase {
         XCTAssertEqual(openSettingsCount, 0)
         XCTAssertEqual(foregroundedWindows.count, 1)
         XCTAssertTrue(foregroundedWindows.first === settingsWindow)
+    }
+
+    func testApplicationActivationDoesNotUseTheSettingsFallback() {
+        let registry = WindowRegistry()
+        let settingsWindow = makeWindow(title: "Settings")
+        var foregroundedWindows: [NSWindow] = []
+        var openSettingsCount = 0
+        let presenter = ApplicationWindowPresenter(
+            windowRegistry: registry,
+            activateApplication: {},
+            foregroundWindow: { foregroundedWindows.append($0) },
+            currentKeyWindow: { nil },
+            currentEventWindow: { nil }
+        )
+        registry.register(settingsWindow, for: .settings)
+
+        presenter.applicationDidBecomeActive(
+            initialSurface: .menuBarOnly,
+            hasEarlyReminder: false,
+            hasStrongAlert: false
+        ) {
+            openSettingsCount += 1
+        }
+
+        XCTAssertEqual(openSettingsCount, 0)
+        XCTAssertTrue(foregroundedWindows.isEmpty)
     }
 
     func testStrongAlertWinsApplicationActivationPriority() {
@@ -337,6 +364,115 @@ final class ApplicationWindowPresenterTests: XCTestCase {
         XCTAssertTrue(foregroundedWindows.isEmpty)
     }
 
+    func testCloseForNowClosesOnlyTheEarlyReminderWithoutOpeningSettings() async throws {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let startDate = now.addingTimeInterval(10 * 60)
+        let account = GoogleAccount(
+            id: "account-1",
+            email: "alex@example.com",
+            displayName: "Alex"
+        )
+        let calendar = CalendarOption(
+            id: "calendar-1",
+            name: "Work",
+            accountID: account.id
+        )
+        let commitment = CalendarEvent(
+            id: "event-1",
+            title: "Customer review",
+            startDate: startDate,
+            endDate: now.addingTimeInterval(70 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: calendar.id,
+            accountID: account.id
+        )
+        let suiteName = "ApplicationWindowPresenterTests.closeForNow.\(UUID().uuidString)"
+        let stateStore = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { stateStore.removePersistentDomain(forName: suiteName) }
+        let flow = CommitmentProtectionFlow(
+            calendarConnector: PresenterTestCalendarConnector(
+                connection: GoogleCalendarConnection(
+                    account: account,
+                    calendars: [calendar]
+                ),
+                events: [commitment]
+            ),
+            launchAtLogin: PresenterTestLaunchAtLoginController(),
+            stateStore: stateStore,
+            now: { now }
+        )
+        await flow.connectGoogleAccount()
+        flow.setCalendarSelected(true, calendarID: calendar.id)
+        XCTAssertTrue(flow.confirmProtection())
+        for _ in 0..<10 {
+            await Task.yield()
+        }
+        await flow.refreshCommitmentProtection(at: now)
+        XCTAssertEqual(flow.earlyReminderCommitment, commitment)
+
+        let registry = WindowRegistry()
+        let earlyReminderWindow = makeWindow(title: "Early Reminder")
+        let settingsWindow = makeWindow(title: "Settings")
+        earlyReminderWindow.isReleasedWhenClosed = false
+        settingsWindow.isReleasedWhenClosed = false
+        defer {
+            earlyReminderWindow.close()
+            settingsWindow.close()
+        }
+        earlyReminderWindow.orderFrontRegardless()
+        registry.register(earlyReminderWindow, for: .earlyReminder)
+        registry.register(settingsWindow, for: .settings)
+        var foregroundedWindows: [NSWindow] = []
+        var openSettingsCount = 0
+        let presenter = ApplicationWindowPresenter(
+            windowRegistry: registry,
+            activateApplication: {},
+            foregroundWindow: { window in
+                foregroundedWindows.append(window)
+                window.orderFrontRegardless()
+            },
+            currentKeyWindow: { nil },
+            currentEventWindow: { nil }
+        )
+
+        let surface = EarlyReminderSurfaceModel.normal(
+            flow: flow,
+            commitment: commitment
+        )
+        XCTAssertTrue(surface.actions.clear())
+        registry.unregister(earlyReminderWindow, for: .earlyReminder)
+        earlyReminderWindow.close()
+        presenter.applicationDidBecomeActive(
+            initialSurface: .menuBarOnly,
+            hasEarlyReminder: flow.earlyReminderCommitment != nil,
+            hasStrongAlert: flow.isStrongAlertPresented,
+            triggeringWindow: nil
+        ) {
+            openSettingsCount += 1
+        }
+
+        XCTAssertFalse(earlyReminderWindow.isVisible)
+        XCTAssertFalse(
+            settingsWindow.isVisible,
+            "Close for now must not reveal Settings after the Early Reminder closes."
+        )
+        XCTAssertTrue(
+            foregroundedWindows.isEmpty,
+            "Close for now must not foreground Settings after the Early Reminder closes."
+        )
+        XCTAssertEqual(openSettingsCount, 0)
+        XCTAssertNil(flow.earlyReminderCommitment)
+        XCTAssertTrue(flow.isProtectionConfirmed(for: account.id))
+        XCTAssertEqual(flow.status, .active)
+        XCTAssertEqual(flow.upcomingCommitment, commitment)
+
+        await flow.refreshCommitmentProtection(at: startDate)
+
+        XCTAssertEqual(flow.strongAlertCommitment, commitment)
+    }
+
     func testActivationPreservesAManagedCurrentEventWindow() {
         let registry = WindowRegistry()
         let earlyReminderWindow = makeWindow(title: "Early Reminder")
@@ -442,5 +578,43 @@ final class ApplicationWindowPresenterTests: XCTestCase {
         )
         window.title = title
         return window
+    }
+}
+
+private struct PresenterTestCalendarConnector: GoogleCalendarConnecting {
+    let connection: GoogleCalendarConnection
+    let events: [CalendarEvent]
+
+    func connect() async throws -> GoogleCalendarConnection {
+        connection
+    }
+
+    func restore(accountID: String) async throws -> GoogleCalendarConnection? {
+        connection.account.id == accountID ? connection : nil
+    }
+
+    func disconnect(accountID: String) throws {}
+
+    func loadEvents(
+        accountID: String,
+        calendarID: String,
+        from startDate: Date,
+        to endDate: Date
+    ) async throws -> [CalendarEvent] {
+        events.filter {
+            $0.accountID == accountID &&
+                $0.calendarID == calendarID &&
+                ($0.startDate ?? .distantPast) < endDate &&
+                ($0.endDate ?? .distantFuture) > startDate
+        }
+    }
+}
+
+@MainActor
+private final class PresenterTestLaunchAtLoginController: LaunchAtLoginControlling {
+    private(set) var isEnabled = false
+
+    func enable() throws {
+        isEnabled = true
     }
 }

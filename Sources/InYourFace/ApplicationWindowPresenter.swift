@@ -60,6 +60,41 @@ final class ApplicationWindowPresenter {
         triggeringWindow: NSWindow? = nil,
         using openSettings: @escaping @MainActor () -> Void
     ) {
+        presentApplicationWindow(
+            initialSurface: initialSurface,
+            hasEarlyReminder: hasEarlyReminder,
+            hasStrongAlert: hasStrongAlert,
+            triggeringWindow: triggeringWindow,
+            allowsSettingsFallback: false,
+            using: openSettings
+        )
+    }
+
+    func applicationDidRequestReopen(
+        initialSurface: OnboardingState.InitialSurface,
+        hasEarlyReminder: Bool,
+        hasStrongAlert: Bool,
+        triggeringWindow: NSWindow? = nil,
+        using openSettings: @escaping @MainActor () -> Void
+    ) {
+        presentApplicationWindow(
+            initialSurface: initialSurface,
+            hasEarlyReminder: hasEarlyReminder,
+            hasStrongAlert: hasStrongAlert,
+            triggeringWindow: triggeringWindow,
+            allowsSettingsFallback: true,
+            using: openSettings
+        )
+    }
+
+    private func presentApplicationWindow(
+        initialSurface: OnboardingState.InitialSurface,
+        hasEarlyReminder: Bool,
+        hasStrongAlert: Bool,
+        triggeringWindow: NSWindow?,
+        allowsSettingsFallback: Bool,
+        using openSettings: @escaping @MainActor () -> Void
+    ) {
         guard initialSurface != .waiting else { return }
 
         // Test Tools deliberately suspends alert interaction while its confirmation
@@ -90,6 +125,7 @@ final class ApplicationWindowPresenter {
             return
         }
 
+        guard allowsSettingsFallback else { return }
         if !foregroundRegisteredWindow(.settings) {
             showSettings(using: openSettings)
         }
@@ -104,11 +140,12 @@ final class ApplicationWindowPresenter {
         using openSettings: @escaping @MainActor () -> Void
     ) {
         guard isApplicationActive else { return }
-        applicationDidBecomeActive(
+        presentApplicationWindow(
             initialSurface: initialSurface,
             hasEarlyReminder: hasEarlyReminder,
             hasStrongAlert: hasStrongAlert,
             triggeringWindow: triggeringWindow,
+            allowsSettingsFallback: true,
             using: openSettings
         )
     }
