@@ -405,6 +405,7 @@ struct OnboardingView: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .toggleStyle(.switch)
                     .accessibilityLabel("Start Meeting Incoming at login")

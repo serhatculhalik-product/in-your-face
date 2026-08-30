@@ -8,7 +8,11 @@ struct EarlyReminderTimingControls: View {
 
     var body: some View {
         Group {
-            Toggle("Show Early Reminder", isOn: $isEnabled)
+            Toggle(isOn: $isEnabled) {
+                Text("Show Early Reminder")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .toggleStyle(.switch)
 
             Stepper(
                 InterfaceCopy.remindMeBefore(leadTimeMinutes),
@@ -49,7 +53,6 @@ struct BlockingModeControls: View {
     var body: some View {
         Group {
             Toggle(
-                "Block other apps while an Early Reminder is open",
                 isOn: Binding(
                     get: { flow.isBlockingModeEnabled },
                     set: { isEnabled in
@@ -60,7 +63,11 @@ struct BlockingModeControls: View {
                         }
                     }
                 )
-            )
+            ) {
+                Text("Block other apps while an Early Reminder is open")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .toggleStyle(.switch)
 
             if flow.isBlockingModeEnabled {
                 Text(blockingPermissions.isSimulated
