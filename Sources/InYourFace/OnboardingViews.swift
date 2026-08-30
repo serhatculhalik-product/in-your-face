@@ -356,7 +356,8 @@ struct OnboardingView: View {
         case .ready:
             onboardingSection(
                 title: readinessTitle,
-                detail: readinessDetail
+                detail: readinessDetail,
+                statusPresentation: readinessProtectionPresentation
             ) {
                 VStack(alignment: .leading, spacing: 8) {
                     if reconnectPresentation.requiresReconnect {
@@ -613,18 +614,21 @@ struct OnboardingView: View {
             }
             .font(.caption.weight(.medium))
             .foregroundStyle(.secondary)
-        } else if account.isConnected {
-            Label("Connected", systemImage: "checkmark.circle.fill")
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.green)
-        } else if account.requiresReconnect {
-            Label("Reconnect Required", systemImage: "exclamationmark.circle.fill")
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.orange)
         } else {
-            Label("Needs Attention", systemImage: "exclamationmark.circle")
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
+            let health = flow.coverage(for: account.id) ?? account.health
+            let presentation = ProtectionCoveragePresentation.account(
+                health,
+                requiresReconnect: account.requiresReconnect
+            )
+            HStack(spacing: 6) {
+                ProtectionCoverageStatusLabel(presentation: presentation)
+                    .font(.caption.weight(.medium))
+                if presentation.showsProgress {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityHidden(true)
+                }
+            }
         }
     }
 
@@ -635,11 +639,12 @@ struct OnboardingView: View {
     private func onboardingSection<Content: View>(
         title: LocalizedStringKey,
         detail: LocalizedStringKey,
+        statusPresentation: ProtectionCoveragePresentation? = nil,
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 8) {
-                Text(title)
+                onboardingTitle(title, statusPresentation: statusPresentation)
                     .font(.title.bold())
                     .accessibilityAddTraits(.isHeader)
                     .accessibilityFocused($isHeadingFocused)
@@ -684,6 +689,33 @@ struct OnboardingView: View {
                     onboardingPrimaryAction
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func onboardingTitle(
+        _ title: LocalizedStringKey,
+        statusPresentation: ProtectionCoveragePresentation?
+    ) -> some View {
+        if let statusPresentation {
+            HStack(spacing: 8) {
+                Label {
+                    Text(title)
+                } icon: {
+                    Image(systemName: statusPresentation.systemImage)
+                        .foregroundStyle(statusPresentation.tone.color)
+                        .accessibilityHidden(true)
+                }
+                if statusPresentation.showsProgress {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityHidden(true)
+                }
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(Text(title))
+        } else {
+            Text(title)
         }
     }
 
@@ -849,37 +881,61 @@ struct OnboardingView: View {
     }
 
     private var readinessTitle: LocalizedStringKey {
-        if reconnectPresentation.requiresReconnect {
-            return "Reconnect Required"
-        }
-        switch flow.status {
-        case .active:
-            return "Protection ready"
-        case .unavailable:
-            return isCheckingCoverage ? "Checking Calendar Coverage" : "Coverage Needs Attention"
+        switch readinessProtectionPresentation.state {
+        case .checkingCoverage:
+            return "Checking Calendar Coverage"
         case .noCoverage:
             return "Protection needs a calendar"
+        case .activeProtection:
+            return "Protection ready"
+        case .loadingProtection,
+             .finishSetup,
+             .protectionPaused,
+             .freshCoverage,
+             .staleCoverage,
+             .reconnectRequired,
+             .coverageUnavailable,
+             .coverageNeedsAttention,
+             .unverifiedReminder,
+             .commitmentConflict,
+             .primary:
+            return LocalizedStringKey(readinessProtectionPresentation.label)
         }
+    }
+
+    private var readinessProtectionPresentation: ProtectionCoveragePresentation {
+        ProtectionCoveragePresentation.global(
+            isRestoringConnection: flow.isRestoringConnection,
+            needsSetup: false,
+            status: flow.status,
+            isCheckingCoverage: flow.isCheckingCoverage || flow.isConnectingAccount,
+            isPaused: flow.isPaused(),
+            hasReconnectRequiredAccount: reconnectPresentation.requiresReconnect
+        )
     }
 
     private var readinessDetail: LocalizedStringKey {
-        if reconnectPresentation.requiresReconnect {
-            return "Reconnect each Saved Account once—not each calendar. Meeting Incoming restores its Monitored Calendar choices automatically after each reconnect."
-        }
-        switch flow.status {
-        case .active:
-            return "Your selected calendars stay protected across app relaunches and Mac restarts while Google authorization remains valid."
-        case .unavailable:
-            return isCheckingCoverage
-                ? "Your choices are saved. Meeting Incoming is checking Google Calendar before it marks protection active."
-                : "Your choices are saved, but Google Calendar could not refresh. Known reminders may be unverified, and new reminders will not be created until coverage returns."
-        case .noCoverage:
+        switch readinessProtectionPresentation.state {
+        case .loadingProtection, .checkingCoverage:
+            return "Your choices are saved. Meeting Incoming is checking Google Calendar before it marks protection active."
+        case .noCoverage, .finishSetup:
             return "Choose and confirm at least one calendar before finishing setup."
+        case .activeProtection, .protectionPaused:
+            if reconnectPresentation.requiresReconnect {
+                return "Reconnect each Saved Account once—not each calendar. Meeting Incoming restores its Monitored Calendar choices automatically after each reconnect."
+            }
+            return "Your selected calendars stay protected across app relaunches and Mac restarts while Google authorization remains valid."
+        case .reconnectRequired:
+            return "Reconnect each Saved Account once—not each calendar. Meeting Incoming restores its Monitored Calendar choices automatically after each reconnect."
+        case .coverageNeedsAttention,
+             .freshCoverage,
+             .staleCoverage,
+             .coverageUnavailable,
+             .unverifiedReminder,
+             .commitmentConflict,
+             .primary:
+            return "Your choices are saved, but Google Calendar could not refresh. Known reminders may be unverified, and new reminders will not be created until coverage returns."
         }
-    }
-
-    private var isCheckingCoverage: Bool {
-        flow.isCheckingCoverage
     }
 
     private var readinessExitAvailability: Bool? {

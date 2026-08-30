@@ -6,6 +6,7 @@ struct OnboardingReconnectAccountPresentation: Equatable, Identifiable {
     let savedCalendarCount: Int
     let isConnected: Bool
     let requiresReconnect: Bool
+    let health: CoverageHealth
 }
 
 struct OnboardingReconnectPresentation: Equatable {
@@ -53,7 +54,8 @@ struct OnboardingReconnectPresentation: Equatable {
                 ),
                 savedCalendarCount: coverage.selectedCalendarIDs.count,
                 isConnected: isConnected,
-                requiresReconnect: requiresReconnect
+                requiresReconnect: requiresReconnect,
+                health: coverage.health
             )
         }
 

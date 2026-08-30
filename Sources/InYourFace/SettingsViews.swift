@@ -58,7 +58,8 @@ private struct AccountsSettingsPane: View {
                                     .textSelection(.enabled)
                                 CoverageHealthView(
                                     coverage: coverage,
-                                    warning: flow.coverageWarning(for: coverage.account.id)
+                                    warning: flow.coverageWarning(for: coverage.account.id),
+                                    showsProgress: protectionStatusPresentation.state != .checkingCoverage
                                 )
                             }
                         } actions: {
@@ -66,7 +67,7 @@ private struct AccountsSettingsPane: View {
                         }
                     }
 
-                    if isCheckingCoverage {
+                    if protectionStatusPresentation.state == .checkingCoverage {
                         ProgressView("Checking calendar coverage…")
                             .controlSize(.small)
                     } else if needsCoverageRetry, flow.isRefreshingCoverage {
@@ -252,6 +253,7 @@ private struct AccountsSettingsPane: View {
                     }
                 }
                 .disabled(flow.isGoogleAccountOperationInProgress)
+                .accessibilityLabel("Reconnect \(accountLabel(for: coverage))")
 
                 if presentation.showsRemoveAccountAction {
                     Menu {
@@ -349,15 +351,15 @@ private struct AccountsSettingsPane: View {
         return flow.accountCoverages.first { $0.account.id == accountID }
     }
 
+    private var protectionStatusPresentation: ProtectionCoveragePresentation {
+        settingsProtectionPresentation(for: flow)
+    }
+
     private func accountLabel(for coverage: AccountCoverage) -> String {
         InterfaceCopy.connectedAccountLabel(
             email: coverage.account.email,
             displayName: coverage.account.displayName
         )
-    }
-
-    private var isCheckingCoverage: Bool {
-        flow.isCheckingCoverage
     }
 
     private var needsCoverageRetry: Bool {
@@ -566,11 +568,21 @@ private struct RemindersSettingsPane: View {
     var body: some View {
         Form {
             if flow.isProtectionConfirmationRequired {
+                let pendingCoveragePresentation = ProtectionCoveragePresentation(
+                    state: .noCoverage
+                )
                 Section {
                     AdaptiveSettingsActionRow {
-                        Label(
-                            "Protection is off until you confirm these timing changes",
-                            systemImage: "exclamationmark.circle"
+                        Label {
+                            Text("Protection is off until you confirm these timing changes")
+                        } icon: {
+                            Image(systemName: pendingCoveragePresentation.systemImage)
+                                .accessibilityHidden(true)
+                        }
+                        .foregroundStyle(pendingCoveragePresentation.tone.color)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(
+                            "Protection is off until you confirm these timing changes"
                         )
                     } actions: {
                         Button("Confirm Changes and Resume Protection") {
@@ -674,50 +686,80 @@ private struct SettingsProtectionSummary: View {
             Text(statusDetail)
                 .foregroundStyle(.secondary)
         } label: {
-            Label(statusTitle, systemImage: statusIcon)
-                .font(.headline)
+            HStack(spacing: 6) {
+                ProtectionCoverageStatusLabel(presentation: statusPresentation)
+                    .font(.headline)
+                if statusPresentation.state == .loadingProtection {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityHidden(true)
+                }
+            }
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(statusPresentation.label). \(statusDetail)")
     }
 
-    private var statusTitle: String {
-        flow.connectionState == .reconnectRequired
-            ? "Reconnect Required"
-            : flow.menuBarTitle
-    }
-
-    private var statusIcon: String {
-        if flow.isPaused() {
-            return "pause.circle.fill"
-        }
-        if flow.connectionState == .reconnectRequired {
-            return "person.crop.circle.badge.exclamationmark"
-        }
-        switch flow.status {
-        case .active:
-            return "checkmark.shield.fill"
-        case .noCoverage:
-            return "shield.slash"
-        case .unavailable:
-            return "exclamationmark.triangle"
-        }
+    private var statusPresentation: ProtectionCoveragePresentation {
+        settingsProtectionPresentation(for: flow)
     }
 
     private var statusDetail: String {
-        if flow.isPaused() {
+        switch statusPresentation.state {
+        case .protectionPaused:
             return flow.pauseExpirationText()
-        }
-        if flow.connectionState == .reconnectRequired {
+        case .reconnectRequired:
+            if reconnectRequiredCoverages.count == 1,
+               let coverage = reconnectRequiredCoverages.first {
+                return "Reconnect \(accountLabel(for: coverage)) to resume protection. Routine relaunches keep valid authorization."
+            }
             return "Reconnect Google Calendar to resume protection. Routine relaunches keep valid authorization."
-        }
-        switch flow.status {
-        case .active:
+        case .activeProtection:
             return "Selected calendars are protected."
-        case .noCoverage:
+        case .noCoverage, .finishSetup:
             return "Choose and confirm at least one calendar."
-        case .unavailable:
-            return flow.isCheckingCoverage
-                ? "Checking Google Calendar before protection becomes active."
-                : "Calendar coverage needs attention."
+        case .loadingProtection, .checkingCoverage:
+            return "Checking Google Calendar before protection becomes active."
+        case .coverageNeedsAttention:
+            return "Calendar coverage needs attention."
+        case .freshCoverage,
+             .staleCoverage,
+             .coverageUnavailable,
+             .unverifiedReminder,
+             .commitmentConflict,
+             .primary:
+            return "Calendar coverage needs attention."
         }
     }
+
+    private var reconnectRequiredCoverages: [AccountCoverage] {
+        flow.accountCoverages.filter { coverage in
+            coverage.connectionState == .reconnectRequired ||
+                (flow.coverage(for: coverage.account.id) ?? coverage.health) == .reconnectRequired
+        }
+    }
+
+    private func accountLabel(for coverage: AccountCoverage) -> String {
+        InterfaceCopy.connectedAccountLabel(
+            email: coverage.account.email,
+            displayName: coverage.account.displayName
+        )
+    }
+}
+
+@MainActor
+private func settingsProtectionPresentation(
+    for flow: CommitmentProtectionFlow
+) -> ProtectionCoveragePresentation {
+    ProtectionCoveragePresentation.global(
+        isRestoringConnection: flow.isRestoringConnection,
+        needsSetup: false,
+        status: flow.status,
+        isCheckingCoverage: flow.isCheckingCoverage || flow.isConnectingAccount,
+        isPaused: flow.isPaused(),
+        hasReconnectRequiredAccount: flow.accountCoverages.contains { coverage in
+            coverage.connectionState == .reconnectRequired ||
+                (flow.coverage(for: coverage.account.id) ?? coverage.health) == .reconnectRequired
+        }
+    )
 }

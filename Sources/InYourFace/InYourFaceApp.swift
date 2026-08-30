@@ -560,62 +560,47 @@ struct CoverageHealthView: View {
     @EnvironmentObject private var flow: CommitmentProtectionFlow
     let coverage: AccountCoverage
     let warning: String?
+    var showsProgress = true
 
     var body: some View {
         let health = flow.coverage(for: coverage.account.id) ?? coverage.health
+        let presentation = ProtectionCoveragePresentation.account(
+            health,
+            requiresReconnect: coverage.connectionState == .reconnectRequired
+        )
+        let displayedWarning = presentation.state == .reconnectRequired
+            ? reconnectCoverageWarning(accountLabel: accountLabel(for: coverage))
+            : warning
         VStack(alignment: .leading, spacing: 4) {
-            Label(health.displayTitle, systemImage: health.systemImage)
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(health.displayColor)
+            HStack(spacing: 6) {
+                ProtectionCoverageStatusLabel(presentation: presentation)
+                    .font(.callout.weight(.semibold))
 
-            if let warning {
-                Text(warning)
+                if showsProgress && presentation.showsProgress {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityHidden(true)
+                }
+            }
+
+            if let displayedWarning {
+                Text(displayedWarning)
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
         }
     }
+
+    private func accountLabel(for coverage: AccountCoverage) -> String {
+        InterfaceCopy.connectedAccountLabel(
+            email: coverage.account.email,
+            displayName: coverage.account.displayName
+        )
+    }
 }
 
-private extension CoverageHealth {
-    var displayTitle: String {
-        switch self {
-        case .noCoverage:
-            return "No Coverage"
-        case .checking:
-            return "Checking Coverage"
-        case .fresh:
-            return "Fresh Coverage"
-        case .stale:
-            return "Stale Coverage"
-        case .reconnectRequired:
-            return "Reconnect Required"
-        case .unavailable:
-            return "Coverage Unavailable"
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .fresh:
-            return "checkmark.circle.fill"
-        case .checking:
-            return "arrow.triangle.2.circlepath"
-        case .noCoverage, .stale, .reconnectRequired, .unavailable:
-            return "exclamationmark.triangle.fill"
-        }
-    }
-
-    var displayColor: Color {
-        switch self {
-        case .fresh:
-            return .green
-        case .checking:
-            return .secondary
-        case .noCoverage, .stale, .reconnectRequired, .unavailable:
-            return .orange
-        }
-    }
+private func reconnectCoverageWarning(accountLabel: String) -> String {
+    "Reconnect \(accountLabel) to resume calendar protection. Routine relaunches stay connected; Google authorization or encrypted device data needs attention."
 }
 
 struct ProtectionActivityCard: View {
@@ -1060,9 +1045,10 @@ struct EarlyReminderContentView: View {
                 Label("Early Reminder", systemImage: "bell.fill")
                     .font(.headline)
                 if flow.isEarlyReminderUnverified {
-                    Label("Unverified Reminder", systemImage: "questionmark.circle")
+                    ProtectionCoverageStatusLabel(
+                        presentation: ProtectionCoveragePresentation(state: .unverifiedReminder)
+                    )
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.orange)
                     Text(InterfaceCopy.unverifiedReminderDetail())
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -1198,6 +1184,14 @@ private struct EarlyReminderConflictSummaryView: View {
     var body: some View {
         if !commitments.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
+                ProtectionCoverageStatusLabel(
+                    presentation: ProtectionCoveragePresentation(state: .commitmentConflict)
+                )
+                .font(.subheadline.weight(.semibold))
+                ProtectionCoverageStatusLabel(
+                    presentation: ProtectionCoveragePresentation(state: .primary)
+                )
+                .font(.caption.weight(.semibold))
                 Text("Also in this conflict")
                     .font(.caption.weight(.semibold))
                 ForEach(commitments, id: \.occurrenceID) { commitment in
@@ -1218,7 +1212,9 @@ private struct EarlyReminderConflictSelectionView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("Commitment Conflict", systemImage: "exclamationmark.triangle")
+            ProtectionCoverageStatusLabel(
+                presentation: ProtectionCoveragePresentation(state: .commitmentConflict)
+            )
                 .font(.subheadline.weight(.semibold))
             Text("These commitments start at the same time. You can choose which commitment Strong Alert features; otherwise they remain equal choices.")
                 .font(.caption)
@@ -1327,7 +1323,9 @@ private struct StrongAlertContentView: View {
                         timing: flow.strongAlertTimingText(for: commitment, at: context.date),
                         detail: flow.strongAlertContextText(for: commitment),
                         meetingDescription: commitment.meetingDescription,
-                        verificationLabel: flow.isStrongAlertUnverified ? "Unverified Reminder" : nil,
+                        verificationPresentation: flow.isStrongAlertUnverified
+                            ? ProtectionCoveragePresentation(state: .unverifiedReminder)
+                            : nil,
                         statusMessage: meetingLinkFailure(for: commitment),
                         repeatConsequence: InterfaceCopy.strongAlertRepeatConsequence(
                             minutes: flow.strongAlertRepeatIntervalMinutes,
@@ -1436,7 +1434,9 @@ private struct StrongAlertConflictSummaryView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("Commitment Conflict", systemImage: "exclamationmark.triangle")
+            ProtectionCoverageStatusLabel(
+                presentation: ProtectionCoveragePresentation(state: .commitmentConflict)
+            )
                 .font(.subheadline.weight(.semibold))
             Text("Other commitments in this conflict remain visible while the primary commitment gets your attention.")
                 .font(.caption)
@@ -1465,9 +1465,10 @@ private struct StrongAlertConflictSummaryView: View {
     private func conflictCommitmentIdentity(_ commitment: CalendarEvent) -> some View {
         if let primaryCommitment = conflict.primaryCommitment,
            primaryCommitment.occurrenceID == commitment.occurrenceID {
-            Label("Primary", systemImage: "star.fill")
+            ProtectionCoverageStatusLabel(
+                presentation: ProtectionCoveragePresentation(state: .primary)
+            )
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(.orange)
         }
         Text(commitment.title)
             .fixedSize(horizontal: false, vertical: true)
@@ -1499,10 +1500,15 @@ private struct StrongAlertConflictContentView: View {
                 VStack(spacing: 16) {
             Label("Strong Alert", systemImage: "bell.and.waves.left.and.right.fill")
                 .font(.headline)
+            ProtectionCoverageStatusLabel(
+                presentation: ProtectionCoveragePresentation(state: .commitmentConflict)
+            )
+            .font(.subheadline.weight(.semibold))
             if flow.isStrongAlertUnverified {
-                Label("Unverified Reminder", systemImage: "questionmark.circle")
+                ProtectionCoverageStatusLabel(
+                    presentation: ProtectionCoveragePresentation(state: .unverifiedReminder)
+                )
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.orange)
                 Text(InterfaceCopy.unverifiedReminderDetail())
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -3136,7 +3142,7 @@ struct StrongAlertView: View {
     let timing: String
     let detail: String
     var meetingDescription: String? = nil
-    var verificationLabel: String? = nil
+    var verificationPresentation: ProtectionCoveragePresentation? = nil
     var statusMessage: String? = nil
     var repeatConsequence: String? = nil
     var supportingContent: AnyView? = nil
@@ -3182,11 +3188,10 @@ struct StrongAlertView: View {
                 .font(.headline)
                 .foregroundStyle(.primary)
 
-            if let verificationLabel {
+            if let verificationPresentation {
                 VStack(spacing: 6) {
-                    Label(verificationLabel, systemImage: "questionmark.circle")
+                    ProtectionCoverageStatusLabel(presentation: verificationPresentation)
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.orange)
                     Text(InterfaceCopy.unverifiedReminderDetail())
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -3468,7 +3473,9 @@ private struct MenuBarConflictView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Label("Commitment Conflict", systemImage: "exclamationmark.triangle")
+            ProtectionCoverageStatusLabel(
+                presentation: ProtectionCoveragePresentation(state: .commitmentConflict)
+            )
                 .font(.subheadline.weight(.semibold))
             if conflict.requiresPrimarySelection {
                 Text("Choose which commitment is primary:")
@@ -3490,6 +3497,10 @@ private struct MenuBarConflictView: View {
                     }
                 }
             } else {
+                ProtectionCoverageStatusLabel(
+                    presentation: ProtectionCoveragePresentation(state: .primary)
+                )
+                .font(.caption.weight(.semibold))
                 Text("Also in this conflict")
                     .font(.caption.weight(.semibold))
                 let secondaryCommitments = conflict.commitments.filter {
@@ -3692,8 +3703,9 @@ struct MenuBarContent: View {
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: presentation.systemImage)
                     .font(.title2.weight(.semibold))
-                    .foregroundStyle(color(for: presentation.tone))
+                    .foregroundStyle(presentation.tone.color)
                     .frame(width: 26)
+                    .accessibilityHidden(true)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(presentation.title)
@@ -3708,10 +3720,11 @@ struct MenuBarContent: View {
                 if presentation.showsProgress {
                     ProgressView()
                         .controlSize(.small)
-                        .accessibilityLabel(presentation.title)
+                        .accessibilityHidden(true)
                 }
             }
-            .accessibilityElement(children: presentation.showsProgress ? .contain : .combine)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(presentation.title). \(presentation.detail)")
 
             if let primaryAction = presentation.primaryAction {
                 primaryActionButton(primaryAction)
@@ -3790,16 +3803,33 @@ struct MenuBarContent: View {
 
     private func accountIssueRow(_ coverage: AccountCoverage) -> some View {
         let health = effectiveHealth(for: coverage)
+        let presentation = ProtectionCoveragePresentation.account(
+            health,
+            requiresReconnect: coverage.connectionState == .reconnectRequired
+        )
+        let detail = accountIssueDetail(for: presentation, health: health)
         return HStack(alignment: .center, spacing: 10) {
-            Image(systemName: health.systemImage)
-                .foregroundStyle(health.displayColor)
+            Image(systemName: presentation.systemImage)
+                .foregroundStyle(presentation.tone.color)
+                .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(accountLabel(for: coverage))
                     .font(.caption.weight(.semibold))
                     .lineLimit(1)
                     .help(accountLabel(for: coverage))
-                Text(accountIssueDetail(for: health))
+                HStack(spacing: 5) {
+                    Text(
+                        detail == presentation.label
+                            ? presentation.label
+                            : "\(presentation.label) · \(detail)"
+                    )
+                    if presentation.showsProgress {
+                        ProgressView()
+                            .controlSize(.small)
+                            .accessibilityHidden(true)
+                    }
+                }
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -3820,9 +3850,10 @@ struct MenuBarContent: View {
                 }
                 .disabled(flow.isConnectingAccount)
                 .controlSize(.small)
+                .accessibilityLabel("Reconnect \(accountLabel(for: coverage))")
             }
         }
-        .help(flow.coverageWarning(for: coverage.account.id) ?? health.displayTitle)
+        .help(accountIssueHelp(for: coverage, presentation: presentation))
         .accessibilityElement(children: .contain)
     }
 
@@ -3929,7 +3960,14 @@ struct MenuBarContent: View {
         flow.coverage(for: coverage.account.id) ?? coverage.health
     }
 
-    private func accountIssueDetail(for health: CoverageHealth) -> String {
+    private func accountIssueDetail(
+        for presentation: ProtectionCoveragePresentation,
+        health: CoverageHealth
+    ) -> String {
+        if presentation.state == .reconnectRequired {
+            return presentation.label
+        }
+
         switch health {
         case .noCoverage:
             return "No Monitored Calendars"
@@ -3940,10 +3978,20 @@ struct MenuBarContent: View {
         case .stale:
             return "Calendar data is out of date"
         case .reconnectRequired:
-            return "Reconnect Required"
+            return presentation.label
         case .unavailable:
             return "Refresh failed; retrying automatically"
         }
+    }
+
+    private func accountIssueHelp(
+        for coverage: AccountCoverage,
+        presentation: ProtectionCoveragePresentation
+    ) -> String {
+        if presentation.state == .reconnectRequired {
+            return reconnectCoverageWarning(accountLabel: accountLabel(for: coverage))
+        }
+        return flow.coverageWarning(for: coverage.account.id) ?? presentation.label
     }
 
     private func accountLabel(for coverage: AccountCoverage) -> String {
@@ -3951,17 +3999,6 @@ struct MenuBarContent: View {
             email: coverage.account.email,
             displayName: coverage.account.displayName
         )
-    }
-
-    private func color(for tone: MenuBarProtectionPresentation.Tone) -> Color {
-        switch tone {
-        case .neutral:
-            return .secondary
-        case .positive:
-            return .green
-        case .attention:
-            return .orange
-        }
     }
 
     private func pause(_ duration: PauseDuration) {
@@ -4011,11 +4048,12 @@ private struct MenuBarLabel: View {
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
+        let presentation = menuBarStatusPresentation
         Label(
             testToolsController.isTestMode
-                ? "TEST · \(flow.menuBarTitle)"
-                : flow.menuBarTitle,
-            systemImage: menuBarStatusIcon
+                ? "TEST · \(presentation.label)"
+                : presentation.label,
+            systemImage: presentation.systemImage
         )
         .background {
             TestToolsCommandBridge(controller: testToolsController)
@@ -4176,22 +4214,17 @@ private struct MenuBarLabel: View {
         }
     }
 
-    private var menuBarStatusIcon: String {
-        if flow.isRestoringConnection {
-            return "arrow.triangle.2.circlepath"
-        }
-        if flow.isPaused() {
-            return "pause.circle.fill"
-        }
-        switch flow.status {
-        case .active:
-            return "checkmark.circle.fill"
-        case .noCoverage:
-            return "shield.slash"
-        case .unavailable:
-            return flow.isCheckingCoverage
-                ? "arrow.triangle.2.circlepath"
-                : "calendar.badge.exclamationmark"
-        }
+    private var menuBarStatusPresentation: ProtectionCoveragePresentation {
+        ProtectionCoveragePresentation.global(
+            isRestoringConnection: flow.isRestoringConnection,
+            needsSetup: onboardingState.needsSetup,
+            status: flow.status,
+            isCheckingCoverage: flow.isCheckingCoverage || flow.isConnectingAccount,
+            isPaused: flow.isPaused(),
+            hasReconnectRequiredAccount: flow.accountCoverages.contains { coverage in
+                coverage.connectionState == .reconnectRequired ||
+                    (flow.coverage(for: coverage.account.id) ?? coverage.health) == .reconnectRequired
+            }
+        )
     }
 }

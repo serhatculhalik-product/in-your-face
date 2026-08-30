@@ -6,28 +6,82 @@ import XCTest
 @testable import InYourFace
 
 final class MenuBarPresentationTests: XCTestCase {
-    func testEveryProtectionStateKeepsTruthfulContentAboveTheFooter() {
-        let states = [
-            makePresentation(isRestoringConnection: true),
-            makePresentation(needsSetup: true),
-            makePresentation(status: .noCoverage),
-            makePresentation(status: .active),
-            makePresentation(status: .active, isPaused: true),
-            makePresentation(status: .unavailable, isCheckingCoverage: true),
-            makePresentation(
-                status: .unavailable,
-                accounts: [reconnectAccount]
+    func testEveryGlobalStateUsesOneAtomicStatusAndPreservesItsAction() {
+        let cases: [(
+            String,
+            MenuBarProtectionPresentation,
+            ProtectionCoveragePresentation.State,
+            MenuBarProtectionPresentation.PrimaryAction?
+        )] = [
+            (
+                "loading",
+                makePresentation(isRestoringConnection: true),
+                .loadingProtection,
+                nil
             ),
-            makePresentation(
-                status: .unavailable,
-                accounts: [staleAccount]
-            )
+            ("setup", makePresentation(needsSetup: true), .finishSetup, .finishSetup),
+            ("no coverage", makePresentation(status: .noCoverage), .noCoverage, .openSettings),
+            ("active", makePresentation(status: .active), .activeProtection, nil),
+            (
+                "paused",
+                makePresentation(status: .active, isPaused: true),
+                .protectionPaused,
+                nil
+            ),
+            (
+                "checking",
+                makePresentation(status: .unavailable, isCheckingCoverage: true),
+                .checkingCoverage,
+                nil
+            ),
+            (
+                "reconnect",
+                makePresentation(
+                    status: .unavailable,
+                    accounts: [reconnectAccount]
+                ),
+                .reconnectRequired,
+                .reconnect(accountID: reconnectAccount.id)
+            ),
+            (
+                "stale",
+                makePresentation(
+                    status: .unavailable,
+                    accounts: [staleAccount]
+                ),
+                .coverageNeedsAttention,
+                nil
+            ),
+            (
+                "unavailable",
+                makePresentation(
+                    status: .unavailable,
+                    accounts: [unavailableAccount]
+                ),
+                .coverageNeedsAttention,
+                nil
+            ),
+            (
+                "unavailable ignores pause",
+                makePresentation(
+                    status: .unavailable,
+                    isPaused: true,
+                    accounts: [unavailableAccount]
+                ),
+                .coverageNeedsAttention,
+                nil
+            ),
         ]
 
-        for state in states {
-            XCTAssertFalse(state.title.isEmpty)
-            XCTAssertFalse(state.detail.isEmpty)
-            XCTAssertFalse(state.systemImage.isEmpty)
+        for (description, presentation, expectedState, expectedAction) in cases {
+            let expectedStatus = ProtectionCoveragePresentation(state: expectedState)
+            XCTAssertEqual(presentation.statusPresentation, expectedStatus, description)
+            XCTAssertEqual(presentation.title, expectedStatus.label, description)
+            XCTAssertEqual(presentation.systemImage, expectedStatus.systemImage, description)
+            XCTAssertEqual(presentation.tone, expectedStatus.tone, description)
+            XCTAssertEqual(presentation.showsProgress, expectedStatus.showsProgress, description)
+            XCTAssertEqual(presentation.primaryAction, expectedAction, description)
+            XCTAssertFalse(presentation.detail.isEmpty, description)
         }
     }
 
@@ -40,7 +94,7 @@ final class MenuBarPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.title, "Reconnect Required")
         XCTAssertTrue(presentation.detail.contains("person@example.com"))
         XCTAssertEqual(presentation.primaryAction, .reconnect(accountID: "account-1"))
-        XCTAssertEqual(presentation.tone, .attention)
+        XCTAssertEqual(presentation.tone, .caution)
     }
 
     func testSetupDominatesAStaleSavedAccount() {
@@ -55,14 +109,16 @@ final class MenuBarPresentationTests: XCTestCase {
     }
 
     func testActiveAggregateStaysActiveWhenOneAccountNeedsRecovery() {
-        let presentation = makePresentation(
-            status: .active,
-            accounts: [reconnectAccount]
-        )
+        for account in [staleAccount, reconnectAccount, unavailableAccount] {
+            let presentation = makePresentation(
+                status: .active,
+                accounts: [account]
+            )
 
-        XCTAssertEqual(presentation.title, "Active Protection")
-        XCTAssertNil(presentation.primaryAction)
-        XCTAssertEqual(presentation.tone, .positive)
+            XCTAssertEqual(presentation.title, "Active Protection")
+            XCTAssertNil(presentation.primaryAction)
+            XCTAssertEqual(presentation.tone, .positive)
+        }
     }
 
     func testMultipleReconnectAccountsUseRowsInsteadOfAnAmbiguousPrimaryAction() {
@@ -83,6 +139,24 @@ final class MenuBarPresentationTests: XCTestCase {
         XCTAssertNil(presentation.primaryAction)
     }
 
+    func testReconnectConnectionStateOverridesAnUnavailableCoverageError() {
+        let presentation = makePresentation(
+            status: .unavailable,
+            accounts: [
+                MenuBarAccountPresentation(
+                    id: "account-1",
+                    label: "person@example.com",
+                    connectionState: .reconnectRequired,
+                    health: .unavailable("Protected data could not be read")
+                )
+            ]
+        )
+
+        XCTAssertEqual(presentation.statusPresentation.state, .reconnectRequired)
+        XCTAssertTrue(presentation.detail.contains("person@example.com"))
+        XCTAssertEqual(presentation.primaryAction, .reconnect(accountID: "account-1"))
+    }
+
     private var reconnectAccount: MenuBarAccountPresentation {
         MenuBarAccountPresentation(
             id: "account-1",
@@ -98,6 +172,15 @@ final class MenuBarPresentationTests: XCTestCase {
             label: "person@example.com",
             connectionState: .connected,
             health: .stale
+        )
+    }
+
+    private var unavailableAccount: MenuBarAccountPresentation {
+        MenuBarAccountPresentation(
+            id: "account-1",
+            label: "person@example.com",
+            connectionState: .connected,
+            health: .unavailable("Refresh failed")
         )
     }
 
