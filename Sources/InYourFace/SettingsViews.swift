@@ -595,16 +595,12 @@ private struct RemindersSettingsPane: View {
             }
 
             Section("Strong Alert") {
-                Stepper(
-                    InterfaceCopy.repeatEvery(flow.strongAlertRepeatIntervalMinutes),
-                    value: Binding(
+                StrongAlertTimingControls(
+                    repeatIntervalMinutes: Binding(
                         get: { flow.strongAlertRepeatIntervalMinutes },
                         set: { flow.setStrongAlertRepeatInterval(minutes: $0) }
-                    ),
-                    in: 1...5
+                    )
                 )
-                .accessibilityLabel("Strong Alert repeat interval")
-                .accessibilityValue(InterfaceCopy.minuteDuration(flow.strongAlertRepeatIntervalMinutes))
             }
 
             Section("Event Types") {

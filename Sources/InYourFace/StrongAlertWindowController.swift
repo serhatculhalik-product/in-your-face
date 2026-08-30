@@ -28,7 +28,6 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
 
     private struct PresentationRequest {
         let content: AnyView
-        let surfaceDidClose: @MainActor () -> Void
     }
 
     private let windowRegistry: WindowRegistry
@@ -41,8 +40,6 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
     private var additionalWindows: [NSWindow] = []
     private var screenObserver: NSObjectProtocol?
     private var applicationObservers: [NSObjectProtocol] = []
-    private var surfaceDidClose: (@MainActor () -> Void)?
-    private var allowsWindowClose = false
     private var isPresented = false
     private var isInteractionSuspendedForTestTools = false
     private var content: AnyView?
@@ -85,10 +82,7 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
         !applicationObservers.isEmpty
     }
 
-    func present(
-        content: AnyView,
-        surfaceDidClose: @escaping @MainActor () -> Void
-    ) {
+    func present(content: AnyView) {
         if windowRegistry.window(for: .strongAlert) == nil {
             _ = lifecycle.present(
                 surface: .strongAlert,
@@ -97,15 +91,11 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
                 surfaceDiscovered: false
             )
         }
-        pendingPresentation.submit(PresentationRequest(
-            content: content,
-            surfaceDidClose: surfaceDidClose
-        ))
+        pendingPresentation.submit(PresentationRequest(content: content))
     }
 
     private func present(_ request: PresentationRequest, in window: NSWindow) {
         content = request.content
-        surfaceDidClose = request.surfaceDidClose
 
         stopScreenObservation()
         stopApplicationObservation()
@@ -149,7 +139,6 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
 
     func close() {
         pendingPresentation.clear()
-        allowsWindowClose = true
         stopScreenObservation()
         stopApplicationObservation()
         closeAdditionalWindows()
@@ -157,13 +146,11 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
         primaryWindow?.close()
         primaryWindow = nil
         content = nil
-        surfaceDidClose = nil
         isPresented = false
         windowLayoutGeneration &+= 1
         scheduledRefits.removeAll()
         lastFittedContentSizes.removeAll()
         lifecycle.close()
-        allowsWindowClose = false
     }
 
     func suspendInteractionForTestTools() {
@@ -186,13 +173,7 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        guard !allowsWindowClose else { return true }
-        lifecycle.surfaceDisappeared()
-        surfaceDidClose?()
-        DispatchQueue.main.async { [weak self] in
-            self?.close()
-        }
-        return false
+        false
     }
 
     func windowDidResignKey(_ notification: Notification) {
@@ -211,9 +192,22 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
         window.hidesOnDeactivate = false
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         window.sharingType = presentationContract.sharingPolicy.windowSharingType
-        window.standardWindowButton(.miniaturizeButton)?.isEnabled = false
-        window.standardWindowButton(.zoomButton)?.isEnabled = false
+        hideStandardWindowControls(in: window)
         window.isMovable = false
+    }
+
+    private func hideStandardWindowControls(in window: NSWindow) {
+        let buttonTypes: [NSWindow.ButtonType] = [
+            .closeButton,
+            .miniaturizeButton,
+            .zoomButton
+        ]
+        for buttonType in buttonTypes {
+            guard let button = window.standardWindowButton(buttonType) else { continue }
+            button.isEnabled = false
+            button.isTransparent = true
+            button.setAccessibilityElement(false)
+        }
     }
 
     private func createAdditionalWindows(
@@ -244,9 +238,7 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
             panel.hidesOnDeactivate = false
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
             panel.sharingType = presentationContract.sharingPolicy.windowSharingType
-            panel.standardWindowButton(.closeButton)?.isHidden = true
-            panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
-            panel.standardWindowButton(.zoomButton)?.isHidden = true
+            hideStandardWindowControls(in: panel)
             panel.isMovable = false
             panel.isReleasedWhenClosed = false
             panel.setAccessibilityElement(false)

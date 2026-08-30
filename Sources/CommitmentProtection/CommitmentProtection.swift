@@ -601,6 +601,7 @@ public struct AccountCoverage: Equatable, Identifiable, Sendable {
     public let account: GoogleAccount
     public let calendars: [CalendarOption]
     public let selectedCalendarIDs: Set<String>
+    public let confirmedCalendarIDs: Set<String>
     public let isProtectionConfirmed: Bool
     public let connectionState: ConnectionState
     public let health: CoverageHealth
@@ -612,6 +613,7 @@ public struct AccountCoverage: Equatable, Identifiable, Sendable {
         account: GoogleAccount,
         calendars: [CalendarOption],
         selectedCalendarIDs: Set<String>,
+        confirmedCalendarIDs: Set<String>? = nil,
         isProtectionConfirmed: Bool = false,
         connectionState: ConnectionState,
         health: CoverageHealth,
@@ -620,6 +622,9 @@ public struct AccountCoverage: Equatable, Identifiable, Sendable {
         self.account = account
         self.calendars = calendars
         self.selectedCalendarIDs = selectedCalendarIDs
+        self.confirmedCalendarIDs = confirmedCalendarIDs ?? (
+            isProtectionConfirmed ? selectedCalendarIDs : []
+        )
         self.isProtectionConfirmed = isProtectionConfirmed
         self.connectionState = connectionState
         self.health = health
@@ -3694,6 +3699,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
                     account: record.connection.account,
                     calendars: record.connection.calendars,
                     selectedCalendarIDs: record.selectedCalendarIDs,
+                    confirmedCalendarIDs: record.confirmedCalendarIDs,
                     isProtectionConfirmed: record.isProtectionConfirmed,
                     connectionState: record.connectionState,
                     health: coverageHealth(for: record, at: coverageEvaluationDate),

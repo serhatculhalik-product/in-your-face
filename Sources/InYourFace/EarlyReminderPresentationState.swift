@@ -26,18 +26,21 @@ struct EarlyReminderPresentationState: Equatable, Sendable {
 }
 
 struct EarlyReminderWindowTrackingState: Equatable, Sendable {
-    private(set) var trackedWindowID: ObjectIdentifier?
+    private(set) var trackedWindowIDs: Set<ObjectIdentifier> = []
 
     mutating func register(_ windowID: ObjectIdentifier) {
-        trackedWindowID = windowID
+        trackedWindowIDs.insert(windowID)
     }
 
     mutating func unregister(_ windowID: ObjectIdentifier) {
-        guard trackedWindowID == windowID else { return }
-        trackedWindowID = nil
+        trackedWindowIDs.remove(windowID)
+    }
+
+    mutating func unregisterAll() {
+        trackedWindowIDs.removeAll()
     }
 
     func tracks(_ windowID: ObjectIdentifier) -> Bool {
-        trackedWindowID == windowID
+        trackedWindowIDs.contains(windowID)
     }
 }

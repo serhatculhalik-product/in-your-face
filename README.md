@@ -11,7 +11,7 @@ It is deliberately focused. It does not change your calendar, infer which events
 | Capability | What it does |
 | --- | --- |
 | Google Calendar | Connect one or more Google accounts through OAuth and choose exactly which calendars to monitor. |
-| Early Reminder | Show a configurable visual reminder 5–30 minutes before an accepted or self-organized timed commitment. |
+| Early Reminder | Show a configurable visual reminder across available displays 5–30 minutes before an accepted or self-organized timed commitment. |
 | Optional Blocking Mode | Keep the Early Reminder in front and block background interaction while it is open. |
 | Strong Alert | At start time, present a calm but hard-to-miss alert across available displays. |
 | Meeting actions | Join a recognized meeting link, mark a commitment handled after joining another way, or stop reminders for the current occurrence. |
@@ -25,12 +25,13 @@ It is deliberately focused. It does not change your calendar, infer which events
 
 ## How it works
 
-1. Connect a Google Calendar account.
-2. Select the calendars that deserve protection and confirm the selection.
-3. Meeting Incoming monitors accepted or self-organized events with a specific start and end time. All-day, declined, tentative, unanswered, and unselected-calendar events stay quiet. Out-of-office events also stay quiet unless you explicitly enable their protection.
-4. An Early Reminder can appear before the start time. You can choose Close for now, snooze it once, or stop reminders for that occurrence.
-5. At the start time, the Strong Alert shows the commitment context and next action. Join opens a recognized meeting link, I joined another way records the occurrence as Handled, and Stop reminders ends its protection without changing Google Calendar.
-6. If the alert cannot be handled immediately, it repeats at the configured interval until the commitment is joined, handled, dismissed, paused, or ends.
+1. Connect a Google Calendar account and select the calendars that deserve protection.
+2. Before finishing setup, protect any additional Google accounts and review readiness choices for Early Reminder, Optional Blocking Mode, and the Strong Alert repeat interval, which defaults to one minute.
+3. Start at Login is presented on by default during first-time setup. It remains a staged choice: opening readiness does not change the macOS Login Item, and Finish Setup or Finish Later applies the choice. You can opt out before finishing or change it later in Settings.
+4. Meeting Incoming monitors accepted or self-organized events with a specific start and end time. All-day, declined, tentative, unanswered, and unselected-calendar events stay quiet. Out-of-office events also stay quiet unless you explicitly enable their protection.
+5. An Early Reminder appears across available displays before the start time. Its native window Close performs Close for now across the whole reminder surface; you can also snooze it once or stop reminders for that occurrence.
+6. At the start time, the Strong Alert shows the commitment context and next action without an operable native window Close. Join opens a recognized meeting link, I joined another way records the occurrence as Handled, and Stop reminders ends its protection without changing Google Calendar.
+7. If the Strong Alert cannot be handled immediately, Got it closes only the current alert and it repeats at the configured interval until the commitment is joined, handled, dismissed, paused, or ends.
 
 ## Requirements
 
@@ -115,7 +116,7 @@ If either permission is unavailable, the app keeps the visual reminder behavior 
 - The app does not verify attendance. Clicking Join is the user’s acknowledgement that the reminder lifecycle can end.
 - I joined another way records Handled for the current occurrence; Stop reminders records a separate occurrence-local dismissal.
 - Protection decisions are occurrence-local, so dismissing one occurrence does not rewrite the calendar or suppress a rescheduled occurrence.
-- Launch at Login is explicit and off by default. Valid device-bound authorization otherwise survives app relaunch, Mac restart, and app update.
+- Start at Login is presented on by default during first-time readiness, can be opted out, and remains changeable in Settings. The staged setup choice changes no macOS Login Item until Finish Setup or Finish Later. Valid device-bound authorization otherwise survives app relaunch, Mac restart, and app update.
 - The product is a personal utility, not a team policy, administration, or attendance-monitoring system.
 
 ## Project structure

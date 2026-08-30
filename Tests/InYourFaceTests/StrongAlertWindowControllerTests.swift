@@ -5,6 +5,145 @@ import XCTest
 
 @MainActor
 final class StrongAlertWindowControllerTests: XCTestCase {
+    func testNativeCloseAttemptDoesNotDismissStrongAlert() async throws {
+        _ = NSApplication.shared
+        let screen = try XCTUnwrap(NSScreen.screens.first)
+        let registry = WindowRegistry()
+        let controller = StrongAlertWindowController(
+            windowRegistry: registry,
+            availableScreens: { [screen] }
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 460, height: 300),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        controller.suspendInteractionForTestTools()
+        defer {
+            controller.close()
+            window.close()
+        }
+
+        controller.present(content: AnyView(Text("Strong Alert")))
+        registry.register(window, for: .strongAlert)
+        XCTAssertTrue(window.isVisible)
+
+        let shouldClose = try XCTUnwrap(
+            window.delegate?.windowShouldClose?(window),
+            "The production Strong Alert delegate must own native close attempts."
+        )
+        window.performClose(nil)
+        for _ in 0..<10 {
+            await Task.yield()
+        }
+
+        XCTAssertFalse(shouldClose)
+        XCTAssertTrue(
+            window.isVisible,
+            "A Strong Alert must remain visible after a native close attempt."
+        )
+    }
+
+    func testNativeWindowControlsAreNotExposedOnEveryStrongAlertWindow() async throws {
+        _ = NSApplication.shared
+        let screen = try XCTUnwrap(NSScreen.screens.first)
+        let registry = WindowRegistry()
+        var fittedWindows: [NSWindow] = []
+        let controller = StrongAlertWindowController(
+            windowRegistry: registry,
+            fitWindow: { window, _ in
+                guard let window,
+                      !fittedWindows.contains(where: { $0 === window }) else { return }
+                fittedWindows.append(window)
+            },
+            availableScreens: { [screen, screen] }
+        )
+        let primaryWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 460, height: 300),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        primaryWindow.isReleasedWhenClosed = false
+        controller.suspendInteractionForTestTools()
+        defer {
+            controller.close()
+            primaryWindow.close()
+        }
+
+        controller.present(content: AnyView(Text("Strong Alert")))
+        registry.register(primaryWindow, for: .strongAlert)
+
+        let replicaWindow = try XCTUnwrap(
+            fittedWindows.first(where: { $0 !== primaryWindow })
+        )
+        let replicaShouldClose = try XCTUnwrap(
+            replicaWindow.delegate?.windowShouldClose?(replicaWindow),
+            "The production Strong Alert delegate must own replica close attempts."
+        )
+        for _ in 0..<10 {
+            await Task.yield()
+        }
+
+        XCTAssertFalse(replicaShouldClose)
+        XCTAssertTrue(primaryWindow.isVisible)
+        XCTAssertTrue(replicaWindow.isVisible)
+
+        let standardButtons: [(type: NSWindow.ButtonType, name: String)] = [
+            (.closeButton, "Close"),
+            (.miniaturizeButton, "Minimize"),
+            (.zoomButton, "Zoom")
+        ]
+        for button in standardButtons {
+            if let primaryButton = primaryWindow.standardWindowButton(button.type) {
+                XCTAssertFalse(
+                    primaryButton.isHidden,
+                    "The primary Strong Alert must preserve SwiftUI's titlebar layout while suppressing \(button.name)."
+                )
+                XCTAssertTrue(
+                    primaryButton.isTransparent,
+                    "The primary Strong Alert's native \(button.name) control must never draw."
+                )
+            }
+            if let replicaButton = replicaWindow.standardWindowButton(button.type) {
+                XCTAssertFalse(
+                    replicaButton.isHidden,
+                    "Strong Alert replicas must preserve titlebar layout while suppressing \(button.name)."
+                )
+                XCTAssertTrue(
+                    replicaButton.isTransparent,
+                    "Strong Alert replicas' native \(button.name) controls must never draw."
+                )
+            }
+            XCTAssertFalse(
+                hasVisuallyExposedStandardWindowButton(button.type, in: primaryWindow),
+                "The primary Strong Alert must not expose the native \(button.name) control."
+            )
+            XCTAssertFalse(
+                hasVisuallyExposedStandardWindowButton(button.type, in: replicaWindow),
+                "Strong Alert replicas must not expose the native \(button.name) control."
+            )
+            XCTAssertFalse(
+                primaryWindow.standardWindowButton(button.type)?.isEnabled ?? false,
+                "The primary Strong Alert's native \(button.name) control must not be operable."
+            )
+            XCTAssertFalse(
+                replicaWindow.standardWindowButton(button.type)?.isEnabled ?? false,
+                "Strong Alert replicas' native \(button.name) controls must not be operable."
+            )
+            XCTAssertFalse(
+                primaryWindow.standardWindowButton(button.type)?.isAccessibilityElement() ?? false,
+                "The primary Strong Alert's native \(button.name) control must not be exposed to accessibility."
+            )
+            XCTAssertFalse(
+                replicaWindow.standardWindowButton(button.type)?.isAccessibilityElement() ?? false,
+                "Strong Alert replicas' native \(button.name) controls must not be exposed to accessibility."
+            )
+        }
+    }
+
     func testDisplayRecoveryRestartsApplicationActivationObservation() async throws {
         _ = NSApplication.shared
         let screens = NSScreen.screens
@@ -29,7 +168,7 @@ final class StrongAlertWindowControllerTests: XCTestCase {
             window.close()
         }
 
-        controller.present(content: AnyView(Text("Strong Alert")), surfaceDidClose: {})
+        controller.present(content: AnyView(Text("Strong Alert")))
         registry.register(window, for: .strongAlert)
 
         XCTAssertFalse(controller.isObservingApplicationActivation)
@@ -78,7 +217,7 @@ final class StrongAlertWindowControllerTests: XCTestCase {
             window.close()
         }
 
-        controller.present(content: AnyView(Text("Strong Alert")), surfaceDidClose: {})
+        controller.present(content: AnyView(Text("Strong Alert")))
         registry.register(window, for: .strongAlert)
 
         XCTAssertTrue(window.isVisible)
@@ -146,7 +285,7 @@ final class StrongAlertWindowControllerTests: XCTestCase {
             primaryWindow.close()
         }
 
-        controller.present(content: AnyView(Text("Strong Alert")), surfaceDidClose: {})
+        controller.present(content: AnyView(Text("Strong Alert")))
         registry.register(primaryWindow, for: .strongAlert)
         let replicaWindow = try XCTUnwrap(
             fittedWindows.first(where: { $0 !== primaryWindow })
@@ -217,7 +356,7 @@ final class StrongAlertWindowControllerTests: XCTestCase {
             primaryWindow.close()
         }
 
-        controller.present(content: AnyView(content), surfaceDidClose: {})
+        controller.present(content: AnyView(content))
         registry.register(primaryWindow, for: .strongAlert)
 
         XCTAssertFalse(fittedWindows.contains(where: { $0 === primaryWindow }))
@@ -310,7 +449,7 @@ final class StrongAlertWindowControllerTests: XCTestCase {
             primaryWindow.close()
         }
 
-        controller.present(content: AnyView(Text("Strong Alert")), surfaceDidClose: {})
+        controller.present(content: AnyView(Text("Strong Alert")))
         registry.register(primaryWindow, for: .strongAlert)
 
         let staleAdditionalWindow = try XCTUnwrap(
@@ -402,7 +541,7 @@ final class StrongAlertWindowControllerTests: XCTestCase {
             primaryWindow.close()
         }
 
-        controller.present(content: content, surfaceDidClose: {})
+        controller.present(content: content)
         registry.register(primaryWindow, for: .strongAlert)
 
         for _ in 0..<10 {
@@ -487,7 +626,7 @@ final class StrongAlertWindowControllerTests: XCTestCase {
             primaryWindow.close()
         }
 
-        controller.present(content: AnyView(Text("Strong Alert")), surfaceDidClose: {})
+        controller.present(content: AnyView(Text("Strong Alert")))
         registry.register(primaryWindow, for: .strongAlert)
         for _ in 0..<10 where !scheduledFits.isEmpty {
             let pendingFits = scheduledFits
@@ -545,7 +684,7 @@ final class StrongAlertWindowControllerTests: XCTestCase {
             primaryWindow.close()
         }
 
-        controller.present(content: AnyView(Text("Strong Alert")), surfaceDidClose: {})
+        controller.present(content: AnyView(Text("Strong Alert")))
         registry.register(primaryWindow, for: .strongAlert)
         let additionalWindow = try XCTUnwrap(
             fittedWindows.first(where: { $0 !== primaryWindow })
@@ -568,6 +707,15 @@ final class StrongAlertWindowControllerTests: XCTestCase {
         )
         XCTAssertNil(fitCounts[ObjectIdentifier(primaryWindow)])
     }
+}
+
+@MainActor
+private func hasVisuallyExposedStandardWindowButton(
+    _ type: NSWindow.ButtonType,
+    in window: NSWindow
+) -> Bool {
+    guard let button = window.standardWindowButton(type) else { return false }
+    return !button.isHidden && !button.isTransparent && button.alphaValue > 0.01
 }
 
 @MainActor

@@ -21,24 +21,28 @@ final class StrongAlertDisplayPlanTests: XCTestCase {
         XCTAssertFalse(state.acceptsPresentationRequest(secondRequest, hasCommitment: false))
     }
 
-    func testEarlyReminderWindowTrackingStateDropsDetachedWindow() {
+    func testEarlyReminderWindowTrackingStateTracksPrimaryAndReplicasIndependently() {
         final class WindowToken {}
         let firstWindow = WindowToken()
         let secondWindow = WindowToken()
+        let unrelatedWindow = WindowToken()
         var state = EarlyReminderWindowTrackingState()
 
         state.register(ObjectIdentifier(firstWindow))
+        state.register(ObjectIdentifier(secondWindow))
         XCTAssertTrue(state.tracks(ObjectIdentifier(firstWindow)))
+        XCTAssertTrue(state.tracks(ObjectIdentifier(secondWindow)))
 
-        state.unregister(ObjectIdentifier(secondWindow))
+        state.unregister(ObjectIdentifier(unrelatedWindow))
         XCTAssertTrue(state.tracks(ObjectIdentifier(firstWindow)))
+        XCTAssertTrue(state.tracks(ObjectIdentifier(secondWindow)))
 
         state.unregister(ObjectIdentifier(firstWindow))
         XCTAssertFalse(state.tracks(ObjectIdentifier(firstWindow)))
-
-        state.register(ObjectIdentifier(secondWindow))
         XCTAssertTrue(state.tracks(ObjectIdentifier(secondWindow)))
-        XCTAssertFalse(state.tracks(ObjectIdentifier(firstWindow)))
+
+        state.unregisterAll()
+        XCTAssertFalse(state.tracks(ObjectIdentifier(secondWindow)))
     }
 
     func testPresentationLifecycleDoesNotPresentWithoutAUsableSurface() {

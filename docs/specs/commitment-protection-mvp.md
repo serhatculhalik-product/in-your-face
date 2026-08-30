@@ -53,13 +53,13 @@ Ordinary calendar notifications are easy to miss during focused work. A personal
 ### Reminder flow
 
 26. As a user, I can enable or disable the global Early Reminder while leaving Strong Alert protection active.
-27. As a user, I can set Early Reminder lead time from five to thirty minutes, with ten minutes as the default. A newly discovered reminder appears only with at least one minute remaining, while an already-visible reminder stays available as start approaches.
-28. As a user, Close for now closes only the current Early Reminder surface and leaves start-time protection active.
+27. As a user, I receive the Early Reminder across every available display and can set its lead time from five to thirty minutes, with ten minutes as the default. A newly discovered reminder appears only with at least one minute remaining, while an already-visible reminder stays available as start approaches.
+28. As a user, Close for now closes only the current Early Reminder surface and leaves start-time protection active; the Early Reminder's native window Close invokes this action.
 29. As a user, Stop reminders ends protection for the current Occurrence without changing my Google Calendar RSVP.
 30. As a user, I can Snooze once before start for five, ten, fifteen, or thirty minutes. Snooze suppresses both reminder types until its duration or the commitment end, whichever comes first.
 31. As a user, I receive a calm but urgent Strong Alert at start time across every available display.
 32. As a user, macOS Focus and Full-Screen Sharing, window sharing, or app sharing do not hide or relocate visual reminders.
-33. As a user, closing an alert surface without an explicit action does not silently end protection.
+33. As a user, the native window close control acts as Close for now on an Early Reminder, while a Strong Alert exposes no native close control and ignores native close attempts. Got it explicitly closes only the current Strong Alert surface without ending protection.
 34. As a user, Strong Alert repeats every one to five minutes, defaulting to one minute, until Join, Handled, Dismiss, Pause, or the scheduled end.
 35. As a user, I can mark a Commitment Handled when I joined another way. With a Recognized Meeting Link, I can Join as the primary action; either action ends that Occurrence's reminder lifecycle without claiming to verify attendance.
 36. As a user, I can Restore Protection for the current Occurrence after Dismiss or Handled until that Occurrence ends.
@@ -68,13 +68,13 @@ Ordinary calendar notifications are easy to miss during focused work. A personal
 
 ### Permissions, launch, and control
 
-39. As a user, Launch at Login is offered during onboarding and in Settings, is off by default, and can be changed at any time.
+39. As a first-time user, I see Start at Login on by default during readiness, can opt out before finishing, and can change it later in Settings. The staged choice does not change the macOS Login Item merely because I opened readiness; Finish Setup or Finish Later applies it.
 40. As a user, enabling Launch at Login resumes protection after login when authorization and coverage remain valid; it does not conceal Reconnect Required.
 41. As a user, Blocking Mode is optional and off by default.
 42. As a user, I see why Accessibility and Input Monitoring are needed before I choose to enable Blocking Mode, then receive direct links to the relevant System Settings panes.
 43. As a user who withholds either permission, I retain a visual-only Early Reminder and all ordinary protection behavior.
 44. As a user, onboarding does not request Blocking Mode permissions before I express intent to enable that feature.
-45. As a user, after connecting Google Calendar and choosing Monitored Calendars, I can use readiness to enable or disable Early Reminder, choose its lead time, optionally choose Blocking Mode, and choose Launch at Login before finishing setup.
+45. As a user, after connecting Google Calendar and choosing Monitored Calendars, I can protect additional Google accounts before finishing setup. From readiness I can enable or disable Early Reminder, choose its lead time, choose the Strong Alert Repeat Interval with one minute as the default, optionally choose Blocking Mode, and review the staged Start at Login choice.
 46. As a user who chooses Set Up Later, I get the menu-bar experience and can return through Finish Setup without being forced through onboarding on every launch.
 
 ### Privacy and explanation
@@ -129,15 +129,15 @@ Ordinary calendar notifications are easy to miss during focused work. A personal
 - Calendar cancellation, rescheduling, timing, and link changes update active protection. No new Strong Alert begins after the scheduled end.
 - Enabling Out-of-Office Protection does not adopt an already-underway occurrence. Disabling it immediately clears its active protection state and removes those events from retained snapshots.
 - A newly presented Early Reminder is suppressed when fewer than sixty seconds remain before start. An Early Reminder that is already visible remains visible inside that boundary, and exactly sixty seconds remains eligible.
-- Strong Alert presents the commitment title, current timing state, relevant calendar or account, and next action; secondary details remain secondary.
+- Strong Alert presents the commitment title, current timing state, relevant calendar or account, and next action; secondary details remain secondary. Every Strong Alert display omits an operable native window Close, and attempted native close requests leave the alert visible.
 - I joined another way records Handled for the current Occurrence without changing its Google Calendar RSVP.
 - Stop reminders is available for both linked and linkless commitments, requires confirmation, and is the only user-facing Strong Alert action that stops the current Occurrence without joining.
 - Strong Alert remains visible in every supported display-sharing mode under ADR-0004.
-- Alert presentation uses one internal lifecycle seam for window discovery or creation, activation, surface disappearance, display-topology changes, fallback recovery, and Blocking Mode availability. StrongAlertDisplayPlan remains the authoritative display-coverage rule.
+- Alert presentation uses one internal lifecycle seam for window discovery or creation, activation, surface disappearance, display-topology changes, fallback recovery, and Blocking Mode availability. StrongAlertDisplayPlan remains the authoritative display-coverage rule for both reminder stages.
 - Blocking Mode blocks interaction with other apps while the Early Reminder is open. It is permission-gated and degrades to visual-only behavior without disabling ordinary reminders.
-- Launch at Login is an explicit, default-off preference rather than an automatic requirement.
+- Start at Login is presented on by default during first-time readiness but remains a staged, reversible choice rather than an automatic side effect. Merely opening readiness does not change the macOS Login Item; Finish Setup or Finish Later applies the choice, and the user can opt out or change it later in Settings.
 - The menu-bar experience provides a compact upcoming-commitment view plus truthful coverage, Pause, and account states rather than a full schedule.
-- Onboarding has two setup steps—connect Google Calendar and choose Monitored Calendars—followed by readiness. Readiness lets the user enable or disable Early Reminder, choose its lead time, optionally choose Blocking Mode, and choose Launch at Login. It requests no Blocking Mode permission until the user explicitly chooses to enable that feature.
+- Onboarding has two setup steps—connect Google Calendar and choose Monitored Calendars—followed by readiness, with a route to protect additional Google accounts before finishing. Readiness lets the user enable or disable Early Reminder, choose its lead time, choose the Strong Alert Repeat Interval with one minute as the default, optionally choose Blocking Mode, and review the staged Start at Login choice. It requests no Blocking Mode permission until the user explicitly chooses to enable that feature.
 - First-run completion is independent from account or coverage state. Later reconnect does not replay onboarding.
 
 ### Distribution direction
@@ -158,15 +158,15 @@ Ordinary calendar notifications are easy to miss during focused work. A personal
 - Verify Out-of-Office Protection preference persistence, opt-in behavior across both reminder stages, immediate clearing on disable, physical snapshot pruning, and non-retroactive adoption on enable.
 - Verify Meeting Description decoding, markup and executable-content removal, blank normalization, length bounds, canonical/fallback merge precedence, encrypted relaunch persistence, and absence from Join extraction and Protection Activity.
 - Verify first Early Reminder suppression below sixty seconds, presentation at exactly sixty seconds, and retention of an already-visible reminder below sixty seconds.
-- Verify Early Reminder, Strong Alert, Unverified Reminder, Coverage Warning, Close for now, Stop reminders, Join, Dismiss, Handled, Restore Protection, Snooze, Pause, and incidental surface clearing.
+- Verify Early Reminder, Strong Alert, Unverified Reminder, Coverage Warning, Close for now, Stop reminders, Join, Dismiss, Handled, Restore Protection, Snooze, Pause, Early Reminder native closing, rejected Strong Alert native closing, and explicit Got it surface clearing.
 - Verify authorization survives relaunch and simulated restart/update boundaries without a routine reconnect, while exceptional invalidation enters Reconnect Required only for the affected account.
 - Verify transient refresh failures retain authorization, definitive rejection deletes it, and revocation failure makes no partial Disconnect or Remove Account mutation.
 - Verify successful Disconnect and Remove Account have their distinct data-retention effects, including same-day Activity behavior.
 - Verify encrypted stores contain only the permitted snapshot window and Activity bounds, and that physical pruning occurs on end, cancellation, decline, deselection, expiry, day change, and account removal.
 - Verify the package and authorization path create no Keychain items, contain no Keychain entitlement, and make no SecItem calls.
-- Verify onboarding has two setup steps followed by readiness; readiness exposes the current Early Reminder enabled state and lead time, optional Blocking Mode, and Launch at Login without making any of them completion prerequisites.
+- Verify onboarding has two setup steps followed by readiness, permits protecting additional Google accounts before finishing, and exposes the current Early Reminder enabled state and lead time, the Strong Alert Repeat Interval with one minute as the default, optional Blocking Mode, and staged Start at Login without making any of them completion prerequisites.
 - Verify Blocking Mode explains permissions before requesting them, links to the correct System Settings panes, and preserves visual-only reminders when permission is missing.
-- Verify Launch at Login defaults off, changes only by explicit user choice, and resumes protection without reconnect when authorization remains valid.
+- Verify Start at Login is presented on by default during first-time readiness, can be opted out, changes no macOS Login Item merely by opening readiness, applies on Finish Setup or Finish Later, remains changeable in Settings, and resumes protection without reconnect when authorization remains valid.
 - Verify reminders remain visible across multiple displays, Full-Screen Sharing, window sharing, app sharing, sharing that begins during an alert, and macOS Focus.
 - Verify presentation lifecycle behavior deterministically for window discovery or creation, activation, surface disappearance, display-topology changes, fallback recovery, and Blocking Mode availability while retaining StrongAlertDisplayPlan as the authoritative display-coverage rule.
 - Verify each external alert action is keyboard reachable and VoiceOver-readable, has visible focus and non-color state cues, respects reduced motion, and remains legible at increased text sizes.

@@ -124,7 +124,7 @@ final class WindowRegistryTests: XCTestCase {
         let futureWindow = makeWindow(title: "Configurer Meeting Incoming")
 
         controller.bringToFront()
-        controller.close()
+        controller.closeAfterSetUpLater()
         registry.register(futureWindow, for: .onboarding)
 
         XCTAssertTrue(registry.window(for: .onboarding) === futureWindow)
@@ -138,7 +138,7 @@ final class WindowRegistryTests: XCTestCase {
         localizedWindow.orderFrontRegardless()
         registry.register(localizedWindow, for: .onboarding)
 
-        controller.close()
+        controller.closeAfterSetUpLater()
 
         XCTAssertFalse(localizedWindow.isVisible)
     }
@@ -147,7 +147,7 @@ final class WindowRegistryTests: XCTestCase {
         _ = NSApplication.shared
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 320, height: 240),
-            styleMask: [.titled],
+            styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )

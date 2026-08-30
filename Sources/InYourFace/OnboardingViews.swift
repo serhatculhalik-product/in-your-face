@@ -12,22 +12,151 @@ private enum OnboardingStep: Int {
     }
 }
 
-struct OnboardingReminderPreferences: Equatable {
+enum OnboardingAdditionalProtectionDestination: Equatable {
+    case connectAccount
+    case reviewCalendars(accountID: String)
+
+    static func make(coverages: [AccountCoverage]) -> Self {
+        guard let coverage = coverages.first(where: {
+            $0.connectionState == .connected &&
+                ($0.selectedCalendarIDs.isEmpty || !$0.isProtectionConfirmed)
+        }) else {
+            return .connectAccount
+        }
+        return .reviewCalendars(accountID: coverage.id)
+    }
+}
+
+struct OnboardingReadinessActionState: Equatable {
+    enum PrimaryAction: Equatable {
+        case reconnect
+        case checkingCoverage
+        case finishSetup
+        case reviewCalendars
+        case retryCalendarAccess
+    }
+
+    let primaryAction: PrimaryAction
+    let canFinishSetup: Bool
+
+    static func make(
+        requiresReconnect: Bool,
+        isGoogleAccountOperationInProgress: Bool,
+        isCheckingCoverage: Bool,
+        isRefreshingCoverage: Bool,
+        status: ProtectionStatus,
+        isProtectionConfirmationRequired: Bool
+    ) -> Self {
+        let primaryAction: PrimaryAction
+        if requiresReconnect {
+            primaryAction = .reconnect
+        } else if isCheckingCoverage || isRefreshingCoverage {
+            primaryAction = .checkingCoverage
+        } else if status == .active || isProtectionConfirmationRequired {
+            primaryAction = .finishSetup
+        } else if status == .noCoverage {
+            primaryAction = .reviewCalendars
+        } else {
+            primaryAction = .retryCalendarAccess
+        }
+        return Self(
+            primaryAction: primaryAction,
+            canFinishSetup: primaryAction == .finishSetup &&
+                !isGoogleAccountOperationInProgress
+        )
+    }
+}
+
+enum OnboardingProtectionConfirmationPolicy {
+    case confirmIfRequired
+    case preservePendingConfirmation
+}
+
+struct OnboardingReadinessPreferences: Equatable {
     var isEarlyReminderEnabled: Bool
     var earlyReminderLeadTimeMinutes: Int
+    var strongAlertRepeatIntervalMinutes: Int
+    var isLaunchAtLoginEnabled: Bool
 
-    @MainActor
-    init(flow: CommitmentProtectionFlow) {
-        isEarlyReminderEnabled = flow.isEarlyReminderEnabled
-        earlyReminderLeadTimeMinutes = flow.earlyReminderLeadTimeMinutes
+    init(
+        isEarlyReminderEnabled: Bool,
+        earlyReminderLeadTimeMinutes: Int,
+        strongAlertRepeatIntervalMinutes: Int,
+        isLaunchAtLoginEnabled: Bool
+    ) {
+        self.isEarlyReminderEnabled = isEarlyReminderEnabled
+        self.earlyReminderLeadTimeMinutes = earlyReminderLeadTimeMinutes
+        self.strongAlertRepeatIntervalMinutes = strongAlertRepeatIntervalMinutes
+        self.isLaunchAtLoginEnabled = isLaunchAtLoginEnabled
     }
 
     @MainActor
-    func commit(to flow: CommitmentProtectionFlow) -> Bool {
+    init(
+        flow: CommitmentProtectionFlow,
+        defaultsLaunchAtLoginToEnabled: Bool = false
+    ) {
+        isEarlyReminderEnabled = flow.isEarlyReminderEnabled
+        earlyReminderLeadTimeMinutes = flow.earlyReminderLeadTimeMinutes
+        strongAlertRepeatIntervalMinutes = flow.strongAlertRepeatIntervalMinutes
+        isLaunchAtLoginEnabled = flow.isLaunchAtLoginEnabled || defaultsLaunchAtLoginToEnabled
+    }
+
+    @MainActor
+    func commit(
+        to flow: CommitmentProtectionFlow,
+        protectionConfirmation: OnboardingProtectionConfirmationPolicy = .confirmIfRequired
+    ) -> Bool {
+        guard !flow.isAppManagedDataResetInProgress else { return false }
+        if flow.isLaunchAtLoginEnabled != isLaunchAtLoginEnabled ||
+            flow.launchAtLoginError != nil {
+            flow.setLaunchAtLoginEnabled(isLaunchAtLoginEnabled)
+        }
+        guard flow.isLaunchAtLoginEnabled == isLaunchAtLoginEnabled else { return false }
+
         flow.setEarlyReminderEnabled(isEarlyReminderEnabled)
         flow.setEarlyReminderLeadTime(minutes: earlyReminderLeadTimeMinutes)
-        guard flow.isProtectionConfirmationRequired else { return true }
-        return flow.confirmAllProtection()
+        flow.setStrongAlertRepeatInterval(minutes: strongAlertRepeatIntervalMinutes)
+        guard flow.isEarlyReminderEnabled == isEarlyReminderEnabled,
+              flow.earlyReminderLeadTimeMinutes == earlyReminderLeadTimeMinutes,
+              flow.strongAlertRepeatIntervalMinutes == strongAlertRepeatIntervalMinutes else {
+            return false
+        }
+        switch protectionConfirmation {
+        case .confirmIfRequired:
+            guard flow.isProtectionConfirmationRequired else { return true }
+            return flow.confirmAllProtection()
+        case .preservePendingConfirmation:
+            return true
+        }
+    }
+}
+
+@MainActor
+enum OnboardingReadinessOutcomeResolver {
+    static func resolve(
+        _ action: OnboardingReadinessExitAction,
+        preferences: OnboardingReadinessPreferences,
+        isReconnectRequired: Bool,
+        flow: CommitmentProtectionFlow,
+        onboardingState: OnboardingState
+    ) -> Bool {
+        let protectionConfirmation: OnboardingProtectionConfirmationPolicy =
+            isReconnectRequired ? .preservePendingConfirmation : .confirmIfRequired
+        guard action != .continueSetup,
+              onboardingState.canResolveReadiness,
+              preferences.commit(
+                  to: flow,
+                  protectionConfirmation: protectionConfirmation
+              ) else { return false }
+
+        switch action {
+        case .finishSetup:
+            return onboardingState.complete()
+        case .finishLater:
+            return onboardingState.deferReadinessUntilRequested()
+        case .continueSetup:
+            return false
+        }
     }
 }
 
@@ -41,7 +170,7 @@ struct OnboardingView: View {
     @State private var selectedAccountID: String?
     @State private var calendarSearch = ""
     @State private var lastReconnectAccountID: String?
-    @State private var reminderPreferencesDraft: OnboardingReminderPreferences?
+    @State private var readinessPreferencesDraft: OnboardingReadinessPreferences?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -62,8 +191,12 @@ struct OnboardingView: View {
         .onAppear {
             initializeReminderPreferencesIfNeeded()
             synchronizeStepWithProtection()
+            synchronizeReadinessExitHandling()
             focusHeading()
             OnboardingWindowController.shared.bringToFront()
+        }
+        .onChange(of: readinessExitAvailability) { _, _ in
+            synchronizeReadinessExitHandling()
         }
         .onChange(of: flow.accountCoverages.map(\.id)) { _, _ in
             synchronizeSelectedAccount()
@@ -76,6 +209,9 @@ struct OnboardingView: View {
         }
         .onChange(of: flow.accountConnectionError) { _, message in
             announceConnectionError(message)
+        }
+        .onDisappear {
+            OnboardingWindowController.shared.clearReadinessExit()
         }
         .transaction { transaction in
             if reduceMotion {
@@ -222,22 +358,22 @@ struct OnboardingView: View {
                 title: readinessTitle,
                 detail: readinessDetail
             ) {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 8) {
                     if reconnectPresentation.requiresReconnect {
                         reconnectAccountProgress
                         Divider()
                             .padding(.vertical, 2)
                     } else {
-                        Label(
-                            InterfaceCopy.protectedCalendarCount(
-                                reconnectPresentation.activelyProtectedCalendarCount
-                            ),
-                            systemImage: "calendar.badge.checkmark"
-                        )
-                        Label(
-                            InterfaceCopy.strongAlertRepeatTiming(flow.strongAlertRepeatIntervalMinutes),
-                            systemImage: "bell.and.waves.left.and.right"
-                        )
+                        protectedCoverageSummary
+
+                        Divider()
+                            .padding(.vertical, 2)
+
+                        readinessPreferenceSection(title: "Strong Alert") {
+                            StrongAlertTimingControls(
+                                repeatIntervalMinutes: strongAlertRepeatIntervalDraftBinding
+                            )
+                        }
 
                         Divider()
                             .padding(.vertical, 2)
@@ -264,27 +400,130 @@ struct OnboardingView: View {
                         VStack(alignment: .leading, spacing: 3) {
                             Text("Start Meeting Incoming at login")
                             Text(testToolsController.isTestMode
-                                ? "Simulated in this test profile; no macOS Login Item is changed."
-                                : "Off by default. You can change this anytime in Settings.")
+                                ? "Enabled in this test profile after setup; no macOS Login Item changes."
+                                : "Recommended. Starts quietly after sign-in; change anytime in Settings.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                     }
                     .toggleStyle(.switch)
+                    .accessibilityLabel("Start Meeting Incoming at login")
                     if let launchAtLoginError = flow.launchAtLoginError {
-                        Text(launchAtLoginError)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    if !reconnectPresentation.requiresReconnect {
-                        Text("Meeting Incoming stays quiet in the menu bar until a commitment needs you. Ongoing controls are available in Settings.")
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .padding(.top, 6)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Label("Start at login couldn’t be updated", systemImage: "exclamationmark.triangle")
+                                .foregroundStyle(.red)
+                            Text(launchAtLoginError)
+                                .textSelection(.enabled)
+                            Text("Turn this off to finish without it, or try Finish Setup again.")
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     }
                 }
             }
         }
+    }
+
+    private var protectedCoverageSummary: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 16) {
+                    protectedCalendarCountLabel
+                    Spacer(minLength: 12)
+                    protectAnotherAccountButton
+                }
+                VStack(alignment: .leading, spacing: 10) {
+                    protectedCalendarCountLabel
+                    protectAnotherAccountButton
+                }
+            }
+
+            if !protectionSummary.accountGroups.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(protectionSummary.accountGroups) { accountGroup in
+                        protectedAccountGroup(accountGroup)
+                    }
+                }
+            }
+
+            if flow.isConnectingAccount {
+                ProgressView(testToolsController.isTestMode
+                    ? "Connecting another simulated account…"
+                    : "Connecting another Google Account…")
+                    .controlSize(.small)
+            } else if let message = flow.accountConnectionError {
+                VStack(alignment: .leading, spacing: 3) {
+                    Label("Another account couldn’t connect", systemImage: "exclamationmark.triangle")
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(.red)
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
+        }
+    }
+
+    private var protectedCalendarCountLabel: some View {
+        Label(
+            InterfaceCopy.protectedCalendarCount(protectionSummary.activeCalendarCount),
+            systemImage: "calendar.badge.checkmark"
+        )
+    }
+
+    private func protectedAccountGroup(
+        _ accountGroup: OnboardingProtectionSummary.AccountGroup
+    ) -> some View {
+        let calendarNames = accountGroup.calendars.map(\.name).joined(separator: " · ")
+        return ViewThatFits(in: .horizontal) {
+            HStack(alignment: .firstTextBaseline, spacing: 16) {
+                protectedAccountLabel(accountGroup)
+                    .frame(maxWidth: 240, alignment: .leading)
+                Spacer(minLength: 12)
+                protectedCalendarLabel(calendarNames)
+                    .multilineTextAlignment(.trailing)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                protectedAccountLabel(accountGroup)
+                protectedCalendarLabel(calendarNames)
+                    .padding(.leading, 24)
+            }
+        }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            "\(accountGroup.label), monitored calendars: \(calendarNames)"
+        )
+    }
+
+    private func protectedAccountLabel(
+        _ accountGroup: OnboardingProtectionSummary.AccountGroup
+    ) -> some View {
+        Label(accountGroup.label, systemImage: "person.crop.circle")
+            .font(.callout.weight(.semibold))
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .help(accountGroup.label)
+    }
+
+    private func protectedCalendarLabel(_ calendarNames: String) -> some View {
+        Label(calendarNames, systemImage: "calendar")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
+            .help(calendarNames)
+    }
+
+    private var protectAnotherAccountButton: some View {
+        Button {
+            protectAnotherAccount()
+        } label: {
+            Label("Protect Another Account…", systemImage: "person.badge.plus")
+        }
+        .disabled(flow.isGoogleAccountOperationInProgress)
     }
 
     private var reconnectAccountProgress: some View {
@@ -459,18 +698,18 @@ struct OnboardingView: View {
     private var onboardingSecondaryActions: some View {
         if step == .calendars {
             Button("Back") {
-                move(to: .connect)
+                move(to: hasConfirmedProtection ? .ready : .connect)
             }
         }
 
         if step != .ready {
             Button("Set Up Later") {
-                onboardingState.deferUntilRequested()
-                OnboardingWindowController.shared.close()
+                guard onboardingState.deferUntilRequested() else { return }
+                OnboardingWindowController.shared.closeAfterSetUpLater()
             }
         } else if reconnectPresentation.requiresReconnect || flow.status != .active {
             Button("Finish Later") {
-                finishLater()
+                OnboardingWindowController.shared.resolveReadinessExit(.finishLater)
             }
         }
     }
@@ -499,38 +738,46 @@ struct OnboardingView: View {
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.defaultAction)
             .disabled(
-                selectedCalendarCount == 0 ||
+                !flow.isProtectionConfirmationRequired ||
                     flow.isGoogleAccountOperationInProgress
             )
 
         case .ready:
-            if let target = reconnectPresentation.currentTarget {
-                Button("Reconnect \(target.label)…") {
-                    lastReconnectAccountID = target.id
-                    Task {
-                        await flow.reconnectGoogleAccount(accountID: target.id)
+            switch readinessActionState.primaryAction {
+            case .reconnect:
+                if let target = reconnectPresentation.currentTarget {
+                    Button("Reconnect \(target.label)…") {
+                        lastReconnectAccountID = target.id
+                        Task {
+                            await flow.reconnectGoogleAccount(accountID: target.id)
+                        }
                     }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(flow.isGoogleAccountOperationInProgress)
+                    .accessibilityLabel("Reconnect Google Account \(target.label)")
+                }
+
+            case .checkingCoverage:
+                ProgressView("Checking Calendar Coverage…")
+                    .controlSize(.small)
+
+            case .finishSetup:
+                Button("Finish Setup") {
+                    OnboardingWindowController.shared.resolveReadinessExit(.finishSetup)
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
                 .disabled(flow.isGoogleAccountOperationInProgress)
-                .accessibilityLabel("Reconnect Google Account \(target.label)")
-            } else if flow.status == .active || flow.isProtectionConfirmationRequired {
-                Button("Finish Setup") {
-                    finishSetup()
-                }
-                .buttonStyle(.borderedProminent)
-                .keyboardShortcut(.defaultAction)
-            } else if flow.status == .noCoverage {
+
+            case .reviewCalendars:
                 Button("Review Calendars") {
                     move(to: .calendars)
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
-            } else if flow.isCheckingCoverage || flow.isRefreshingCoverage {
-                ProgressView("Checking Calendar Coverage…")
-                    .controlSize(.small)
-            } else {
+
+            case .retryCalendarAccess:
                 Button("Retry Calendar Access") {
                     Task { await flow.refreshCommitmentProtection() }
                 }
@@ -578,18 +825,16 @@ struct OnboardingView: View {
         )
     }
 
-    private var selectedCalendarCount: Int {
-        flow.accountCoverages.reduce(0) { count, coverage in
-            count + coverage.selectedCalendarIDs.count
-        }
-    }
-
     private var reconnectPresentation: OnboardingReconnectPresentation {
         OnboardingReconnectPresentation.make(
             coverages: flow.accountCoverages,
             preferredAccountID: selectedAccountID,
             connectionError: flow.accountConnectionError
         )
+    }
+
+    private var protectionSummary: OnboardingProtectionSummary {
+        OnboardingProtectionSummary.make(coverages: flow.accountCoverages)
     }
 
     private var failedReconnectAccountLabel: String {
@@ -636,46 +881,84 @@ struct OnboardingView: View {
         flow.isCheckingCoverage
     }
 
+    private var readinessExitAvailability: Bool? {
+        guard step == .ready else { return nil }
+        return readinessActionState.canFinishSetup
+    }
+
+    private var readinessActionState: OnboardingReadinessActionState {
+        OnboardingReadinessActionState.make(
+            requiresReconnect: reconnectPresentation.requiresReconnect,
+            isGoogleAccountOperationInProgress: flow.isGoogleAccountOperationInProgress,
+            isCheckingCoverage: flow.isCheckingCoverage,
+            isRefreshingCoverage: flow.isRefreshingCoverage,
+            status: flow.status,
+            isProtectionConfirmationRequired: flow.isProtectionConfirmationRequired
+        )
+    }
+
     private var launchAtLoginBinding: Binding<Bool> {
         Binding(
-            get: { flow.isLaunchAtLoginEnabled },
-            set: { flow.setLaunchAtLoginEnabled($0) }
+            get: { readinessPreferences.isLaunchAtLoginEnabled },
+            set: { isEnabled in
+                var draft = readinessPreferences
+                draft.isLaunchAtLoginEnabled = isEnabled
+                readinessPreferencesDraft = draft
+            }
         )
     }
 
     private var earlyReminderEnabledDraftBinding: Binding<Bool> {
         Binding(
-            get: { reminderPreferences.isEarlyReminderEnabled },
+            get: { readinessPreferences.isEarlyReminderEnabled },
             set: { isEnabled in
-                var draft = reminderPreferences
+                var draft = readinessPreferences
                 draft.isEarlyReminderEnabled = isEnabled
-                reminderPreferencesDraft = draft
+                readinessPreferencesDraft = draft
             }
         )
     }
 
     private var earlyReminderLeadTimeDraftBinding: Binding<Int> {
         Binding(
-            get: { reminderPreferences.earlyReminderLeadTimeMinutes },
+            get: { readinessPreferences.earlyReminderLeadTimeMinutes },
             set: { minutes in
-                var draft = reminderPreferences
+                var draft = readinessPreferences
                 draft.earlyReminderLeadTimeMinutes = minutes
-                reminderPreferencesDraft = draft
+                readinessPreferencesDraft = draft
             }
         )
     }
 
-    private var reminderPreferences: OnboardingReminderPreferences {
-        reminderPreferencesDraft ?? OnboardingReminderPreferences(flow: flow)
+    private var strongAlertRepeatIntervalDraftBinding: Binding<Int> {
+        Binding(
+            get: { readinessPreferences.strongAlertRepeatIntervalMinutes },
+            set: { minutes in
+                var draft = readinessPreferences
+                draft.strongAlertRepeatIntervalMinutes = minutes
+                readinessPreferencesDraft = draft
+            }
+        )
+    }
+
+    private var readinessPreferences: OnboardingReadinessPreferences {
+        readinessPreferencesDraft ?? OnboardingReadinessPreferences(
+            flow: flow,
+            defaultsLaunchAtLoginToEnabled: !onboardingState.didChooseLaunchAtLogin
+        )
+    }
+
+    private var hasConfirmedProtection: Bool {
+        flow.accountCoverages.contains(where: {
+            !$0.selectedCalendarIDs.isEmpty && $0.isProtectionConfirmed
+        })
     }
 
     private func synchronizeStepWithProtection() {
         synchronizeSelectedAccount()
         if flow.accountCoverages.isEmpty {
             step = .connect
-        } else if !flow.accountCoverages.contains(where: {
-            !$0.selectedCalendarIDs.isEmpty && $0.isProtectionConfirmed
-        }) {
+        } else if !hasConfirmedProtection {
             step = .calendars
         } else {
             step = .ready
@@ -696,30 +979,57 @@ struct OnboardingView: View {
         }
     }
 
-    private func initializeReminderPreferencesIfNeeded() {
-        guard reminderPreferencesDraft == nil else { return }
-        reminderPreferencesDraft = OnboardingReminderPreferences(flow: flow)
+    private func protectAnotherAccount() {
+        switch OnboardingAdditionalProtectionDestination.make(
+            coverages: flow.accountCoverages
+        ) {
+        case let .reviewCalendars(accountID):
+            selectedAccountID = accountID
+            move(to: .calendars)
+
+        case .connectAccount:
+            let existingAccountIDs = Set(flow.accountCoverages.map(\.id))
+            Task {
+                await flow.connectGoogleAccount()
+                guard flow.accountConnectionError == nil else { return }
+                selectedAccountID = flow.accountCoverages.first(where: {
+                    !existingAccountIDs.contains($0.id)
+                })?.id ?? flow.connectedAccount?.id ?? selectedAccountID
+                move(to: .calendars)
+            }
+        }
     }
 
-    private func commitReminderPreferences() -> Bool {
-        let preferences = reminderPreferences
-        guard preferences.commit(to: flow) else { return false }
-        reminderPreferencesDraft = OnboardingReminderPreferences(flow: flow)
+    private func initializeReminderPreferencesIfNeeded() {
+        guard readinessPreferencesDraft == nil else { return }
+        readinessPreferencesDraft = OnboardingReadinessPreferences(
+            flow: flow,
+            defaultsLaunchAtLoginToEnabled: !onboardingState.didChooseLaunchAtLogin
+        )
+    }
+
+    private func resolveReadinessExit(_ action: OnboardingReadinessExitAction) -> Bool {
+        let preferences = readinessPreferences
+        guard OnboardingReadinessOutcomeResolver.resolve(
+            action,
+            preferences: preferences,
+            isReconnectRequired: reconnectPresentation.requiresReconnect,
+            flow: flow,
+            onboardingState: onboardingState
+        ) else { return false }
+        readinessPreferencesDraft = OnboardingReadinessPreferences(flow: flow)
         return true
     }
 
-    private func finishSetup() {
-        guard commitReminderPreferences() else { return }
-        guard onboardingState.complete() else { return }
-        OnboardingWindowController.shared.close()
-    }
-
-    private func finishLater() {
-        if !reconnectPresentation.requiresReconnect {
-            guard commitReminderPreferences() else { return }
+    private func synchronizeReadinessExitHandling() {
+        guard let canFinishSetup = readinessExitAvailability else {
+            OnboardingWindowController.shared.clearReadinessExit()
+            return
         }
-        onboardingState.deferUntilRequested()
-        OnboardingWindowController.shared.close()
+        OnboardingWindowController.shared.configureReadinessExit(
+            canFinishSetup: canFinishSetup,
+            resolve: resolveReadinessExit
+        )
     }
 
     private func move(to newStep: OnboardingStep) {

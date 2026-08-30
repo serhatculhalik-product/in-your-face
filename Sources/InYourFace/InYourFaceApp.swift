@@ -904,101 +904,14 @@ private struct EarlyReminderView: View {
     @EnvironmentObject private var blockingPermissions: BlockingPermissionController
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openWindow) private var openWindow
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var windowController = EarlyReminderWindowController.shared
-    @State private var isStopRemindersConfirmationPresented = false
-    @State private var pendingStopRemindersCommitment: CalendarEvent?
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: true) {
-            VStack(spacing: 18) {
-                if let commitment = flow.earlyReminderCommitment {
-                let surface = EarlyReminderSurfaceModel.normal(
-                    flow: flow,
-                    commitment: commitment
-                )
-                Label("Early Reminder", systemImage: "bell.fill")
-                    .font(.headline)
-                if flow.isEarlyReminderUnverified {
-                    Label("Unverified Reminder", systemImage: "questionmark.circle")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.orange)
-                    Text(InterfaceCopy.unverifiedReminderDetail())
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                if surface.conflict?.requiresPrimarySelection == true {
-                    EarlyReminderConflictSelectionView(flow: flow, surface: surface)
-                } else {
-                    Text(commitment.title)
-                        .font(.title2.bold())
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity)
-                    Text(flow.localStartTimeText(for: commitment))
-                        .font(.title3.weight(.semibold))
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Text(flow.countdownText(for: commitment, at: Date()))
-                        .foregroundStyle(.secondary)
-                    EarlyReminderConflictSummaryView(
-                        commitments: surface.secondaryConflictCommitments
-                    )
-                    if let meetingDescription = commitment.meetingDescription {
-                        MeetingDescriptionView(text: meetingDescription)
-                    }
-                }
-                Text("Close for now hides this Early Reminder. Strong Alert still appears when the commitment begins.")
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Menu("Snooze") {
-                    ForEach(flow.snoozeOptionsMinutes, id: \.self) { minutes in
-                        Button(InterfaceCopy.minuteDuration(minutes)) {
-                            let didApply = surface.actions.snooze(minutes)
-                            if didApply {
-                                announceActionResult(flow.lastActionMessage)
-                            }
-                            closeAfterAction(reopenIfNeeded: !didApply)
-                        }
-                    }
-                }
-                .disabled(!flow.canSnoozeEarlyReminder)
-                .accessibilityHint("Choose how long to delay this occurrence’s Early Reminder and Strong Alert.")
-                Text("Snooze delays both reminders for this occurrence and can continue past its start time.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 10) {
-                        earlyReminderActions(for: surface)
-                    }
-                    VStack(spacing: 8) {
-                        earlyReminderActions(for: surface)
-                    }
-                }
-                } else {
-                    Color.clear
-                        .frame(width: 1, height: 1)
-                }
-            }
-            .padding(flow.earlyReminderCommitment == nil ? 0 : 28)
-        }
-        .frame(
-            minWidth: 360,
-            idealWidth: 500,
-            maxWidth: 560,
-            minHeight: 300,
-            idealHeight: 520,
-            maxHeight: 680
+        EarlyReminderContentView(
+            flow: flow,
+            variant: .normal,
+            closingActionCompleted: handleClosingAction
         )
-        .accessibilityAddTraits(.isModal)
-        .transaction { transaction in
-            if reduceMotion {
-                transaction.animation = nil
-            }
-        }
         .onAppear {
             windowController.setRuntimeModeBadgeTitle(runtimeModeBadgeTitle)
             if blockingPermissions.isSimulated {
@@ -1021,6 +934,7 @@ private struct EarlyReminderView: View {
             }
             EarlyReminderWindowController.shared.present(
                 flow: flow,
+                content: replicaContent,
                 reopen: {
                     openEarlyReminderIfNeeded(flow: flow) {
                         openWindow(id: "early-reminder")
@@ -1062,51 +976,31 @@ private struct EarlyReminderView: View {
                 flow.setBlockingAvailability(isAvailable)
             }
         }
-        .stopRemindersConfirmation(
-            isPresented: $isStopRemindersConfirmationPresented,
-            onCancel: { pendingStopRemindersCommitment = nil },
-            onConfirm: {
-                guard let pendingStopRemindersCommitment else {
-                    self.pendingStopRemindersCommitment = nil
-                    return
+    }
+
+    private var replicaContent: AnyView {
+        AnyView(
+            EarlyReminderContentView(
+                flow: flow,
+                variant: .normal,
+                closingActionCompleted: handleClosingAction
+            )
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if let runtimeModeBadgeTitle {
+                    HStack {
+                        Spacer()
+                        TestModeBadge(title: runtimeModeBadgeTitle)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .allowsHitTesting(false)
                 }
-                let actions = EarlyReminderActionHandlers.normal(
-                    flow: flow,
-                    commitment: pendingStopRemindersCommitment
-                )
-                guard actions.dismiss() else {
-                    self.pendingStopRemindersCommitment = nil
-                    return
-                }
-                announceActionResult(flow.lastActionMessage)
-                self.pendingStopRemindersCommitment = nil
             }
         )
     }
 
-    @ViewBuilder
-    private func earlyReminderActions(for surface: EarlyReminderSurfaceModel) -> some View {
-        Button("Close for now") {
-            let didApply = surface.actions.clear()
-            if didApply {
-                announceActionResult(flow.lastActionMessage)
-            }
-            closeAfterAction(reopenIfNeeded: !didApply)
-        }
-        .keyboardShortcut(.defaultAction)
-        .buttonStyle(.borderedProminent)
-        .accessibilityHint("Close this Early Reminder while keeping Strong Alert active at the commitment start.")
-
-        Button("Stop reminders") {
-            requestStopReminders(for: surface.commitment)
-        }
-        .buttonStyle(.bordered)
-        .accessibilityHint("Stop Early Reminder and Strong Alert for this occurrence without changing Google Calendar.")
-    }
-
-    private func requestStopReminders(for commitment: CalendarEvent) {
-        pendingStopRemindersCommitment = commitment
-        isStopRemindersConfirmationPresented = true
+    private func handleClosingAction(_ didApply: Bool) {
+        closeAfterAction(reopenIfNeeded: !didApply)
     }
 
     private func closeAfterAction(reopenIfNeeded: Bool = false) {
@@ -1118,6 +1012,182 @@ private struct EarlyReminderView: View {
                 openWindow(id: "early-reminder")
             }
         }
+    }
+}
+
+enum EarlyReminderContentVariant {
+    case normal
+    case fallback
+}
+
+struct EarlyReminderContentView: View {
+    @ObservedObject var flow: CommitmentProtectionFlow
+    let variant: EarlyReminderContentVariant
+    let closingActionCompleted: (Bool) -> Void
+    var maximumContentHeight: CGFloat? = nil
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isStopRemindersConfirmationPresented = false
+    @State private var pendingStopRemindersCommitment: CalendarEvent?
+
+    var body: some View {
+        EarlyReminderViewport(maximumContentHeight: resolvedMaximumContentHeight) {
+            content
+        }
+        .accessibilityAddTraits(.isModal)
+        .transaction { transaction in
+            if reduceMotion {
+                transaction.animation = nil
+            }
+        }
+        .stopRemindersConfirmation(
+            isPresented: $isStopRemindersConfirmationPresented,
+            onCancel: { pendingStopRemindersCommitment = nil },
+            onConfirm: confirmStopReminders
+        )
+    }
+
+    private var resolvedMaximumContentHeight: CGFloat {
+        maximumContentHeight ?? EarlyReminderDisplayMetrics.maximumContentHeight(
+            visibleFrameHeights: NSScreen.screens.map(\.visibleFrame.height)
+        )
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        VStack(spacing: 18) {
+            if let commitment = flow.earlyReminderCommitment {
+                let surface = surfaceModel(for: commitment)
+                Label("Early Reminder", systemImage: "bell.fill")
+                    .font(.headline)
+                if flow.isEarlyReminderUnverified {
+                    Label("Unverified Reminder", systemImage: "questionmark.circle")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.orange)
+                    Text(InterfaceCopy.unverifiedReminderDetail())
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if surface.conflict?.requiresPrimarySelection == true {
+                    EarlyReminderConflictSelectionView(flow: flow, surface: surface)
+                } else {
+                    Text(commitment.title)
+                        .font(.title2.bold())
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity)
+                    Text(flow.localStartTimeText(for: commitment))
+                        .font(.title3.weight(.semibold))
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(flow.countdownText(for: commitment, at: Date()))
+                        .foregroundStyle(.secondary)
+                    EarlyReminderConflictSummaryView(
+                        commitments: surface.secondaryConflictCommitments
+                    )
+                    if let meetingDescription = commitment.meetingDescription {
+                        MeetingDescriptionView(text: meetingDescription)
+                    }
+                }
+                Text("Close for now hides this Early Reminder. Strong Alert still appears when the commitment begins.")
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Menu("Snooze") {
+                    ForEach(flow.snoozeOptionsMinutes, id: \.self) { minutes in
+                        Button(InterfaceCopy.minuteDuration(minutes)) {
+                            finishClosingAction(surface.actions.snooze(minutes))
+                        }
+                    }
+                }
+                .disabled(!flow.canSnoozeEarlyReminder)
+                .accessibilityHint("Choose how long to delay this occurrence’s Early Reminder and Strong Alert.")
+                Text("Snooze delays both reminders for this occurrence and can continue past its start time.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 10) {
+                        actionButtons(for: surface)
+                    }
+                    VStack(spacing: 8) {
+                        actionButtons(for: surface)
+                    }
+                }
+            } else {
+                Color.clear
+                    .frame(width: 1, height: 1)
+            }
+        }
+        .padding(flow.earlyReminderCommitment == nil ? 0 : 28)
+    }
+
+    @ViewBuilder
+    private func actionButtons(for surface: EarlyReminderSurfaceModel) -> some View {
+        Button("Close for now") {
+            finishClosingAction(surface.actions.clear())
+        }
+        .keyboardShortcut(.defaultAction)
+        .buttonStyle(.borderedProminent)
+        .accessibilityHint("Close this Early Reminder while keeping Strong Alert active at the commitment start.")
+
+        Button("Stop reminders") {
+            pendingStopRemindersCommitment = surface.commitment
+            isStopRemindersConfirmationPresented = true
+        }
+        .buttonStyle(.bordered)
+        .accessibilityHint("Stop Early Reminder and Strong Alert for this occurrence without changing Google Calendar.")
+    }
+
+    private func surfaceModel(for commitment: CalendarEvent) -> EarlyReminderSurfaceModel {
+        switch variant {
+        case .normal:
+            EarlyReminderSurfaceModel.normal(flow: flow, commitment: commitment)
+        case .fallback:
+            EarlyReminderSurfaceModel.fallback(flow: flow, commitment: commitment)
+        }
+    }
+
+    private func confirmStopReminders() {
+        guard let pendingStopRemindersCommitment else {
+            self.pendingStopRemindersCommitment = nil
+            return
+        }
+        let didApply = surfaceModel(for: pendingStopRemindersCommitment).actions.dismiss()
+        self.pendingStopRemindersCommitment = nil
+        finishClosingAction(didApply)
+    }
+
+    private func finishClosingAction(_ didApply: Bool) {
+        if didApply {
+            announceActionResult(flow.lastActionMessage)
+        }
+        closingActionCompleted(didApply)
+    }
+}
+
+struct EarlyReminderViewport<Content: View>: View {
+    let maximumContentHeight: CGFloat
+    @ViewBuilder let content: Content
+
+    init(
+        maximumContentHeight: CGFloat = EarlyReminderDisplayMetrics.maximumContentHeightLimit,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.maximumContentHeight = maximumContentHeight
+        self.content = content()
+    }
+
+    var body: some View {
+        IntrinsicHeightCappedLayout(
+            minimumHeight: EarlyReminderDisplayMetrics.minimumContentHeight,
+            maximumHeight: maximumContentHeight
+        ) {
+            ScrollView(.vertical, showsIndicators: true) {
+                content
+            }
+        }
+        .frame(minWidth: 360, idealWidth: 500, maxWidth: 560)
     }
 }
 
@@ -1225,11 +1295,7 @@ private struct StrongAlertWindowView: View {
                             .allowsHitTesting(false)
                         }
                     }
-            ),
-            surfaceDidClose: {
-                flow.closeStrongAlertSurface()
-                announceActionResult(flow.lastActionMessage)
-            }
+            )
         )
     }
 }
@@ -1626,123 +1692,13 @@ private struct StrongAlertConflictContentView: View {
 private struct EarlyReminderFallbackView: View {
     @ObservedObject var flow: CommitmentProtectionFlow
     let closingActionCompleted: (Bool) -> Void
-    @State private var isStopRemindersConfirmationPresented = false
-    @State private var pendingStopRemindersCommitment: CalendarEvent?
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: true) {
-            VStack(spacing: 16) {
-                if let commitment = flow.earlyReminderCommitment {
-                let surface = EarlyReminderSurfaceModel.fallback(
-                    flow: flow,
-                    commitment: commitment
-                )
-                Label("Early Reminder", systemImage: "bell.fill")
-                    .font(.headline)
-                if flow.isEarlyReminderUnverified {
-                Label("Unverified Reminder", systemImage: "questionmark.circle")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.orange)
-                Text(InterfaceCopy.unverifiedReminderDetail())
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-                if surface.conflict?.requiresPrimarySelection == true {
-                    EarlyReminderConflictSelectionView(flow: flow, surface: surface)
-                } else {
-                    Text(commitment.title)
-                        .font(.title2.bold())
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity)
-                    Text(flow.localStartTimeText(for: commitment))
-                        .font(.title3.weight(.semibold))
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
-                    EarlyReminderConflictSummaryView(
-                        commitments: surface.secondaryConflictCommitments
-                    )
-                    if let meetingDescription = commitment.meetingDescription {
-                        MeetingDescriptionView(text: meetingDescription)
-                    }
-                }
-            Text("Close for now hides this Early Reminder. Strong Alert still appears when the commitment begins.")
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Menu("Snooze") {
-                ForEach(flow.snoozeOptionsMinutes, id: \.self) { minutes in
-                    Button(InterfaceCopy.minuteDuration(minutes)) {
-                        finishClosingAction(surface.actions.snooze(minutes))
-                    }
-                }
-            }
-            .disabled(!flow.canSnoozeEarlyReminder)
-            .accessibilityHint("Choose how long to delay this occurrence’s Early Reminder and Strong Alert.")
-            Text("Snooze delays both reminders for this occurrence and can continue past its start time.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 10) {
-                        fallbackActions(for: surface)
-                    }
-                    VStack(spacing: 8) {
-                        fallbackActions(for: surface)
-                    }
-                }
-                } else {
-                    Color.clear.frame(width: 1, height: 1)
-                }
-            }
-            .padding(flow.earlyReminderCommitment == nil ? 0 : 28)
-        }
-        .frame(
-            minWidth: 360,
-            idealWidth: 500,
-            maxWidth: 560,
-            minHeight: 300,
-            idealHeight: 520,
-            maxHeight: 680
+        EarlyReminderContentView(
+            flow: flow,
+            variant: .fallback,
+            closingActionCompleted: closingActionCompleted
         )
-        .accessibilityAddTraits(.isModal)
-        .stopRemindersConfirmation(
-            isPresented: $isStopRemindersConfirmationPresented,
-            onCancel: { pendingStopRemindersCommitment = nil },
-            onConfirm: {
-                guard let pendingStopRemindersCommitment else { return }
-                let actions = EarlyReminderActionHandlers.fallback(
-                    flow: flow,
-                    commitment: pendingStopRemindersCommitment
-                )
-                finishClosingAction(actions.dismiss())
-                self.pendingStopRemindersCommitment = nil
-            }
-        )
-    }
-
-    @ViewBuilder
-    private func fallbackActions(for surface: EarlyReminderSurfaceModel) -> some View {
-        Button("Close for now") {
-            finishClosingAction(surface.actions.clear())
-        }
-            .keyboardShortcut(.defaultAction)
-            .buttonStyle(.borderedProminent)
-            .accessibilityHint("Close this Early Reminder while keeping Strong Alert active at the commitment start.")
-        Button("Stop reminders") {
-            pendingStopRemindersCommitment = surface.commitment
-            isStopRemindersConfirmationPresented = true
-        }
-        .buttonStyle(.bordered)
-        .accessibilityHint("Stop Early Reminder and Strong Alert for this occurrence without changing Google Calendar.")
-    }
-
-    private func finishClosingAction(_ didApply: Bool) {
-        if didApply {
-            announceActionResult(flow.lastActionMessage)
-        }
-        closingActionCompleted(didApply)
     }
 }
 
@@ -1768,6 +1724,16 @@ func objectIsOwned<Object: AnyObject>(
     return false
 }
 
+func objectIsOwned<Object: AnyObject>(
+    _ candidate: Object?,
+    byAny roots: [Object],
+    parent: (Object) -> Object?
+) -> Bool {
+    roots.contains { root in
+        objectIsOwned(candidate, by: root, parent: parent)
+    }
+}
+
 @MainActor
 func windowIsOwned(_ candidate: NSWindow?, by rootWindow: NSWindow?) -> Bool {
     objectIsOwned(candidate, by: rootWindow) { window in
@@ -1775,9 +1741,33 @@ func windowIsOwned(_ candidate: NSWindow?, by rootWindow: NSWindow?) -> Bool {
     }
 }
 
+@MainActor
+func windowIsOwned(_ candidate: NSWindow?, byAny rootWindows: [NSWindow]) -> Bool {
+    objectIsOwned(candidate, byAny: rootWindows) { window in
+        window.sheetParent ?? window.parent
+    }
+}
+
+@MainActor
+private final class EarlyReminderHostingView: NSHostingView<AnyView> {
+    var intrinsicContentSizeDidInvalidate: (@MainActor () -> Void)?
+
+    override func invalidateIntrinsicContentSize() {
+        super.invalidateIntrinsicContentSize()
+        intrinsicContentSizeDidInvalidate?()
+    }
+}
+
+@MainActor
+private final class EarlyReminderReplicaPanel: NSPanel {
+    override func accessibilityChildren() -> [Any]? {
+        []
+    }
+}
+
 private final class EarlyReminderInteractionGate: @unchecked Sendable {
     private let lock = NSLock()
-    private var reminderWindow: NSWindow?
+    private var reminderWindows: [NSWindow] = []
     private var isApplicationActive = false
     private var eventTap: CFMachPort?
     private var wasDisabledByUserInput = false
@@ -1806,9 +1796,9 @@ private final class EarlyReminderInteractionGate: @unchecked Sendable {
             : nil
     }
 
-    func start(for window: NSWindow, isApplicationActive: Bool) -> CFMachPort? {
+    func start(for windows: [NSWindow], isApplicationActive: Bool) -> CFMachPort? {
         lock.lock()
-        reminderWindow = window
+        reminderWindows = windows
         self.isApplicationActive = isApplicationActive
         let existingEventTap = eventTap
         lock.unlock()
@@ -1860,14 +1850,14 @@ private final class EarlyReminderInteractionGate: @unchecked Sendable {
             return true
         }
         lock.lock()
-        let reminderWindow = self.reminderWindow
+        let reminderWindows = self.reminderWindows
         lock.unlock()
-        return windowIsOwned(event.window, by: reminderWindow)
+        return windowIsOwned(event.window, byAny: reminderWindows)
     }
 
     func stop() {
         lock.lock()
-        reminderWindow = nil
+        reminderWindows = []
         isApplicationActive = false
         eventTap = nil
         wasDisabledByUserInput = false
@@ -1947,9 +1937,21 @@ private final class EarlyReminderInteractionGate: @unchecked Sendable {
 final class EarlyReminderWindowController: NSObject, NSWindowDelegate, ObservableObject {
     static let shared = EarlyReminderWindowController()
 
+    private struct ScheduledRefit {
+        enum Phase {
+            case pending
+            case running
+        }
+
+        let generation: UInt
+        var phase: Phase
+        var needsTrailingPass: Bool
+    }
+
     private struct PresentationRequest {
         let generation: Int
         let flow: CommitmentProtectionFlow
+        let content: AnyView
         let reopen: @MainActor () -> Void
         let closingActionCompleted: @MainActor (Bool) -> Void
     }
@@ -1957,7 +1959,10 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
     private let windowRegistry: WindowRegistry
     private let scheduleAfterLayout: (@escaping @MainActor () -> Void) -> Void
     private let fitWindow: @MainActor (NSWindow?, NSScreen?) -> Void
+    private let notificationCenter: NotificationCenter
+    private let availableScreens: @MainActor () -> [NSScreen]
     private weak var window: NSWindow?
+    private var additionalWindows: [NSWindow] = []
     private var blockedWindows: [ObjectIdentifier: (window: NSWindow, wasIgnoringMouseEvents: Bool)] = [:]
     private var windowInteractionObservers: [NSObjectProtocol] = []
     private var shieldWindows: [NSWindow] = []
@@ -1970,6 +1975,7 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
     private var barrierRetryTimer: Timer?
     private var surfaceRecoveryTimer: Timer?
     private var screenObserver: NSObjectProtocol?
+    private var applicationObserver: NSObjectProtocol?
     private var reopenSurface: (@MainActor () -> Void)?
     private var reminderFlow: CommitmentProtectionFlow?
     private var closingActionCompleted: (@MainActor (Bool) -> Void)?
@@ -1981,6 +1987,10 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
     private var isInteractionBarrierActive = false
     private var isInteractionSuspendedForTestTools = false
     private var fittingWindowIDs: Set<ObjectIdentifier> = []
+    private var content: AnyView?
+    private var windowLayoutGeneration: UInt = 0
+    private var scheduledRefits: [ObjectIdentifier: ScheduledRefit] = [:]
+    private var lastFittedContentSizes: [ObjectIdentifier: CGSize] = [:]
     private var blockingMode = EarlyReminderBlockingMode()
     private var lifecycle = AlertPresentationLifecycle()
     private var presentationState = EarlyReminderPresentationState()
@@ -1994,6 +2004,14 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
         self?.present(request, in: window)
     }
 
+    var managedWindows: [NSWindow] {
+        [window].compactMap { $0 } + additionalWindows
+    }
+
+    var isSurfacePresented: Bool {
+        isPresented
+    }
+
     init(
         windowRegistry: WindowRegistry = .shared,
         scheduleAfterLayout: @escaping (@escaping @MainActor () -> Void) -> Void = { action in
@@ -2005,16 +2023,21 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
                 on: screen,
                 minimumContentSize: NSSize(width: 360, height: 300)
             )
-        }
+        },
+        notificationCenter: NotificationCenter = .default,
+        availableScreens: @escaping @MainActor () -> [NSScreen] = { NSScreen.screens }
     ) {
         self.windowRegistry = windowRegistry
         self.scheduleAfterLayout = scheduleAfterLayout
         self.fitWindow = fitWindow
+        self.notificationCenter = notificationCenter
+        self.availableScreens = availableScreens
         super.init()
     }
 
     func present(
         flow: CommitmentProtectionFlow,
+        content: AnyView,
         reopen: @escaping @MainActor () -> Void,
         closingActionCompleted: @escaping @MainActor (Bool) -> Void
     ) {
@@ -2022,7 +2045,7 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
         if windowRegistry.window(for: .earlyReminder) == nil {
             _ = lifecycle.present(
                 surface: .earlyReminderNormal,
-                displayCount: NSScreen.screens.count,
+                displayCount: availableScreens().count,
                 primaryIndex: nil,
                 surfaceDiscovered: false
             )
@@ -2030,6 +2053,7 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
         pendingPresentation.submit(PresentationRequest(
             generation: generation,
             flow: flow,
+            content: content,
             reopen: reopen,
             closingActionCompleted: closingActionCompleted
         ))
@@ -2043,56 +2067,66 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
         reopenSurface = request.reopen
         reminderFlow = request.flow
         closingActionCompleted = request.closingActionCompleted
+        content = request.content
 
-        if isPresented, window !== registeredWindow {
+        if let retainedWindow = window, retainedWindow !== registeredWindow {
             stopBarrierRetryMonitoring()
             stopScreenObservation()
+            stopApplicationObservation()
             deactivateInteractionBarrier()
+            closeAdditionalWindows()
             if let fallbackPanel {
                 fallbackPanel.delegate = nil
                 fallbackPanel.close()
                 self.fallbackPanel = nil
+                if retainedWindow !== fallbackPanel {
+                    retainedWindow.delegate = nil
+                    retainedWindow.close()
+                }
             } else {
-                window?.delegate = nil
+                retainedWindow.delegate = nil
+                retainedWindow.close()
             }
-            if let window {
-                windowTrackingState.unregister(ObjectIdentifier(window))
-            }
+            windowTrackingState.unregisterAll()
             window = nil
             isPresented = false
         }
         if isPresented {
-            window?.orderFrontRegardless()
+            screenParametersDidChange()
             return
         }
 
         stopSurfaceRecoveryMonitoring()
+        closeAdditionalWindows()
+        beginWindowLayoutGeneration()
         window = registeredWindow
         windowTrackingState.register(ObjectIdentifier(registeredWindow))
-        registeredWindow.delegate = self
-        registeredWindow.level = isInteractionSuspendedForTestTools
-            ? .normal
-            : NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
-        registeredWindow.hidesOnDeactivate = false
-        registeredWindow.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        // Keep the reminder visible through full-display, window, and app sharing.
-        registeredWindow.sharingType = .readOnly
-        registeredWindow.standardWindowButton(.closeButton)?.isEnabled = true
-        registeredWindow.standardWindowButton(.miniaturizeButton)?.isEnabled = false
-        registeredWindow.standardWindowButton(.zoomButton)?.isEnabled = false
-        registeredWindow.isMovable = false
-        _ = lifecycle.present(
+        configureReminderWindow(registeredWindow)
+        let screens = availableScreens()
+        guard let displayPlan = lifecycle.present(
             surface: .earlyReminderNormal,
-            displayCount: NSScreen.screens.count,
+            displayCount: screens.count,
             primaryIndex: primaryScreenIndex(for: registeredWindow),
             surfaceDiscovered: true
-        )
-        fitReminderWindow(
+        ) else {
+            isPresented = false
+            startScreenObservation()
+            return
+        }
+        positionPrimaryWindow(
             registeredWindow,
-            on: registeredWindow.screen
+            on: screens[displayPlan.primaryIndex]
         )
         isPresented = true
+        createAdditionalWindows(
+            using: displayPlan,
+            screens: screens,
+            layoutGeneration: windowLayoutGeneration
+        )
         startScreenObservation()
+        if !isInteractionSuspendedForTestTools {
+            startApplicationObservation()
+        }
         let barrierAvailable: Bool
         if blockingMode.shouldAttemptBlocking && !isInteractionSuspendedForTestTools {
             startBarrierRetryMonitoring()
@@ -2101,26 +2135,28 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
             barrierAvailable = false
         }
         if isInteractionSuspendedForTestTools {
-            registeredWindow.orderFront(nil)
+            managedWindows.forEach { $0.orderFront(nil) }
         } else {
             NSApp.activate(ignoringOtherApps: true)
             registeredWindow.makeKeyAndOrderFront(nil)
             if !barrierAvailable {
-                registeredWindow.orderFrontRegardless()
+                managedWindows.forEach { $0.orderFrontRegardless() }
             }
             lifecycle.markActivated()
         }
-        refitRegisteredWindowAfterLayout(registeredWindow)
     }
 
     func stop() {
         stopBarrierRetryMonitoring()
         stopSurfaceRecoveryMonitoring()
         stopScreenObservation()
+        stopApplicationObservation()
         guard isPresented else { return }
         deactivateInteractionBarrier()
         isPresented = false
-        window?.standardWindowButton(.closeButton)?.isEnabled = true
+        managedWindows.forEach {
+            $0.standardWindowButton(.closeButton)?.isEnabled = true
+        }
     }
 
     func close() {
@@ -2129,23 +2165,24 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
         allowsWindowClose = true
         let window = self.window
         stop()
+        closeAdditionalWindows()
         window?.delegate = nil
         window?.close()
         fallbackPanel = nil
-        if let window {
-            windowTrackingState.unregister(ObjectIdentifier(window))
-        }
+        windowTrackingState.unregisterAll()
         self.window = nil
+        self.content = nil
         self.runtimeModeBadgeTitle = nil
         self.reminderFlow = nil
         self.closingActionCompleted = nil
+        beginWindowLayoutGeneration()
         lifecycle.close()
         allowsWindowClose = false
     }
 
     func prepareForProgrammaticClose() {
         allowsWindowClose = true
-        window?.delegate = nil
+        managedWindows.forEach { $0.delegate = nil }
     }
 
     func setRuntimeModeBadgeTitle(_ title: String?) {
@@ -2156,15 +2193,18 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
         guard !isInteractionSuspendedForTestTools else { return }
         isInteractionSuspendedForTestTools = true
         stopBarrierRetryMonitoring()
+        stopApplicationObservation()
         deactivateInteractionBarrier()
-        window?.level = .normal
+        managedWindows.forEach { $0.level = .normal }
     }
 
     func resumeInteractionAfterTestTools() {
         guard isInteractionSuspendedForTestTools else { return }
         isInteractionSuspendedForTestTools = false
         guard isPresented else { return }
-        window?.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
+        let reminderLevel = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
+        managedWindows.forEach { $0.level = reminderLevel }
+        startApplicationObservation()
         if blockingMode.shouldAttemptBlocking {
             startBarrierRetryMonitoring()
             retryInteractionBarrierIfNeeded()
@@ -2188,8 +2228,11 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
     }
 
     func windowDidMiniaturize(_ notification: Notification) {
-        guard isPresented, isInteractionBarrierActive else { return }
-        window?.deminiaturize(nil)
+        guard isPresented,
+              isInteractionBarrierActive,
+              let miniaturizedWindow = notification.object as? NSWindow,
+              windowTrackingState.tracks(ObjectIdentifier(miniaturizedWindow)) else { return }
+        miniaturizedWindow.deminiaturize(nil)
         bringReminderToFront()
     }
 
@@ -2203,18 +2246,93 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
         preserveReminderFocus()
     }
 
-    func windowDidChangeScreen(_ notification: Notification) {
-        guard isPresented,
-              let changedWindow = notification.object as? NSWindow,
-              windowTrackingState.tracks(ObjectIdentifier(changedWindow)) else { return }
-        fitReminderWindow(changedWindow, on: changedWindow.screen)
+    private func configureReminderWindow(_ reminderWindow: NSWindow) {
+        reminderWindow.delegate = self
+        reminderWindow.level = isInteractionSuspendedForTestTools
+            ? .normal
+            : NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
+        reminderWindow.hidesOnDeactivate = false
+        reminderWindow.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        // Keep every reminder surface visible through full-display, window, and app sharing.
+        reminderWindow.sharingType = .readOnly
+        reminderWindow.standardWindowButton(.closeButton)?.isEnabled = true
+        reminderWindow.standardWindowButton(.closeButton)?.isHidden = false
+        reminderWindow.standardWindowButton(.closeButton)?.isTransparent = false
+        reminderWindow.standardWindowButton(.miniaturizeButton)?.isEnabled = false
+        reminderWindow.standardWindowButton(.zoomButton)?.isEnabled = false
+        reminderWindow.isMovable = false
     }
 
-    func windowDidResize(_ notification: Notification) {
-        guard isPresented,
-              let resizedWindow = notification.object as? NSWindow,
-              windowTrackingState.tracks(ObjectIdentifier(resizedWindow)) else { return }
-        fitReminderWindow(resizedWindow, on: resizedWindow.screen)
+    private func createAdditionalWindows(
+        using displayPlan: StrongAlertDisplayPlan,
+        screens: [NSScreen],
+        layoutGeneration: UInt
+    ) {
+        guard let content else { return }
+
+        additionalWindows = displayPlan.additionalIndices.map { index in
+            let screen = screens[index]
+            let hostingView = EarlyReminderHostingView(
+                rootView: AnyView(content.accessibilityHidden(true))
+            )
+            hostingView.sizingOptions = [.intrinsicContentSize]
+            let panel = EarlyReminderReplicaPanel(
+                contentRect: NSRect(x: 0, y: 0, width: 360, height: 300),
+                styleMask: [.titled, .closable, .utilityWindow],
+                backing: .buffered,
+                defer: false
+            )
+            panel.title = "Early Reminder"
+            panel.isReleasedWhenClosed = false
+            panel.setAccessibilityElement(false)
+            panel.contentView = hostingView
+            configureReminderWindow(panel)
+            [
+                NSWindow.ButtonType.closeButton,
+                .miniaturizeButton,
+                .zoomButton
+            ].forEach { buttonType in
+                panel.standardWindowButton(buttonType)?.setAccessibilityElement(false)
+            }
+            windowTrackingState.register(ObjectIdentifier(panel))
+            hostingView.intrinsicContentSizeDidInvalidate = { [weak self, weak panel] in
+                guard let self, let panel else { return }
+                self.refitAdditionalWindowAfterLayout(
+                    panel,
+                    on: screen,
+                    layoutGeneration: layoutGeneration
+                )
+            }
+            fitReminderWindow(panel, on: screen)
+            panel.orderFrontRegardless()
+            return panel
+        }
+
+        for (additionalWindow, screenIndex) in zip(
+            additionalWindows,
+            displayPlan.additionalIndices
+        ) {
+            refitAdditionalWindowAfterLayout(
+                additionalWindow,
+                on: screens[screenIndex],
+                layoutGeneration: layoutGeneration
+            )
+        }
+    }
+
+    private func closeAdditionalWindows() {
+        additionalWindows.forEach { additionalWindow in
+            windowTrackingState.unregister(ObjectIdentifier(additionalWindow))
+            additionalWindow.delegate = nil
+            additionalWindow.close()
+        }
+        additionalWindows.removeAll()
+    }
+
+    private func beginWindowLayoutGeneration() {
+        windowLayoutGeneration &+= 1
+        scheduledRefits.removeAll()
+        lastFittedContentSizes.removeAll()
     }
 
     func surfaceDidDisappear(
@@ -2234,11 +2352,12 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
         }
         stopBarrierRetryMonitoring()
         stopScreenObservation()
+        stopApplicationObservation()
         deactivateInteractionBarrier()
         isPresented = false
-        if let window {
-            windowTrackingState.unregister(ObjectIdentifier(window))
-        }
+        closeAdditionalWindows()
+        windowTrackingState.unregisterAll()
+        beginWindowLayoutGeneration()
         window = nil
         startSurfaceRecoveryMonitoring()
     }
@@ -2275,58 +2394,60 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
         let reopenSurface = self.reopenSurface
         stopSurfaceRecoveryMonitoring()
         self.reopenSurface = reopenSurface
+        closeAdditionalWindows()
+        beginWindowLayoutGeneration()
 
-        let hostingView = NSHostingView(
-            rootView: EarlyReminderFallbackView(
-                flow: reminderFlow,
-                closingActionCompleted: closingActionCompleted
-            )
-            .safeAreaInset(edge: .top, spacing: 0) {
-                if let runtimeModeBadgeTitle {
-                    HStack {
-                        Spacer()
-                        TestModeBadge(title: runtimeModeBadgeTitle)
-                    }
-                    .padding(10)
-                    .allowsHitTesting(false)
-                }
-            }
+        let fallbackContent = makeFallbackContent(
+            flow: reminderFlow,
+            closingActionCompleted: closingActionCompleted
         )
+        content = fallbackContent
+        let hostingView = EarlyReminderHostingView(rootView: fallbackContent)
         hostingView.sizingOptions = [.intrinsicContentSize]
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 360, height: 300),
-            styleMask: [.titled, .utilityWindow],
+            styleMask: [.titled, .closable, .utilityWindow],
             backing: .buffered,
             defer: false
         )
         panel.title = "Early Reminder"
-        panel.level = isInteractionSuspendedForTestTools
-            ? .normal
-            : NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
-        panel.hidesOnDeactivate = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.sharingType = .readOnly
-        panel.isMovable = false
         panel.isReleasedWhenClosed = false
-        panel.delegate = self
         panel.contentView = hostingView
-        _ = lifecycle.present(
-            surface: .earlyReminderFallback,
-            displayCount: NSScreen.screens.count,
-            primaryIndex: NSScreen.main.flatMap { screen in
-                NSScreen.screens.firstIndex(where: { $0 === screen || $0.frame == screen.frame })
-            },
-            surfaceDiscovered: true
-        )
-        fitReminderWindow(
-            panel,
-            on: NSScreen.main
-        )
+        configureReminderWindow(panel)
         fallbackPanel = panel
         window = panel
         windowTrackingState.register(ObjectIdentifier(panel))
+
+        let screens = availableScreens()
+        let mainScreenIndex = NSScreen.main.flatMap { screen in
+            screens.firstIndex(where: { $0 === screen || $0.frame == screen.frame })
+        }
+        guard let displayPlan = lifecycle.present(
+            surface: .earlyReminderFallback,
+            displayCount: screens.count,
+            primaryIndex: mainScreenIndex,
+            surfaceDiscovered: true
+        ) else {
+            panel.delegate = nil
+            panel.close()
+            fallbackPanel = nil
+            window = nil
+            windowTrackingState.unregisterAll()
+            startSurfaceRecoveryMonitoring()
+            return
+        }
+
+        fitReminderWindow(panel, on: screens[displayPlan.primaryIndex])
         isPresented = true
+        createAdditionalWindows(
+            using: displayPlan,
+            screens: screens,
+            layoutGeneration: windowLayoutGeneration
+        )
         startScreenObservation()
+        if !isInteractionSuspendedForTestTools {
+            startApplicationObservation()
+        }
         let barrierAvailable: Bool
         if blockingMode.shouldAttemptBlocking && !isInteractionSuspendedForTestTools {
             startBarrierRetryMonitoring()
@@ -2335,15 +2456,43 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
             barrierAvailable = false
         }
         if isInteractionSuspendedForTestTools {
-            panel.orderFront(nil)
+            managedWindows.forEach { $0.orderFront(nil) }
         } else {
             NSApp.activate(ignoringOtherApps: true)
             panel.makeKeyAndOrderFront(nil)
             if !barrierAvailable {
-                panel.orderFrontRegardless()
+                managedWindows.forEach { $0.orderFrontRegardless() }
             }
             lifecycle.markActivated()
         }
+        hostingView.intrinsicContentSizeDidInvalidate = { [weak self, weak panel] in
+            guard let self, let panel else { return }
+            self.refitFallbackWindowAfterLayout(panel)
+        }
+        refitFallbackWindowAfterLayout(panel)
+    }
+
+    private func makeFallbackContent(
+        flow: CommitmentProtectionFlow,
+        closingActionCompleted: @escaping @MainActor (Bool) -> Void
+    ) -> AnyView {
+        AnyView(
+            EarlyReminderFallbackView(
+                flow: flow,
+                closingActionCompleted: closingActionCompleted
+            )
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if let runtimeModeBadgeTitle {
+                    HStack {
+                        Spacer()
+                        TestModeBadge(title: runtimeModeBadgeTitle)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .allowsHitTesting(false)
+                }
+            }
+        )
     }
 
     func openAccessibilitySettings() {
@@ -2383,13 +2532,13 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
             startBarrierRetryMonitoring()
             retryInteractionBarrierIfNeeded()
         } else {
-            window?.orderFrontRegardless()
+            managedWindows.forEach { $0.orderFrontRegardless() }
         }
     }
 
     @discardableResult
     private func activateInteractionBarrier() -> Bool {
-        guard isPresented, let window else {
+        guard isPresented, !managedWindows.isEmpty else {
             barrierLifecycle.activationFailed()
             lifecycle.interactionBarrierAvailabilityChanged(false)
             isGlobalInteractionBarrierAvailable = false
@@ -2397,7 +2546,7 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
         }
         if isInteractionBarrierActive { return barrierLifecycle.isActive }
         guard let eventTap = interactionGate.start(
-            for: window,
+            for: managedWindows,
             isApplicationActive: NSApp.isActive
         ) else {
             barrierLifecycle.activationFailed()
@@ -2455,7 +2604,7 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
                 NSApplication.didBecomeActiveNotification,
                 NSApplication.didResignActiveNotification
             ].map { notificationName in
-                NotificationCenter.default.addObserver(
+                notificationCenter.addObserver(
                     forName: notificationName,
                     object: nil,
                     queue: .main
@@ -2493,6 +2642,7 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
                     self.interactionGate.updateApplicationActivity(isThisApplication)
                     if !isThisApplication {
                         NSApp.activate(ignoringOtherApps: true)
+                        self.managedWindows.forEach { $0.orderFrontRegardless() }
                         self.window?.makeKeyAndOrderFront(nil)
                     }
                 }
@@ -2510,23 +2660,17 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
         guard let panel = fallbackPanel,
               let reminderFlow,
               let closingActionCompleted else { return }
-        let hostingView = NSHostingView(
-            rootView: EarlyReminderFallbackView(
-                flow: reminderFlow,
-                closingActionCompleted: closingActionCompleted
-            )
-            .safeAreaInset(edge: .top, spacing: 0) {
-                if let runtimeModeBadgeTitle {
-                    HStack {
-                        Spacer()
-                        TestModeBadge(title: runtimeModeBadgeTitle)
-                    }
-                    .padding(10)
-                    .allowsHitTesting(false)
-                }
-            }
+        let fallbackContent = makeFallbackContent(
+            flow: reminderFlow,
+            closingActionCompleted: closingActionCompleted
         )
+        content = fallbackContent
+        let hostingView = EarlyReminderHostingView(rootView: fallbackContent)
         hostingView.sizingOptions = [.intrinsicContentSize]
+        hostingView.intrinsicContentSizeDidInvalidate = { [weak self, weak panel] in
+            guard let self, let panel else { return }
+            self.refitFallbackWindowAfterLayout(panel)
+        }
         panel.contentView = hostingView
         fitReminderWindow(
             panel,
@@ -2535,7 +2679,8 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
     }
 
     private func fitReminderWindow(_ window: NSWindow?, on screen: NSScreen?) {
-        guard let window else { return }
+        guard let window,
+              window !== self.window || window === fallbackPanel else { return }
         let windowID = ObjectIdentifier(window)
         guard fittingWindowIDs.insert(windowID).inserted else { return }
         defer { fittingWindowIDs.remove(windowID) }
@@ -2543,17 +2688,122 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
         fitWindow(window, screen)
     }
 
-    private func refitRegisteredWindowAfterLayout(_ registeredWindow: NSWindow) {
-        scheduleAfterLayout { [weak self, weak registeredWindow] in
+    private func positionPrimaryWindow(_ primaryWindow: NSWindow?, on screen: NSScreen) {
+        guard let primaryWindow else { return }
+        let visibleFrame = screen.visibleFrame
+        primaryWindow.setFrameOrigin(NSPoint(
+            x: visibleFrame.midX - primaryWindow.frame.width / 2,
+            y: visibleFrame.midY - primaryWindow.frame.height / 2
+        ))
+    }
+
+    private func refitFallbackWindowAfterLayout(_ fallbackWindow: NSWindow) {
+        scheduleAfterLayout { [weak self, weak fallbackWindow] in
             guard let self,
-                  let registeredWindow,
+                  let fallbackWindow,
                   self.isPresented,
-                  self.window === registeredWindow else { return }
+                  self.fallbackPanel === fallbackWindow,
+                  self.window === fallbackWindow else { return }
             self.fitReminderWindow(
-                registeredWindow,
-                on: registeredWindow.screen
+                fallbackWindow,
+                on: fallbackWindow.screen
             )
         }
+    }
+
+    private func refitAdditionalWindowAfterLayout(
+        _ additionalWindow: NSWindow,
+        on screen: NSScreen,
+        layoutGeneration: UInt
+    ) {
+        let windowID = ObjectIdentifier(additionalWindow)
+        if var scheduledRefit = scheduledRefits[windowID],
+           scheduledRefit.generation == layoutGeneration {
+            if scheduledRefit.phase == .running {
+                scheduledRefit.needsTrailingPass = true
+                scheduledRefits[windowID] = scheduledRefit
+            }
+            return
+        }
+        scheduledRefits[windowID] = ScheduledRefit(
+            generation: layoutGeneration,
+            phase: .pending,
+            needsTrailingPass: false
+        )
+        enqueueAdditionalWindowRefit(
+            additionalWindow,
+            on: screen,
+            layoutGeneration: layoutGeneration
+        )
+    }
+
+    private func enqueueAdditionalWindowRefit(
+        _ additionalWindow: NSWindow,
+        on screen: NSScreen,
+        layoutGeneration: UInt
+    ) {
+        let windowID = ObjectIdentifier(additionalWindow)
+        scheduleAfterLayout { [weak self, weak additionalWindow] in
+            guard let self,
+                  var scheduledRefit = self.scheduledRefits[windowID],
+                  scheduledRefit.generation == layoutGeneration,
+                  scheduledRefit.phase == .pending else { return }
+            guard let additionalWindow,
+                  self.isPresented,
+                  self.windowLayoutGeneration == layoutGeneration,
+                  self.additionalWindows.contains(where: { $0 === additionalWindow }) else {
+                self.removeScheduledRefit(for: windowID, layoutGeneration: layoutGeneration)
+                return
+            }
+
+            additionalWindow.contentView?.layoutSubtreeIfNeeded()
+            let contentSize = additionalWindow.contentView?.fittingSize
+                ?? additionalWindow.contentLayoutRect.size
+            if let lastFittedContentSize = self.lastFittedContentSizes[windowID],
+               self.contentSizesAreEquivalent(contentSize, lastFittedContentSize) {
+                self.removeScheduledRefit(for: windowID, layoutGeneration: layoutGeneration)
+                return
+            }
+
+            scheduledRefit.phase = .running
+            scheduledRefit.needsTrailingPass = false
+            self.scheduledRefits[windowID] = scheduledRefit
+            self.fitReminderWindow(additionalWindow, on: screen)
+            self.lastFittedContentSizes[windowID] = contentSize
+            additionalWindow.contentView?.layoutSubtreeIfNeeded()
+            let settledContentSize = additionalWindow.contentView?.fittingSize
+                ?? additionalWindow.contentLayoutRect.size
+
+            guard let completedRefit = self.scheduledRefits[windowID],
+                  completedRefit.generation == layoutGeneration else { return }
+            if completedRefit.needsTrailingPass ||
+                !self.contentSizesAreEquivalent(contentSize, settledContentSize) {
+                self.scheduledRefits[windowID] = ScheduledRefit(
+                    generation: layoutGeneration,
+                    phase: .pending,
+                    needsTrailingPass: false
+                )
+                self.enqueueAdditionalWindowRefit(
+                    additionalWindow,
+                    on: screen,
+                    layoutGeneration: layoutGeneration
+                )
+            } else {
+                self.removeScheduledRefit(for: windowID, layoutGeneration: layoutGeneration)
+            }
+        }
+    }
+
+    private func removeScheduledRefit(
+        for windowID: ObjectIdentifier,
+        layoutGeneration: UInt
+    ) {
+        guard scheduledRefits[windowID]?.generation == layoutGeneration else { return }
+        scheduledRefits.removeValue(forKey: windowID)
+    }
+
+    private func contentSizesAreEquivalent(_ lhs: CGSize, _ rhs: CGSize) -> Bool {
+        abs(lhs.width - rhs.width) <= 0.5 && abs(lhs.height - rhs.height) <= 0.5
     }
 
     private func deactivateInteractionBarrier() {
@@ -2579,7 +2829,7 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
             NSWorkspace.shared.notificationCenter.removeObserver(workspaceInteractionObserver)
             self.workspaceInteractionObserver = nil
         }
-        windowInteractionObservers.forEach(NotificationCenter.default.removeObserver)
+        windowInteractionObservers.forEach(notificationCenter.removeObserver)
         windowInteractionObservers.removeAll()
         shieldWindows.forEach { $0.close() }
         shieldWindows.removeAll()
@@ -2614,12 +2864,7 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
               !isInteractionSuspendedForTestTools else { return }
         if isInteractionBarrierActive {
             if interactionGate.userDisabledEventTap() {
-                stopBarrierRetryMonitoring()
-                barrierLifecycle.disabledBySystem()
-                lifecycle.interactionBarrierAvailabilityChanged(false)
-                deactivateInteractionBarrier()
-                blockingMode.disableBlocking()
-                refreshFallbackPanelContent()
+                disableInteractionBarrierAfterSystemRequest()
                 return
             }
             guard let globalEventTap, CGEvent.tapIsEnabled(tap: globalEventTap) else {
@@ -2629,6 +2874,15 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
         }
         guard attemptBlockingMode() else { return }
         bringReminderToFront()
+    }
+
+    private func disableInteractionBarrierAfterSystemRequest() {
+        stopBarrierRetryMonitoring()
+        deactivateInteractionBarrier()
+        barrierLifecycle.disabledBySystem()
+        lifecycle.interactionBarrierAvailabilityChanged(false)
+        blockingMode.disableBlocking()
+        refreshFallbackPanelContent()
     }
 
     @discardableResult
@@ -2647,8 +2901,7 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
 
     private func block(_ candidate: NSWindow) {
         guard isPresented,
-              let reminderWindow = window,
-              !windowIsOwned(candidate, by: reminderWindow),
+              !windowIsOwned(candidate, byAny: managedWindows),
               !shieldWindows.contains(where: { $0 === candidate }),
               candidate.isVisible else { return }
         let identifier = ObjectIdentifier(candidate)
@@ -2661,7 +2914,7 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
     }
 
     private func createShieldWindows() {
-        shieldWindows = NSScreen.screens.map { screen in
+        shieldWindows = availableScreens().map { screen in
             let shield = NSPanel(
                 contentRect: screen.frame,
                 styleMask: [.borderless, .nonactivatingPanel],
@@ -2692,7 +2945,7 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
 
     private func startScreenObservation() {
         guard screenObserver == nil else { return }
-        screenObserver = NotificationCenter.default.addObserver(
+        screenObserver = notificationCenter.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
             queue: .main
@@ -2705,21 +2958,76 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
 
     private func stopScreenObservation() {
         if let screenObserver {
-            NotificationCenter.default.removeObserver(screenObserver)
+            notificationCenter.removeObserver(screenObserver)
             self.screenObserver = nil
         }
     }
 
-    private func screenParametersDidChange() {
-        guard isPresented, let window else { return }
-        _ = lifecycle.displayTopologyChanged(
-            displayCount: NSScreen.screens.count,
-            primaryIndex: primaryScreenIndex(for: window)
-        )
-        fitReminderWindow(window, on: window.screen ?? NSScreen.main)
-        if isInteractionBarrierActive {
-            recreateShieldWindows()
+    private func startApplicationObservation() {
+        guard applicationObserver == nil else { return }
+        applicationObserver = notificationCenter.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.bringReminderToFront()
+            }
         }
+    }
+
+    private func stopApplicationObservation() {
+        if let applicationObserver {
+            notificationCenter.removeObserver(applicationObserver)
+            self.applicationObserver = nil
+        }
+    }
+
+    private func screenParametersDidChange() {
+        guard let window,
+              isPresented || lifecycle.requiresSurfaceRecovery || lifecycle.requiresSurfaceCreation else {
+            return
+        }
+        let wasDisabledBySystemOrUser = interactionGate.userDisabledEventTap()
+        let shouldRestoreBarrier = blockingMode.shouldAttemptBlocking &&
+            !isInteractionSuspendedForTestTools &&
+            !wasDisabledBySystemOrUser
+        if wasDisabledBySystemOrUser {
+            disableInteractionBarrierAfterSystemRequest()
+        } else if isInteractionBarrierActive {
+            deactivateInteractionBarrier()
+        }
+        beginWindowLayoutGeneration()
+        let screens = availableScreens()
+        guard let displayPlan = lifecycle.displayTopologyChanged(
+            displayCount: screens.count,
+            primaryIndex: primaryScreenIndex(for: window)
+        ), lifecycle.isPresented else {
+            closeAdditionalWindows()
+            stopApplicationObservation()
+            isPresented = false
+            return
+        }
+        closeAdditionalWindows()
+        if window === fallbackPanel {
+            fitReminderWindow(window, on: screens[displayPlan.primaryIndex])
+        } else {
+            positionPrimaryWindow(window, on: screens[displayPlan.primaryIndex])
+        }
+        createAdditionalWindows(
+            using: displayPlan,
+            screens: screens,
+            layoutGeneration: windowLayoutGeneration
+        )
+        isPresented = true
+        if !isInteractionSuspendedForTestTools {
+            startApplicationObservation()
+        }
+        if shouldRestoreBarrier {
+            startBarrierRetryMonitoring()
+            _ = attemptBlockingMode()
+        }
+        bringReminderToFront()
     }
 
     private func preserveReminderFocus() {
@@ -2727,8 +3035,8 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
             guard let self,
                   self.isPresented,
                   !self.isInteractionSuspendedForTestTools else { return }
-            if windowIsOwned(NSApp.keyWindow, by: self.window) {
-                self.window?.orderFrontRegardless()
+            if windowIsOwned(NSApp.keyWindow, byAny: self.managedWindows) {
+                self.managedWindows.forEach { $0.orderFrontRegardless() }
             } else {
                 self.bringReminderToFront()
             }
@@ -2740,8 +3048,8 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
         lifecycle.applicationActivationChanged()
         let keyWindow = NSApp.keyWindow
         NSApp.activate(ignoringOtherApps: true)
-        window?.orderFrontRegardless()
-        if !windowIsOwned(keyWindow, by: window) {
+        managedWindows.forEach { $0.orderFrontRegardless() }
+        if !windowIsOwned(keyWindow, byAny: managedWindows) {
             window?.makeKey()
         }
         lifecycle.markActivated()
@@ -2749,7 +3057,7 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
 
     private func primaryScreenIndex(for window: NSWindow) -> Int? {
         guard let screen = window.screen ?? NSScreen.main else { return nil }
-        return NSScreen.screens.firstIndex { candidate in
+        return availableScreens().firstIndex { candidate in
             candidate === screen || candidate.frame == screen.frame
         }
     }
@@ -3019,6 +3327,17 @@ enum StrongAlertDisplayMetrics {
                 minimumContentHeight,
                 shortestVisibleHeight - verticalWindowAllowance
             )
+        )
+    }
+}
+
+enum EarlyReminderDisplayMetrics {
+    static let minimumContentHeight = StrongAlertDisplayMetrics.minimumContentHeight
+    static let maximumContentHeightLimit = StrongAlertDisplayMetrics.maximumContentHeightLimit
+
+    static func maximumContentHeight(visibleFrameHeights: [CGFloat]) -> CGFloat {
+        StrongAlertDisplayMetrics.maximumContentHeight(
+            visibleFrameHeights: visibleFrameHeights
         )
     }
 }

@@ -23,6 +23,20 @@ struct EarlyReminderTimingControls: View {
     }
 }
 
+struct StrongAlertTimingControls: View {
+    @Binding var repeatIntervalMinutes: Int
+
+    var body: some View {
+        Stepper(
+            InterfaceCopy.repeatEvery(repeatIntervalMinutes),
+            value: $repeatIntervalMinutes,
+            in: 1...5
+        )
+        .accessibilityLabel("Strong Alert repeat interval")
+        .accessibilityValue(InterfaceCopy.minuteDuration(repeatIntervalMinutes))
+    }
+}
+
 struct BlockingModeControls: View {
     @EnvironmentObject private var flow: CommitmentProtectionFlow
     @EnvironmentObject private var blockingPermissions: BlockingPermissionController

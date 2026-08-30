@@ -84,7 +84,7 @@ final class OnboardingStateTests: XCTestCase {
         withStateStore { store in
             let state = OnboardingState(stateStore: store)
             state.resolveInitialLaunch(hasConfiguredProtection: false)
-            state.deferUntilRequested()
+            XCTAssertTrue(state.deferUntilRequested())
 
             XCTAssertEqual(state.phase, .deferred)
             XCTAssertEqual(state.initialSurface, .menuBarOnly)
@@ -98,6 +98,62 @@ final class OnboardingStateTests: XCTestCase {
 
             XCTAssertEqual(relaunchedState.phase, .pending)
             XCTAssertEqual(relaunchedState.initialSurface, .onboarding)
+        }
+    }
+
+    func testReadinessFinishLaterRecordsLaunchChoiceAndRemainsResumable() {
+        withStateStore { store in
+            let state = OnboardingState(stateStore: store)
+            state.resolveInitialLaunch(hasConfiguredProtection: false)
+
+            XCTAssertTrue(state.deferReadinessUntilRequested())
+            XCTAssertEqual(state.phase, .deferred)
+            XCTAssertTrue(state.didChooseLaunchAtLogin)
+            XCTAssertTrue(state.needsSetup)
+            XCTAssertEqual(state.initialSurface, .menuBarOnly)
+
+            let relaunchedState = OnboardingState(stateStore: store)
+            relaunchedState.resolveInitialLaunch(hasConfiguredProtection: true)
+
+            XCTAssertEqual(relaunchedState.phase, .deferred)
+            XCTAssertTrue(relaunchedState.didChooseLaunchAtLogin)
+            XCTAssertTrue(relaunchedState.needsSetup)
+            XCTAssertEqual(relaunchedState.initialSurface, .menuBarOnly)
+
+            relaunchedState.resume()
+
+            XCTAssertEqual(relaunchedState.phase, .pending)
+            XCTAssertEqual(relaunchedState.initialSurface, .onboarding)
+        }
+    }
+
+    func testConfiguredUserCanFinishReadinessLaterBeforeLaunchChoiceMigrationCompletes() {
+        withStateStore { store in
+            let state = OnboardingState(stateStore: store)
+            state.resolveInitialLaunch(hasConfiguredProtection: true)
+
+            XCTAssertEqual(state.phase, .completed)
+            XCTAssertFalse(state.didChooseLaunchAtLogin)
+            XCTAssertTrue(state.deferReadinessUntilRequested())
+
+            XCTAssertEqual(state.phase, .deferred)
+            XCTAssertTrue(state.didChooseLaunchAtLogin)
+            XCTAssertTrue(state.needsSetup)
+            XCTAssertEqual(state.initialSurface, .menuBarOnly)
+        }
+    }
+
+    func testReadinessDeferralReportsMutationGateFailure() {
+        withStateStore { store in
+            let state = OnboardingState(
+                stateStore: store,
+                allowsPreferenceMutation: { false }
+            )
+
+            XCTAssertFalse(state.canResolveReadiness)
+            XCTAssertFalse(state.deferReadinessUntilRequested())
+            XCTAssertEqual(state.phase, .pending)
+            XCTAssertFalse(state.didChooseLaunchAtLogin)
         }
     }
 

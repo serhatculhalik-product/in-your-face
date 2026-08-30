@@ -93,11 +93,11 @@ _Avoid_: Overlap, double booking
 ## Reminder language
 
 **Early Reminder**:
-A visual reminder shown before a commitment starts, optionally with Blocking Mode. It offers Snooze, Close for now, and Stop reminders; only Stop reminders ends protection for the Occurrence.
+A visual reminder shown across the user's available displays before a commitment starts, optionally with Blocking Mode. It offers Snooze, Close for now, and Stop reminders; only Stop reminders ends protection for the Occurrence.
 _Avoid_: Warning, alert (when referring specifically to the early reminder)
 
 **Close for now**:
-The passive Early Reminder action that closes only the current surface while keeping start-time protection active for the Occurrence.
+The Early Reminder-only passive action that closes the current surface while keeping start-time protection active for the Occurrence. The Early Reminder's native window Close performs this action.
 _Avoid_: Dismiss, Dismiss for now, Got it
 
 **Unverified Reminder**:
@@ -105,7 +105,7 @@ A reminder retained from the last fresh calendar data after that account becomes
 _Avoid_: Cached reminder, stale reminder
 
 **Strong Alert**:
-The urgent start-time intervention that presents the next action across the user's available displays. It is not suppressed by macOS Focus modes or by Full-Screen Sharing, window sharing, or app sharing; an explicit Pause still applies. Closing its surface without an explicit action does not end protection; it returns on the Repeat Interval.
+The urgent start-time intervention that presents the next action across the user's available displays. It is not suppressed by macOS Focus modes or by Full-Screen Sharing, window sharing, or app sharing; an explicit Pause still applies. Its native window close control is unavailable and native close attempts are ignored. The explicit Got it action closes only the current surface while protection stays active, and the Strong Alert returns on the Repeat Interval.
 _Avoid_: Notification, popup, takeover (as the canonical product term)
 
 **Overdue Commitment**:
@@ -133,7 +133,7 @@ A user-selected five-, ten-, fifteen-, or thirty-minute quiet period applied fro
 _Avoid_: Delay, postpone
 
 **Repeat Interval**:
-The global delay between post-start Strong Alerts. It ranges from one to five minutes, defaults to one minute, and remains enabled until Join, Handled, Dismiss, Pause, or the commitment's scheduled end.
+The global delay between post-start Strong Alerts. It ranges from one to five minutes, defaults to one minute, and can be chosen during readiness or later in Settings. Repetition remains enabled until Join, Handled, Dismiss, Pause, or the commitment's scheduled end.
 _Avoid_: Reminder frequency, retry interval
 
 **Protection Activity**:
@@ -167,7 +167,7 @@ An explicit, default-off preference that makes timed out-of-office events eligib
 _Avoid_: OOO alerts, absence reminder
 
 **Launch at Login**:
-An explicit, default-off preference that lets the app resume protection after login when account authorization and coverage remain valid. The user can enable or disable it during onboarding or later in Settings.
+The preference that lets the app resume protection after login when account authorization and coverage remain valid. Start at Login is presented on by default during first-time readiness, but it is a staged choice: merely opening readiness does not change the macOS Login Item. Finish Setup or Finish Later applies the choice, the user can opt out before then, and the preference remains changeable in Settings.
 _Avoid_: Always on, automatic startup (without user choice)
 
 **Pause**:

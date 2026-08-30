@@ -169,7 +169,11 @@ final class WindowFrameFitterTests: XCTestCase {
         XCTAssertLessThanOrEqual(panel.frame.height, allowedFrame.height + 0.5)
     }
 
-    func testEarlyReminderSchedulesASecondFitAfterWindowRegistration() async {
+    func testEarlyReminderPrimaryKeepsSwiftUIAsItsSoleSizeOwner() async {
+        guard let screen = NSScreen.screens.first else {
+            XCTFail("Early Reminder window fitting requires a connected display.")
+            return
+        }
         let registry = WindowRegistry()
         var scheduledFit: (@MainActor () -> Void)?
         var fittedWindows: [NSWindow] = []
@@ -180,7 +184,8 @@ final class WindowFrameFitterTests: XCTestCase {
                 if let window {
                     fittedWindows.append(window)
                 }
-            }
+            },
+            availableScreens: { [screen] }
         )
         let panel = NSPanel(
             contentRect: CGRect(x: 0, y: 0, width: 360, height: 300),
@@ -196,26 +201,72 @@ final class WindowFrameFitterTests: XCTestCase {
         let flow = await makeWindowFittingEarlyReminderFlow()
         controller.present(
             flow: flow,
+            content: AnyView(Text("Early Reminder")),
             reopen: {},
             closingActionCompleted: { _ in }
         )
 
         registry.register(panel, for: .earlyReminder)
 
-        XCTAssertEqual(fittedWindows.count, 1)
-        XCTAssertTrue(fittedWindows.first === panel)
-        let deferredFit = scheduledFit
-        XCTAssertNotNil(deferredFit)
+        XCTAssertTrue(panel.isVisible)
+        XCTAssertTrue(fittedWindows.isEmpty)
+        XCTAssertNil(
+            scheduledFit,
+            "The SwiftUI Scene owns primary sizing, so the controller must not schedule a layout-forcing refit."
+        )
+    }
 
-        deferredFit?()
+    func testEarlyReminderCreatesAReplicaForEveryAdditionalDisplay() async throws {
+        _ = NSApplication.shared
+        let screen = try XCTUnwrap(NSScreen.screens.first)
+        let registry = WindowRegistry()
+        var fittedWindows: [NSWindow] = []
+        let controller = EarlyReminderWindowController(
+            windowRegistry: registry,
+            scheduleAfterLayout: { _ in },
+            fitWindow: { window, _ in
+                if let window {
+                    fittedWindows.append(window)
+                }
+            },
+            availableScreens: { [screen, screen] }
+        )
+        let primaryWindow = NSPanel(
+            contentRect: CGRect(x: 0, y: 0, width: 360, height: 300),
+            styleMask: [.titled, .closable, .utilityWindow],
+            backing: .buffered,
+            defer: false
+        )
+        primaryWindow.isReleasedWhenClosed = false
+        controller.suspendInteractionForTestTools()
+        defer {
+            controller.close()
+            primaryWindow.close()
+        }
 
-        XCTAssertEqual(fittedWindows.count, 2)
-        XCTAssertTrue(fittedWindows.last === panel)
+        let flow = await makeWindowFittingEarlyReminderFlow()
+        controller.present(
+            flow: flow,
+            content: AnyView(Text("Early Reminder")),
+            reopen: {},
+            closingActionCompleted: { _ in }
+        )
+
+        registry.register(primaryWindow, for: .earlyReminder)
+
+        let uniqueFittedWindows = Set(fittedWindows.map(ObjectIdentifier.init))
+        XCTAssertEqual(
+            uniqueFittedWindows.count,
+            1,
+            "Only the additional-display replica should use the AppKit content fitter."
+        )
+        XCTAssertEqual(controller.managedWindows.count, 2)
+        XCTAssertTrue(controller.managedWindows.contains(where: { $0 === primaryWindow }))
     }
 }
 
 @MainActor
-private func makeWindowFittingEarlyReminderFlow() async -> CommitmentProtectionFlow {
+func makeWindowFittingEarlyReminderFlow() async -> CommitmentProtectionFlow {
     let now = Date(timeIntervalSince1970: 1_000_000)
     let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
     let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)

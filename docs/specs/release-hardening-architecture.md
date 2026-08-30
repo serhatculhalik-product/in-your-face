@@ -10,7 +10,7 @@ Second, the user-visible alert promise crosses SwiftUI, AppKit windows, multi-di
 
 ## Solution
 
-Harden the existing architecture without adding product behavior.
+Harden the existing architecture while limiting product behavior changes to three UAT corrections: Strong Alert native closing, Early Reminder multi-display coverage, and Early Reminder content-fit sizing.
 
 Calendar refreshes and recovery requests should pass through one internal coordination path that serializes or coalesces overlapping work while preserving the current calendar snapshot, coverage, recovery, and alert behavior. The existing `CommitmentProtectionFlow` remains the highest external seam and continues to own the observable Commitment Protection behavior.
 
@@ -32,9 +32,9 @@ The release must preserve the accepted product model: Google Calendar remains au
 10. As a user, I want Blocking Mode to fall back to a visible visual reminder when macOS permissions or the interaction barrier are unavailable, so that missing permissions never remove the protection experience.
 11. As a user, I want Blocking Mode to stop blocking when macOS or the user disables the interaction barrier, so that the app does not trap interaction after the system has withdrawn permission.
 12. As a user, I want an Early Reminder to recover if its normal window disappears during presentation, so that the reminder does not silently vanish while protection remains active.
-13. As a user, I want a Strong Alert to cover every available display, so that display topology changes cannot leave a working display without the alert.
-14. As a user, I want an active Strong Alert to remain visible when the app becomes active, inactive, or another display is connected, so that ordinary window lifecycle events do not dismiss protection.
-15. As a user, I want closing an alert surface without an explicit product action to keep protection active, so that platform window cleanup is not mistaken for Join, Handled, Dismiss, or Stop reminders.
+13. As a user, I want both Early Reminder and Strong Alert to cover every available display, so that display topology changes cannot leave a working display without the current reminder.
+14. As a user, I want an active reminder to remain visible when the app becomes active, inactive, or another display is connected, so that ordinary window lifecycle events do not dismiss protection.
+15. As a user, I want native window closing to act as Close for now only on an Early Reminder, while a Strong Alert exposes no native close control and ignores native close attempts, so that the urgent surface cannot be cleared accidentally.
 16. As a user, I want Join, Stop reminders, Got it, Snooze, Pause, Restore Protection, and primary-conflict selection to continue using the same Commitment Protection decisions regardless of which presentation surface invoked them, so that fallback and normal surfaces cannot diverge in domain behavior.
 17. As a user, I want Strong Alerts to remain visible during Full-Screen Sharing, window sharing, and app sharing, so that the release-hardening work does not revive the superseded sharing-privacy behavior.
 18. As a user, I want same-start Commitment Conflicts to remain equal until I choose a primary, so that presentation coordination does not silently select a commitment.
@@ -59,7 +59,7 @@ The release must preserve the accepted product model: Google Calendar remains au
 - The production AppKit implementation remains the production Adapter for the platform presentation seam. Tests may provide deterministic stand-ins for display and window lifecycle conditions.
 - Desired Blocking Mode setting, runtime availability, and active interaction barrier are distinct states. The interface between the flow and the presentation Adapter must make that distinction explicit, so a failed or user-disabled barrier falls back to normal visual presentation without silently changing the persisted user preference.
 - Normal Early Reminder, fallback Early Reminder, normal Strong Alert, and same-start Strong Alert Conflict surfaces may remain separate presentations, but all product actions must continue to delegate to the same Commitment Protection flow decisions.
-- No public product behavior is intentionally changed by this issue.
+- Public product behavior changes are limited to the Strong Alert native-close correction above, extending Early Reminder coverage to every available display, and replacing its oversized fixed-height presentation with content-fit sizing bounded by the available display. The sizing correction is a layout bug fix, not a visual redesign.
 - No new calendar provider, custom reminder, mobile fallback, team policy, analytics surface, or Transition Support behavior is introduced.
 - No broad split of `CommitmentProtectionFlow`, no broad split of the SwiftUI application file, and no cleanup of legacy persisted fields is required for this issue.
 
@@ -69,13 +69,13 @@ The release must preserve the accepted product model: Google Calendar remains au
 - Refresh-coordination tests should use the existing calendar Adapter test doubles and controllable time. They should cover overlapping refresh requests, newer snapshots superseding older snapshots, a queued request after an in-flight refresh, recovery bursts, account-specific failure, and preservation of current activity and alert behavior.
 - The existing stale-refresh race test is prior art for newest-result-wins behavior. New tests should extend that behavior rather than asserting private task counts or implementation-specific scheduler details.
 - Recovery tests should cover known ongoing Commitments becoming Overdue Commitments, Untracked Past Occurrences remaining quiet, ended Commitments remaining quiet, and current Calendar state winning over saved state.
-- Presentation-seam tests should use deterministic display and window lifecycle stand-ins. They should cover no displays, one display, multiple displays, invalid primary display selection, display topology changes, application activation changes, normal close, programmatic close, surface disappearance, fallback presentation, and recovery from fallback.
+- Presentation-seam tests should use deterministic display and window lifecycle stand-ins. They should cover no displays, one display, multiple displays, invalid primary display selection, display topology changes, application activation changes, Early Reminder native Close mapping to Close for now, Strong Alert native-Close absence and veto on primary and replica displays, Got it temporary close and repeat scheduling, and unexpected or programmatic surface disappearance and recovery.
 - Blocking Mode tests should cover the normal visual fallback when permissions are missing, activation when permissions become available, deactivation when the barrier is disabled by the user or system, restoration of prior window interaction state, and cleanup after close.
-- Product action tests should verify that normal and fallback presentation paths produce the same observable Flow decisions for Join, Stop reminders, Got it, Snooze, Pause, Restore Protection, and same-start primary selection.
+- Product action tests should verify that normal and fallback presentation paths produce the same observable Flow decisions for Join, Stop reminders, Got it, Snooze, Pause, Restore Protection, and same-start primary selection. Got it must close only the current Strong Alert surface while protection remains active and its repeat stays scheduled.
 - Display-sharing tests should continue to verify that visual reminders remain visible during Full-Screen Sharing, window sharing, and app sharing. The test must preserve ADR-0004 rather than reintroducing ADR-0002 behavior.
-- The existing `StrongAlertDisplayPlan` tests remain the pure calculation tests for display coverage. They should not be replaced by AppKit-heavy tests.
+- The existing `StrongAlertDisplayPlan` tests remain the pure calculation tests for display coverage across both reminder stages. They should not be replaced by AppKit-heavy tests.
 - The existing Commitment Protection flow suite remains the primary regression suite. Tests must continue to avoid asserting private state storage or the number of internal modules.
-- Real macOS Accessibility/Input Monitoring permissions, physical multi-display topology, screen sharing, sleep/wake, and lock/unlock behavior remain manual release QA because they depend on the Window Server and user session.
+- Real macOS Accessibility/Input Monitoring permissions, physical multi-display topology, Display Sharing, sleep/wake, and lock/unlock behavior remain manual release QA because they depend on the Window Server and user session.
 - The final implementation must pass the existing suite and build before the issue is closed, with no implementation behavior changes outside this spec.
 
 ## Out of Scope
@@ -85,14 +85,14 @@ The release must preserve the accepted product model: Google Calendar remains au
 - Replacing the existing `GoogleCalendarConnecting` Adapter seam
 - Deleting legacy persisted fields, singular meeting-link compatibility, or legacy activity enum values
 - Replacing UserDefaults persistence with a new storage system
-- Redesigning Setup, Menu Bar, Early Reminder, Strong Alert, or Test Alert visuals
+- Redesigning Setup, Menu Bar, Early Reminder, Strong Alert, or Test Alert visuals; the scoped Early Reminder content-fit correction is not a redesign
 - Adding additional calendar providers or network clients
 - Adding analytics, attendance verification, or a passive Missed Commitment surface
 - Making Blocking Mode mandatory or changing the default visual reminder behavior
 
 ## Further Notes
 
-- This is release hardening, not a feature issue. The implementation should be conservative and incremental.
+- This is release hardening with the three bounded UAT corrections above, not a broad feature issue. The implementation should be conservative and incremental.
 - The architecture audit found the broad `CommitmentProtectionFlow` split valuable but too risky for this release. A later change may extract a pure reconciliation module behind the existing Flow seam once the product behavior is stable.
 - The architecture audit found the legacy compatibility state intentional for the first release. Its removal should wait for an explicit persisted-state migration decision.
 - The issue should be closed only after the observable behavior is covered by tests, platform-dependent cases have passed manual QA, and no `Sources/` or `Tests/` changes outside this scope are included.

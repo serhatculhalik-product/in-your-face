@@ -57,6 +57,10 @@ final class OnboardingState: ObservableObject {
         isInitialLaunchResolved && (!isCompleted || !didChooseLaunchAtLogin)
     }
 
+    var canResolveReadiness: Bool {
+        allowsPreferenceMutation()
+    }
+
     func resolveInitialLaunch(hasConfiguredProtection: Bool) {
         guard allowsPreferenceMutation() else { return }
         guard !isInitialLaunchResolved else { return }
@@ -79,11 +83,24 @@ final class OnboardingState: ObservableObject {
         persistPhase()
     }
 
-    func deferUntilRequested() {
-        guard allowsPreferenceMutation() else { return }
-        guard !isCompleted else { return }
+    @discardableResult
+    func deferUntilRequested() -> Bool {
+        guard allowsPreferenceMutation() else { return false }
+        guard !isCompleted else { return false }
         phase = .deferred
         persistPhase()
+        return true
+    }
+
+    @discardableResult
+    func deferReadinessUntilRequested() -> Bool {
+        guard allowsPreferenceMutation() else { return false }
+        guard !isCompleted || !didChooseLaunchAtLogin else { return false }
+        phase = .deferred
+        didChooseLaunchAtLogin = true
+        stateStore.set(true, forKey: Self.launchAtLoginChoiceKey)
+        persistPhase()
+        return true
     }
 
     @discardableResult

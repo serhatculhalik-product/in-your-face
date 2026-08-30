@@ -38,6 +38,7 @@ struct OnboardingReconnectPresentation: Equatable {
         preferredAccountID: String?,
         connectionError: String?
     ) -> Self {
+        let protectionSummary = OnboardingProtectionSummary.make(coverages: coverages)
         let accounts = coverages.map { coverage in
             let requiresReconnect = coverage.connectionState == .reconnectRequired ||
                 coverage.health == .reconnectRequired
@@ -60,20 +61,11 @@ struct OnboardingReconnectPresentation: Equatable {
             $0.id == preferredAccountID && $0.requiresReconnect
         }
         let currentTarget = preferredTarget ?? accounts.first(where: \.requiresReconnect)
-        let activelyProtectedCalendarCount = coverages.reduce(into: 0) { count, coverage in
-            guard coverage.isProtectionConfirmed,
-                  coverage.connectionState == .connected,
-                  coverage.health == .fresh else {
-                return
-            }
-            count += coverage.selectedCalendarIDs.count
-        }
-
         return Self(
             accounts: accounts,
             connectedAccountCount: accounts.filter(\.isConnected).count,
             savedCalendarCount: accounts.reduce(0) { $0 + $1.savedCalendarCount },
-            activelyProtectedCalendarCount: activelyProtectedCalendarCount,
+            activelyProtectedCalendarCount: protectionSummary.activeCalendarCount,
             currentTargetAccountID: currentTarget?.id,
             connectionError: connectionError
         )
