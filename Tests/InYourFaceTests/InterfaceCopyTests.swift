@@ -151,7 +151,7 @@ final class InterfaceCopyTests: XCTestCase {
         XCTAssertTrue(InterfaceCopy.unverifiedReminderDetail(locale: locale).contains("may have changed"))
     }
 
-    func testAccountLabelsSurviveBlankLegacyIdentityAndMixedScripts() {
+    func testAccountLabelsSurviveBlankLegacyIdentityAndUnicode() {
         XCTAssertEqual(
             InterfaceCopy.connectedAccountLabel(email: "   ", displayName: "  "),
             "Google Account"
@@ -159,16 +159,6 @@ final class InterfaceCopyTests: XCTestCase {
         XCTAssertEqual(
             InterfaceCopy.connectedAccountLabel(email: "", displayName: "仕事 👋"),
             "仕事 👋"
-        )
-        let mixedDirectionScope = InterfaceCopy.calendarActivityScope(
-            calendarName: "تقويم العمل",
-            accountLabel: "person@example.com"
-        )
-        XCTAssertEqual(
-            mixedDirectionScope
-                .replacingOccurrences(of: "\u{2068}", with: "")
-                .replacingOccurrences(of: "\u{2069}", with: ""),
-            "تقويم العمل · person@example.com"
         )
     }
 

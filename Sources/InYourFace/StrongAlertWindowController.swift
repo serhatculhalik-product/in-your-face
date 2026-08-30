@@ -12,6 +12,13 @@ private final class StrongAlertHostingView: NSHostingView<AnyView> {
 }
 
 @MainActor
+private final class StrongAlertReplicaPanel: NSPanel {
+    override func accessibilityChildren() -> [Any]? {
+        []
+    }
+}
+
+@MainActor
 final class StrongAlertWindowController: NSObject, NSWindowDelegate {
     static let shared = StrongAlertWindowController()
 
@@ -223,7 +230,7 @@ final class StrongAlertWindowController: NSObject, NSWindowDelegate {
                 rootView: AnyView(content.accessibilityHidden(true))
             )
             hostingView.sizingOptions = [.intrinsicContentSize]
-            let panel = NSPanel(
+            let panel = StrongAlertReplicaPanel(
                 contentRect: NSRect(x: 0, y: 0, width: 460, height: 330),
                 styleMask: [.titled, .utilityWindow],
                 backing: .buffered,

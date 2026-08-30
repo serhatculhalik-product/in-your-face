@@ -1,4 +1,5 @@
 import AppKit
+import CommitmentProtection
 import SwiftUI
 import XCTest
 @testable import InYourFace
@@ -90,6 +91,11 @@ final class StrongAlertWindowControllerTests: XCTestCase {
         XCTAssertFalse(replicaShouldClose)
         XCTAssertTrue(primaryWindow.isVisible)
         XCTAssertTrue(replicaWindow.isVisible)
+        XCTAssertFalse(replicaWindow.isAccessibilityElement())
+        XCTAssertTrue(
+            replicaWindow.accessibilityChildren()?.isEmpty ?? true,
+            "A Strong Alert replica must not announce provenance from a second accessibility tree."
+        )
 
         let standardButtons: [(type: NSWindow.ButtonType, name: String)] = [
             (.closeButton, "Close"),
@@ -494,7 +500,18 @@ final class StrongAlertWindowControllerTests: XCTestCase {
             StrongAlertView(
                 title: "Customer review",
                 timing: "Starting now",
-                detail: "alex@example.com · work@example.com",
+                provenance: ProvenancePresentation(
+                    sources: [
+                        ProtectionProvenanceSource(
+                            accountID: "account-1",
+                            accountEmail: "alex@example.com",
+                            accountDisplayName: "Alex",
+                            calendarID: "calendar-1",
+                            calendarName: "Work"
+                        )
+                    ],
+                    locale: Locale(identifier: "en_US")
+                ),
                 repeatConsequence: "Closes this alert now. Protection stays active and Strong Alert returns in 1 minute unless you Join, choose I joined another way, Stop reminders, or Pause All Protection.",
                 primaryActionTitle: "Join",
                 primaryAction: {},

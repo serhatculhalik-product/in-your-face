@@ -3,6 +3,96 @@ import XCTest
 @testable import InYourFace
 
 final class OnboardingProtectionSummaryTests: XCTestCase {
+    func testDuplicateCalendarMetadataUsesTheLastValueWithoutCrashing() throws {
+        let summary = OnboardingProtectionSummary.make(coverages: [
+            makeCoverage(
+                id: "work",
+                calendars: [
+                    ("calendar", "Old name"),
+                    ("calendar", "Current name"),
+                ],
+                confirmedCalendarIDs: ["calendar"]
+            )
+        ])
+
+        XCTAssertEqual(
+            try XCTUnwrap(summary.accountGroups.first?.calendarsText),
+            "Monitored Calendar: Current name"
+        )
+    }
+
+    func testSameNamedCalendarsAcrossAccountsHaveVisibleAndAccessibleAccountQualification() throws {
+        let summary = OnboardingProtectionSummary.make(coverages: [
+            makeCoverage(
+                id: "work-account",
+                email: "work@example.com",
+                calendars: [("work-calendar", "Team")],
+                confirmedCalendarIDs: ["work-calendar"]
+            ),
+            makeCoverage(
+                id: "personal-account",
+                email: "personal@example.com",
+                calendars: [("personal-calendar", "Team")],
+                confirmedCalendarIDs: ["personal-calendar"]
+            ),
+        ])
+
+        XCTAssertEqual(
+            summary.accountGroups.map(\.accountText),
+            [
+                "Google Account: personal@example.com",
+                "Google Account: work@example.com",
+            ]
+        )
+        XCTAssertEqual(
+            summary.accountGroups.map(\.calendarsText),
+            [
+                "Monitored Calendar: Team",
+                "Monitored Calendar: Team",
+            ]
+        )
+        XCTAssertEqual(
+            summary.accountGroups.map(\.accessibilityDescription),
+            [
+                "Monitored Calendar Team, Google Account personal@example.com",
+                "Monitored Calendar Team, Google Account work@example.com",
+            ]
+        )
+    }
+
+    func testIdenticalVisibleSourcesReceiveStableCrossAccountOrdinals() throws {
+        let summary = OnboardingProtectionSummary.make(coverages: [
+            makeCoverage(
+                id: "z-account",
+                email: "same@example.com",
+                calendars: [("team", "Team")],
+                confirmedCalendarIDs: ["team"]
+            ),
+            makeCoverage(
+                id: "a-account",
+                email: "same@example.com",
+                calendars: [("team", "Team")],
+                confirmedCalendarIDs: ["team"]
+            ),
+        ])
+
+        XCTAssertEqual(summary.accountGroups.map(\.id), ["a-account", "z-account"])
+        XCTAssertEqual(
+            summary.accountGroups.map(\.calendarsText),
+            [
+                "Monitored Calendar: Team (1 of 2)",
+                "Monitored Calendar: Team (2 of 2)",
+            ]
+        )
+        XCTAssertEqual(
+            summary.accountGroups.map(\.accessibilityDescription),
+            [
+                "Monitored Calendar Team, Google Account same@example.com, 1 of 2",
+                "Monitored Calendar Team, Google Account same@example.com, 2 of 2",
+            ]
+        )
+    }
+
     func testFreshAccountsGroupOnlyConfirmedCalendarsAndCountActiveProtection() throws {
         let summary = OnboardingProtectionSummary.make(coverages: [
             makeCoverage(
@@ -30,11 +120,11 @@ final class OnboardingProtectionSummaryTests: XCTestCase {
         XCTAssertEqual(summary.configuredCalendarCount, 3)
         XCTAssertEqual(summary.accountGroups.map(\.id), ["personal", "work"])
         XCTAssertEqual(
-            try XCTUnwrap(summary.accountGroups.first { $0.id == "work" }).calendars.map(\.id),
+            try XCTUnwrap(summary.accountGroups.first { $0.id == "work" }).calendarIDs,
             ["work-primary", "work-shared"]
         )
         XCTAssertEqual(
-            try XCTUnwrap(summary.accountGroups.first { $0.id == "personal" }).calendars.map(\.id),
+            try XCTUnwrap(summary.accountGroups.first { $0.id == "personal" }).calendarIDs,
             ["personal-main"]
         )
     }
@@ -53,9 +143,8 @@ final class OnboardingProtectionSummaryTests: XCTestCase {
         ])
 
         let group = try XCTUnwrap(summary.accountGroups.first)
-        XCTAssertEqual(group.calendars, [
-            .init(id: "confirmed", name: "Existing")
-        ])
+        XCTAssertEqual(group.calendarIDs, ["confirmed"])
+        XCTAssertEqual(group.calendarsText, "Monitored Calendar: Existing")
         XCTAssertEqual(summary.activeCalendarCount, 1)
     }
 
@@ -81,11 +170,12 @@ final class OnboardingProtectionSummaryTests: XCTestCase {
         ])
 
         XCTAssertEqual(summary.accountGroups.map(\.id), ["a-account", "z-account"])
-        let calendars = try XCTUnwrap(
+        let group = try XCTUnwrap(
             summary.accountGroups.first { $0.id == "z-account" }
-        ).calendars
-        XCTAssertEqual(calendars.map(\.id), ["alpha", "a-team", "z-team", "zulu"])
-        XCTAssertEqual(calendars.filter { $0.name == "Team" }.count, 2)
+        )
+        XCTAssertEqual(group.calendarIDs, ["alpha", "a-team", "z-team", "zulu"])
+        let calendars = try XCTUnwrap(group.standardPresentation.calendars)
+        XCTAssertEqual(calendars.filter { $0.calendarLabel == "Team" }.count, 2)
     }
 
     func testNonFreshAndReconnectCoveragesKeepConfirmedGroupsButDoNotCountAsActive() throws {
@@ -118,7 +208,7 @@ final class OnboardingProtectionSummaryTests: XCTestCase {
         XCTAssertEqual(Set(summary.accountGroups.map(\.id)), [
             "checking", "fresh", "reconnect", "stale", "unavailable"
         ])
-        XCTAssertTrue(summary.accountGroups.allSatisfy { $0.calendars.count == 1 })
+        XCTAssertTrue(summary.accountGroups.allSatisfy { $0.calendarIDs.count == 1 })
         XCTAssertEqual(summary.activeCalendarCount, 1)
         XCTAssertEqual(
             try XCTUnwrap(summary.accountGroups.first { $0.id == "fresh" }).isActivelyProtected,
@@ -142,11 +232,12 @@ final class OnboardingProtectionSummaryTests: XCTestCase {
             )
         ])
 
-        let calendars = try XCTUnwrap(summary.accountGroups.first).calendars
-        XCTAssertEqual(
-            calendars.first { $0.id == "missing" },
-            .init(id: "missing", name: "Unavailable calendar")
+        let group = try XCTUnwrap(summary.accountGroups.first)
+        let calendars = try XCTUnwrap(group.standardPresentation.calendars)
+        let unavailable = try XCTUnwrap(
+            calendars.first { $0.id.calendarID == "missing" }
         )
+        XCTAssertEqual(unavailable.calendarLabel, "Unavailable calendar")
     }
 
     private func makeCoverage(

@@ -712,6 +712,18 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertTrue(flow.confirmProtection())
         await flow.refreshCommitmentProtection(at: now)
         XCTAssertEqual(flow.strongAlertConflict?.commitments.count, 2)
+        XCTAssertEqual(
+            flow.strongAlertProvenanceSources(for: secondCommitment),
+            [
+                ProtectionProvenanceSource(
+                    accountID: secondAccount.id,
+                    accountEmail: secondAccount.email,
+                    accountDisplayName: secondAccount.displayName,
+                    calendarID: secondCalendar.id,
+                    calendarName: secondCalendar.name
+                )
+            ]
+        )
 
         let didDisconnect = await flow.disconnectGoogleAccount(accountID: firstAccount.id)
         XCTAssertTrue(didDisconnect)
@@ -1279,6 +1291,25 @@ final class CommitmentProtectionFlowTests: XCTestCase {
             flow.activityLog.filter { $0.kind == .earlyReminderShown }.count,
             1
         )
+        XCTAssertEqual(
+            flow.activityLog.first { $0.kind == .earlyReminderShown }?.provenanceSources,
+            [
+                ProtectionProvenanceSource(
+                    accountID: account.id,
+                    accountEmail: account.email,
+                    accountDisplayName: account.displayName,
+                    calendarID: calendar.id,
+                    calendarName: calendar.name
+                ),
+                ProtectionProvenanceSource(
+                    accountID: account.id,
+                    accountEmail: account.email,
+                    accountDisplayName: account.displayName,
+                    calendarID: calendar.id,
+                    calendarName: calendar.name
+                ),
+            ]
+        )
         let encodedActivity = try JSONEncoder().encode(flow.activityLog)
         XCTAssertFalse(
             String(decoding: encodedActivity, as: UTF8.self)
@@ -1407,6 +1438,41 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         await flow.refreshCommitmentProtection(at: now)
 
         XCTAssertEqual(flow.strongAlertMeetingLinkOptions, [meetingURL])
+        XCTAssertEqual(
+            flow.strongAlertProvenanceSources(for: firstRepresentation),
+            [
+                ProtectionProvenanceSource(
+                    accountID: secondAccount.id,
+                    accountEmail: secondAccount.email,
+                    accountDisplayName: secondAccount.displayName,
+                    calendarID: secondCalendar.id,
+                    calendarName: secondCalendar.name
+                ),
+                ProtectionProvenanceSource(
+                    accountID: firstAccount.id,
+                    accountEmail: firstAccount.email,
+                    accountDisplayName: firstAccount.displayName,
+                    calendarID: firstCalendar.id,
+                    calendarName: firstCalendar.name
+                ),
+            ]
+        )
+        let strongAlertActivityID = flow.activityLog.first {
+            $0.kind == .strongAlertShown
+        }?.id
+        XCTAssertNotNil(strongAlertActivityID)
+        XCTAssertTrue(
+            flow.activities(
+                forCalendarID: firstCalendar.id,
+                accountID: firstAccount.id
+            ).contains { $0.id == strongAlertActivityID }
+        )
+        XCTAssertTrue(
+            flow.activities(
+                forCalendarID: secondCalendar.id,
+                accountID: secondAccount.id
+            ).contains { $0.id == strongAlertActivityID }
+        )
         XCTAssertTrue(flow.openStrongAlertMeetingLink { $0 == meetingURL })
         await flow.refreshCommitmentProtection(at: now.addingTimeInterval(1))
         XCTAssertFalse(flow.isStrongAlertPresented)
@@ -1564,8 +1630,29 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertTrue(flow.isStrongAlertPresented)
         XCTAssertTrue(flow.isStrongAlertUnverified)
         let strongAlertActivity = flow.activityLog.first { $0.kind == .strongAlertShown }
-        XCTAssertTrue(strongAlertActivity?.detail.contains(firstAccount.email) == true)
-        XCTAssertTrue(strongAlertActivity?.detail.contains(secondAccount.email) == true)
+        XCTAssertEqual(
+            strongAlertActivity?.detail,
+            "Customer review copy needs attention now."
+        )
+        XCTAssertEqual(
+            strongAlertActivity?.provenanceSources,
+            [
+                ProtectionProvenanceSource(
+                    accountID: secondAccount.id,
+                    accountEmail: secondAccount.email,
+                    accountDisplayName: secondAccount.displayName,
+                    calendarID: secondCalendar.id,
+                    calendarName: secondCalendar.name
+                ),
+                ProtectionProvenanceSource(
+                    accountID: firstAccount.id,
+                    accountEmail: firstAccount.email,
+                    accountDisplayName: firstAccount.displayName,
+                    calendarID: firstCalendar.id,
+                    calendarName: firstCalendar.name
+                ),
+            ]
+        )
     }
 
     func testSimilarCommitmentsWithoutSharedMeetingLinkRemainSeparate() async {
@@ -2146,7 +2233,18 @@ final class CommitmentProtectionFlowTests: XCTestCase {
             flow.strongAlertTimingText(for: commitment, at: now),
             "Overdue · started 2 minutes ago"
         )
-        XCTAssertEqual(flow.strongAlertContextText(for: commitment), "Work · alex@example.com")
+        XCTAssertEqual(
+            flow.strongAlertProvenanceSources(for: commitment),
+            [
+                ProtectionProvenanceSource(
+                    accountID: account.id,
+                    accountEmail: account.email,
+                    accountDisplayName: account.displayName,
+                    calendarID: calendar.id,
+                    calendarName: calendar.name
+                )
+            ]
+        )
     }
 
     func testNormalAndFallbackSurfaceClearingLeavesExplicitActionPathActive() async {
@@ -5172,6 +5270,83 @@ final class CommitmentProtectionFlowTests: XCTestCase {
         XCTAssertFalse(personalActivities.contains { $0.calendarID == workCalendar.id })
     }
 
+    func testLegacyProtectionActivitySynthesizesOneProvenanceSource() throws {
+        struct LegacyProtectionActivity: Encodable {
+            let id: UUID
+            let occurredAt: Date
+            let actor: ProtectionActivityActor
+            let kind: ProtectionActivityKind
+            let title: String
+            let detail: String
+            let accountID: String
+            let accountEmail: String
+            let calendarID: String?
+            let calendarName: String?
+        }
+
+        let legacyActivity = LegacyProtectionActivity(
+            id: UUID(),
+            occurredAt: Date(timeIntervalSince1970: 1_000_000),
+            actor: .system,
+            kind: .strongAlertShown,
+            title: "Strong Alert shown",
+            detail: "Customer review needs attention now.",
+            accountID: "account-1",
+            accountEmail: "alex@example.com",
+            calendarID: "calendar-1",
+            calendarName: "Work"
+        )
+
+        let decoded = try JSONDecoder().decode(
+            ProtectionActivity.self,
+            from: JSONEncoder().encode(legacyActivity)
+        )
+
+        XCTAssertNil(decoded.provenanceSources)
+        XCTAssertEqual(
+            decoded.resolvedProvenanceSources,
+            [
+                ProtectionProvenanceSource(
+                    accountID: "account-1",
+                    accountEmail: "alex@example.com",
+                    accountDisplayName: "",
+                    calendarID: "calendar-1",
+                    calendarName: "Work"
+                )
+            ]
+        )
+
+        let legacyAccountActivity = LegacyProtectionActivity(
+            id: UUID(),
+            occurredAt: Date(timeIntervalSince1970: 1_000_001),
+            actor: .user,
+            kind: .accountDisconnected,
+            title: "Google Calendar disconnected",
+            detail: "Google access was revoked.",
+            accountID: "account-1",
+            accountEmail: "alex@example.com",
+            calendarID: nil,
+            calendarName: nil
+        )
+        let decodedAccountActivity = try JSONDecoder().decode(
+            ProtectionActivity.self,
+            from: JSONEncoder().encode(legacyAccountActivity)
+        )
+
+        XCTAssertEqual(
+            decodedAccountActivity.resolvedProvenanceSources,
+            [
+                ProtectionProvenanceSource(
+                    accountID: "account-1",
+                    accountEmail: "alex@example.com",
+                    accountDisplayName: "",
+                    calendarID: nil,
+                    calendarName: nil
+                )
+            ]
+        )
+    }
+
     func testLegacyCalendarSelectionActivityIsAttributedAfterRelaunch() async throws {
         let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
         let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
@@ -5487,6 +5662,23 @@ final class CommitmentProtectionFlowTests: XCTestCase {
                 .compactMap(\.accountEmail)
         )
         XCTAssertEqual(connectedAccountEmails, [firstAccount.email, secondAccount.email])
+        for account in [firstAccount, secondAccount] {
+            let activity = flow.activityLog.first {
+                $0.kind == .accountConnected && $0.accountID == account.id
+            }
+            XCTAssertEqual(
+                activity?.provenanceSources,
+                [
+                    ProtectionProvenanceSource(
+                        accountID: account.id,
+                        accountEmail: account.email,
+                        accountDisplayName: account.displayName,
+                        calendarID: nil,
+                        calendarName: nil
+                    )
+                ]
+            )
+        }
     }
 
     func testPlaintextLegacyActivityIsIntentionallyPurged() async throws {

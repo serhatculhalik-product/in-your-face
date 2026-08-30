@@ -609,28 +609,7 @@ struct ProtectionActivityCard: View {
     @State private var filterSearchText = ""
     var isCard = true
 
-    private struct CalendarFilterID: Hashable {
-        let accountID: String
-        let calendarID: String
-    }
-
-    private struct CalendarFilter: Hashable, Identifiable {
-        let accountID: String
-        let accountLabel: String
-        let calendarID: String
-        let calendarName: String
-
-        var id: CalendarFilterID {
-            CalendarFilterID(accountID: accountID, calendarID: calendarID)
-        }
-
-        var displayName: String {
-            InterfaceCopy.calendarActivityScope(
-                calendarName: calendarName,
-                accountLabel: accountLabel
-            )
-        }
-    }
+    private typealias CalendarFilter = ProtectionActivityProvenancePresentation.Scope
 
     private static let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -699,7 +678,9 @@ struct ProtectionActivityCard: View {
                     Text("All Activity")
                         .tag(CalendarFilter.ID?.none)
                     ForEach(matchingFilters(in: filters)) { filter in
-                        Text(filter.displayName)
+                        Text(filter.label)
+                            .help(filter.help)
+                            .accessibilityLabel(filter.accessibilityDescription)
                             .tag(Optional(filter.id))
                     }
                 }
@@ -712,7 +693,9 @@ struct ProtectionActivityCard: View {
                 Text("All Activity")
                     .tag(CalendarFilter.ID?.none)
                 ForEach(filters) { filter in
-                    Text(filter.displayName)
+                    Text(filter.label)
+                        .help(filter.help)
+                        .accessibilityLabel(filter.accessibilityDescription)
                         .tag(Optional(filter.id))
                 }
             }
@@ -721,47 +704,46 @@ struct ProtectionActivityCard: View {
     }
 
     private var calendarFilters: [CalendarFilter] {
-        var filters: [CalendarFilter.ID: CalendarFilter] = [:]
+        var sources: [ProvenancePresentation.SourceID: ProtectionProvenanceSource] = [:]
         for coverage in flow.accountCoverages {
             let selectedCalendarIDs = flow.selectedCalendarIDs(for: coverage.account.id)
             for calendar in coverage.calendars where selectedCalendarIDs.contains(calendar.id) {
-                let filter = CalendarFilter(
+                let source = ProtectionProvenanceSource(
                     accountID: coverage.account.id,
-                    accountLabel: InterfaceCopy.connectedAccountLabel(
-                        email: coverage.account.email,
-                        displayName: coverage.account.displayName
-                    ),
+                    accountEmail: coverage.account.email,
+                    accountDisplayName: coverage.account.displayName,
                     calendarID: calendar.id,
                     calendarName: calendar.name
                 )
-                filters[filter.id] = filter
+                sources[
+                    ProvenancePresentation.SourceID(
+                        accountID: coverage.account.id,
+                        calendarID: calendar.id
+                    )
+                ] = source
             }
         }
 
-        return filters.values.sorted {
-            if $0.accountLabel == $1.accountLabel {
-                return $0.calendarName.localizedCaseInsensitiveCompare($1.calendarName) == .orderedAscending
-            }
-            return $0.accountLabel.localizedCaseInsensitiveCompare($1.accountLabel) == .orderedAscending
-        }
+        return ProtectionActivityProvenancePresentation.scopes(
+            sources: Array(sources.values)
+        )
     }
 
     private func matchingFilters(in filters: [CalendarFilter]) -> [CalendarFilter] {
-        let query = filterSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return filters }
-        return filters.filter { filter in
-            filter.calendarName.localizedCaseInsensitiveContains(query) ||
-                filter.accountLabel.localizedCaseInsensitiveContains(query)
-        }
+        ProtectionActivityProvenancePresentation.matchingScopes(
+            filters,
+            query: filterSearchText
+        )
     }
 
     private func visibleActivities(for filters: [CalendarFilter]) -> [ProtectionActivity] {
         guard let selectedFilterID,
-              let selectedFilter = filters.first(where: { $0.id == selectedFilterID }) else {
+              let selectedFilter = filters.first(where: { $0.id == selectedFilterID }),
+              let calendarID = selectedFilter.calendarID else {
             return flow.activityLog
         }
         return flow.activities(
-            forCalendarID: selectedFilter.calendarID,
+            forCalendarID: calendarID,
             accountID: selectedFilter.accountID
         )
     }
@@ -813,21 +795,18 @@ struct ProtectionActivityCard: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    if let calendarContext = activity.calendarName ??
-                        (activity.calendarID == nil ? nil : "Calendar unavailable") {
-                        Text("Calendar: \(calendarContext)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    if let accountEmail = activity.accountEmail {
-                        let accountLabel = InterfaceCopy.connectedAccountLabel(
-                            email: accountEmail,
-                            displayName: ""
-                        )
-                        Text("Account: \(accountLabel)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    ForEach(provenance.standardGroups) { group in
+                        VStack(alignment: .leading, spacing: 2) {
+                            if let calendarsText = group.calendarsText {
+                                Text(calendarsText)
+                            }
+                            Text(group.accountText)
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .help(group.help)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(group.accessibilityDescription)
                     }
                 }
             }
@@ -863,18 +842,16 @@ struct ProtectionActivityCard: View {
                 }
                 parts.append("Commitment: \(commitmentContext)")
             }
-            if let calendarContext = activity.calendarName ??
-                (activity.calendarID == nil ? nil : "Calendar unavailable") {
-                parts.append("Calendar: \(calendarContext)")
-            }
-            if let accountEmail = activity.accountEmail {
-                let accountLabel = InterfaceCopy.connectedAccountLabel(
-                    email: accountEmail,
-                    displayName: ""
-                )
-                parts.append("Account: \(accountLabel)")
+            if !provenance.accessibilityDescription.isEmpty {
+                parts.append(provenance.accessibilityDescription)
             }
             return parts.joined(separator: ", ")
+        }
+
+        private var provenance: ProtectionActivityProvenancePresentation.Row {
+            ProtectionActivityProvenancePresentation.row(
+                sources: activity.resolvedProvenanceSources
+            )
         }
 
         private var timeText: String {
@@ -1321,7 +1298,9 @@ private struct StrongAlertContentView: View {
                     StrongAlertView(
                         title: commitment.title,
                         timing: flow.strongAlertTimingText(for: commitment, at: context.date),
-                        detail: flow.strongAlertContextText(for: commitment),
+                        provenance: ProvenancePresentation(
+                            sources: flow.strongAlertProvenanceSources(for: commitment)
+                        ),
                         meetingDescription: commitment.meetingDescription,
                         verificationPresentation: flow.isStrongAlertUnverified
                             ? ProtectionCoveragePresentation(state: .unverifiedReminder)
@@ -1530,10 +1509,11 @@ private struct StrongAlertConflictContentView: View {
                             Text(flow.strongAlertTimingText(for: commitment, at: date))
                                 .font(.subheadline.weight(.semibold))
                                 .fixedSize(horizontal: false, vertical: true)
-                            Text(flow.strongAlertContextText(for: commitment))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
+                            strongAlertProvenanceRenderer(
+                                ProvenancePresentation(
+                                    sources: flow.strongAlertProvenanceSources(for: commitment)
+                                )
+                            )
                             if let meetingDescription = commitment.meetingDescription {
                                 MeetingDescriptionView(text: meetingDescription)
                             }
@@ -1612,10 +1592,13 @@ private struct StrongAlertConflictContentView: View {
         let conflictPosition = conflict.commitments.firstIndex(where: {
             $0.occurrenceID == commitment.occurrenceID
         }).map { "option \($0 + 1) of \(conflict.commitments.count)" } ?? "conflict option"
+        let provenance = ProvenancePresentation(
+            sources: flow.strongAlertProvenanceSources(for: commitment)
+        )
         let actionContext = [
             commitment.title,
             flow.localStartTimeText(for: commitment),
-            flow.strongAlertContextText(for: commitment),
+            provenance.accessibilityDescription,
             conflictPosition,
         ].joined(separator: ", ")
 
@@ -3140,7 +3123,7 @@ private struct MeetingDescriptionView: View {
 struct StrongAlertView: View {
     let title: String
     let timing: String
-    let detail: String
+    let provenance: ProvenancePresentation
     var meetingDescription: String? = nil
     var verificationPresentation: ProtectionCoveragePresentation? = nil
     var statusMessage: String? = nil
@@ -3209,10 +3192,7 @@ struct StrongAlertView: View {
                     .font(.title3.weight(.semibold))
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
-                Text(detail)
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                provenanceRenderer
             }
 
             if let meetingDescription {
@@ -3310,6 +3290,59 @@ struct StrongAlertView: View {
             .accessibilityHint(primaryActionHint)
         }
     }
+
+    var provenanceRenderer: StrongAlertProvenanceView {
+        strongAlertProvenanceRenderer(provenance)
+    }
+}
+
+struct StrongAlertProvenanceSemantics: Equatable, Sendable {
+    let primaryText: String
+    let secondaryText: String?
+    let help: String
+    let accessibilityLabel: String
+
+    init(urgent: ProvenancePresentation.Urgent) {
+        primaryText = urgent.primaryText
+        secondaryText = urgent.secondaryText
+        help = urgent.help
+        accessibilityLabel = urgent.accessibilityDescription
+    }
+}
+
+struct StrongAlertProvenanceView: View {
+    let presentation: ProvenancePresentation
+
+    var semantics: StrongAlertProvenanceSemantics? {
+        presentation.urgent.map(StrongAlertProvenanceSemantics.init(urgent:))
+    }
+
+    @ViewBuilder
+    var body: some View {
+        if let semantics {
+            VStack(spacing: 2) {
+                Text(semantics.primaryText)
+                    .font(.callout.weight(.medium))
+                if let secondaryText = semantics.secondaryText {
+                    Text(secondaryText)
+                        .font(.caption)
+                }
+            }
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+            .help(semantics.help)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(semantics.accessibilityLabel)
+        }
+    }
+}
+
+/// The single provenance-rendering seam used by normal and unresolved-conflict Strong Alerts.
+func strongAlertProvenanceRenderer(
+    _ presentation: ProvenancePresentation
+) -> StrongAlertProvenanceView {
+    StrongAlertProvenanceView(presentation: presentation)
 }
 
 enum StrongAlertDisplayMetrics {

@@ -36,6 +36,28 @@ public struct CalendarOption: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+public struct ProtectionProvenanceSource: Codable, Equatable, Hashable, Sendable {
+    public let accountID: String
+    public let accountEmail: String
+    public let accountDisplayName: String
+    public let calendarID: String?
+    public let calendarName: String?
+
+    public init(
+        accountID: String,
+        accountEmail: String,
+        accountDisplayName: String,
+        calendarID: String? = nil,
+        calendarName: String? = nil
+    ) {
+        self.accountID = accountID
+        self.accountEmail = accountEmail
+        self.accountDisplayName = accountDisplayName
+        self.calendarID = calendarID
+        self.calendarName = calendarName
+    }
+}
+
 public struct GoogleCalendarConnection: Codable, Equatable, Sendable {
     public let account: GoogleAccount
     public let calendars: [CalendarOption]
@@ -512,6 +534,25 @@ public struct ProtectionActivity: Codable, Equatable, Identifiable, Sendable {
     public let calendarID: String?
     public let calendarName: String?
     public let sourceAccountIDs: [String]?
+    public let provenanceSources: [ProtectionProvenanceSource]?
+
+    public var resolvedProvenanceSources: [ProtectionProvenanceSource] {
+        if let provenanceSources {
+            return provenanceSources
+        }
+        guard let accountID else {
+            return []
+        }
+        return [
+            ProtectionProvenanceSource(
+                accountID: accountID,
+                accountEmail: accountEmail ?? "",
+                accountDisplayName: "",
+                calendarID: calendarID,
+                calendarName: calendarName
+            )
+        ]
+    }
 
     public init(
         id: UUID = UUID(),
@@ -527,7 +568,8 @@ public struct ProtectionActivity: Codable, Equatable, Identifiable, Sendable {
         accountEmail: String? = nil,
         calendarID: String? = nil,
         calendarName: String? = nil,
-        sourceAccountIDs: [String]? = nil
+        sourceAccountIDs: [String]? = nil,
+        provenanceSources: [ProtectionProvenanceSource]? = nil
     ) {
         self.id = id
         self.occurredAt = occurredAt
@@ -548,6 +590,7 @@ public struct ProtectionActivity: Codable, Equatable, Identifiable, Sendable {
         self.sourceAccountIDs = normalizedSourceAccountIDs.isEmpty
             ? nil
             : normalizedSourceAccountIDs
+        self.provenanceSources = provenanceSources
     }
 }
 
@@ -567,16 +610,21 @@ private extension ProtectionActivity {
             accountEmail: accountEmail,
             calendarID: calendarID,
             calendarName: calendarName,
-            sourceAccountIDs: sourceAccountIDs
+            sourceAccountIDs: sourceAccountIDs,
+            provenanceSources: provenanceSources
         )
     }
 
     func containsProtectedData(forAccountID accountID: String) -> Bool {
-        self.accountID == accountID || sourceAccountIDs?.contains(accountID) == true
+        protectedSourceAccountIDs.contains(accountID)
     }
 
     var protectedSourceAccountIDs: Set<String> {
-        Set((sourceAccountIDs ?? []) + (accountID.map { [$0] } ?? []))
+        Set(
+            (provenanceSources?.map(\.accountID) ?? []) +
+                (sourceAccountIDs ?? []) +
+                (accountID.map { [$0] } ?? [])
+        )
     }
 }
 
@@ -1282,7 +1330,9 @@ public final class CommitmentProtectionFlow: ObservableObject {
 
     public func activities(forCalendarID calendarID: String, accountID: String) -> [ProtectionActivity] {
         activityLog.filter {
-            $0.accountID == accountID && $0.calendarID == calendarID
+            $0.resolvedProvenanceSources.contains { source in
+                source.accountID == accountID && source.calendarID == calendarID
+            }
         }
     }
 
@@ -2715,19 +2765,11 @@ public final class CommitmentProtectionFlow: ObservableObject {
         return "Overdue · started \(Self.localizedMinuteDuration(elapsedMinutes)) ago"
     }
 
-    public func strongAlertContextText(for commitment: CalendarEvent) -> String {
+    public func strongAlertProvenanceSources(
+        for commitment: CalendarEvent
+    ) -> [ProtectionProvenanceSource] {
         let group = strongAlertGroup(containing: commitment) ?? mergedCommitment(containing: commitment)
-        let representations = group?.representations ?? [commitment]
-        let contexts = representations.map { representation in
-            let calendarName = calendarName(for: representation) ?? "Calendar unavailable"
-            let accountName = account(for: representation)?.email ?? "Account unavailable"
-            return "\(calendarName) · \(accountName)"
-        }
-        var uniqueContexts: [String] = []
-        for context in contexts where !uniqueContexts.contains(context) {
-            uniqueContexts.append(context)
-        }
-        return uniqueContexts.joined(separator: ", ")
+        return (group?.representations ?? [commitment]).map(provenanceSource(for:))
     }
 
     public func clearEarlyReminder() {
@@ -4554,7 +4596,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
         _ activity: ProtectionActivity,
         accountID: String,
         events: [CalendarEvent]
-    ) -> CalendarOption? {
+    ) -> (id: String, name: String?)? {
         if let commitmentID = activity.commitmentID {
             guard let commitmentStartDate = activity.commitmentStartDate else {
                 return nil
@@ -4566,8 +4608,10 @@ public final class CommitmentProtectionFlow: ObservableObject {
             }
             if matchingCommitments.count == 1,
                let commitment = matchingCommitments.first {
-                let name = calendarName(for: commitment) ?? commitment.calendarID
-                return CalendarOption(id: commitment.calendarID, name: name, accountID: accountID)
+                return (
+                    id: commitment.calendarID,
+                    name: calendarName(for: commitment)
+                )
             }
             return nil
         }
@@ -4585,7 +4629,11 @@ public final class CommitmentProtectionFlow: ObservableObject {
         }
         let calendarName = String(activity.detail.dropFirst(prefix.count).dropLast())
         let matchingCalendars = record.connection.calendars.filter { $0.name == calendarName }
-        return matchingCalendars.count == 1 ? matchingCalendars.first : nil
+        guard matchingCalendars.count == 1,
+              let calendar = matchingCalendars.first else {
+            return nil
+        }
+        return (id: calendar.id, name: calendar.name)
     }
 
     private func recordActivity(
@@ -4605,7 +4653,17 @@ public final class CommitmentProtectionFlow: ObservableObject {
             calendar.flatMap { accountRecords[$0.accountID]?.connection.account } ?? connectedAccount
         let activityCalendarID = calendar?.id ?? commitment?.calendarID
         let activityCalendarName = calendar?.name ?? commitment.flatMap { calendarName(for: $0) }
-        let contextualDetail = detail + activitySourceContext(for: commitmentGroup)
+        let provenanceSources: [ProtectionProvenanceSource]? = if let commitmentGroup {
+            commitmentGroup.representations.map(provenanceSource(for:))
+        } else if let commitment {
+            [provenanceSource(for: commitment)]
+        } else if let activityAccount, let calendar {
+            [provenanceSource(account: activityAccount, calendar: calendar)]
+        } else if let activityAccount {
+            [provenanceSource(account: activityAccount)]
+        } else {
+            nil
+        }
         let sourceAccountIDs = Set(
             (commitmentGroup?.representations.map(\.accountID) ?? []) +
                 (activityAccount.map { [$0.id] } ?? [])
@@ -4617,7 +4675,7 @@ public final class CommitmentProtectionFlow: ObservableObject {
                 actor: actor,
                 kind: kind,
                 title: title,
-                detail: contextualDetail,
+                detail: detail,
                 commitmentTitle: commitment?.title,
                 commitmentID: commitment?.id,
                 commitmentStartDate: commitment?.startDate,
@@ -4625,7 +4683,8 @@ public final class CommitmentProtectionFlow: ObservableObject {
                 accountEmail: activityAccount?.email,
                 calendarID: activityCalendarID,
                 calendarName: activityCalendarName,
-                sourceAccountIDs: sourceAccountIDs
+                sourceAccountIDs: sourceAccountIDs,
+                provenanceSources: provenanceSources
             ),
             at: 0
         )
@@ -4634,24 +4693,41 @@ public final class CommitmentProtectionFlow: ObservableObject {
         saveConfiguration()
     }
 
-    private func activitySourceContext(for group: MergedCommitment?) -> String {
-        guard let group else { return "" }
-        var contexts: [String] = []
-        for representation in group.representations {
-            let calendarName = calendarName(for: representation) ?? representation.calendarID
-            let accountName = account(for: representation)?.email ?? representation.accountID
-            let context = "\(calendarName) · \(accountName)"
-            if !contexts.contains(context) {
-                contexts.append(context)
-            }
-        }
-        guard contexts.count > 1 else { return "" }
-        return " Sources: \(contexts.joined(separator: ", "))."
-    }
-
     private func calendarName(for commitment: CalendarEvent) -> String? {
         accountRecords[commitment.accountID]?.connection.calendars
             .first(where: { $0.id == commitment.calendarID })?.name
+    }
+
+    private func provenanceSource(for commitment: CalendarEvent) -> ProtectionProvenanceSource {
+        let account = account(for: commitment)
+        return ProtectionProvenanceSource(
+            accountID: commitment.accountID,
+            accountEmail: account?.email ?? "",
+            accountDisplayName: account?.displayName ?? "",
+            calendarID: commitment.calendarID,
+            calendarName: calendarName(for: commitment)
+        )
+    }
+
+    private func provenanceSource(
+        account: GoogleAccount,
+        calendar: CalendarOption
+    ) -> ProtectionProvenanceSource {
+        ProtectionProvenanceSource(
+            accountID: account.id,
+            accountEmail: account.email,
+            accountDisplayName: account.displayName,
+            calendarID: calendar.id,
+            calendarName: calendar.name
+        )
+    }
+
+    private func provenanceSource(account: GoogleAccount) -> ProtectionProvenanceSource {
+        ProtectionProvenanceSource(
+            accountID: account.id,
+            accountEmail: account.email,
+            accountDisplayName: account.displayName
+        )
     }
 
     private func saveActivityLog() {

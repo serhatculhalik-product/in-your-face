@@ -145,19 +145,6 @@ enum InterfaceCopy {
         return plainText(AttributedString(localized: "Google Account", locale: locale))
     }
 
-    static func calendarActivityScope(
-        calendarName: String,
-        accountLabel: String,
-        locale: Locale = .autoupdatingCurrent
-    ) -> String {
-        plainText(
-            AttributedString(
-                localized: "\(calendarName) · \(accountLabel)",
-                locale: locale
-            )
-        )
-    }
-
     static func disconnectAccountMessage(
         hasOtherConnectedAccounts: Bool,
         locale: Locale = .autoupdatingCurrent

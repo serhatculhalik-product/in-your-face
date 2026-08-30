@@ -477,46 +477,48 @@ struct OnboardingView: View {
     private func protectedAccountGroup(
         _ accountGroup: OnboardingProtectionSummary.AccountGroup
     ) -> some View {
-        let calendarNames = accountGroup.calendars.map(\.name).joined(separator: " · ")
-        return ViewThatFits(in: .horizontal) {
+        ViewThatFits(in: .horizontal) {
             HStack(alignment: .firstTextBaseline, spacing: 16) {
                 protectedAccountLabel(accountGroup)
                     .frame(maxWidth: 240, alignment: .leading)
                 Spacer(minLength: 12)
-                protectedCalendarLabel(calendarNames)
+                protectedCalendarLabel(accountGroup)
                     .multilineTextAlignment(.trailing)
             }
 
             VStack(alignment: .leading, spacing: 4) {
                 protectedAccountLabel(accountGroup)
-                protectedCalendarLabel(calendarNames)
+                protectedCalendarLabel(accountGroup)
                     .padding(.leading, 24)
             }
         }
         .padding(.vertical, 2)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(
-            "\(accountGroup.label), monitored calendars: \(calendarNames)"
-        )
+        .accessibilityLabel(accountGroup.accessibilityDescription)
     }
 
     private func protectedAccountLabel(
         _ accountGroup: OnboardingProtectionSummary.AccountGroup
     ) -> some View {
-        Label(accountGroup.label, systemImage: "person.crop.circle")
+        Label(accountGroup.accountText, systemImage: "person.crop.circle")
             .font(.callout.weight(.semibold))
             .lineLimit(1)
             .truncationMode(.middle)
-            .help(accountGroup.label)
+            .help(accountGroup.help)
     }
 
-    private func protectedCalendarLabel(_ calendarNames: String) -> some View {
-        Label(calendarNames, systemImage: "calendar")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .lineLimit(2)
-            .fixedSize(horizontal: false, vertical: true)
-            .help(calendarNames)
+    @ViewBuilder
+    private func protectedCalendarLabel(
+        _ accountGroup: OnboardingProtectionSummary.AccountGroup
+    ) -> some View {
+        if let calendarsText = accountGroup.calendarsText {
+            Label(calendarsText, systemImage: "calendar")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .help(accountGroup.help)
+        }
     }
 
     private var protectAnotherAccountButton: some View {

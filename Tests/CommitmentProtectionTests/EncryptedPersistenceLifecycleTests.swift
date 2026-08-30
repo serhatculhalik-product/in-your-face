@@ -5,6 +5,74 @@ import XCTest
 
 @MainActor
 final class EncryptedPersistenceLifecycleTests: XCTestCase {
+    func testLegacyActivityMigrationKeepsUnavailableCalendarMetadataOpaque() async throws {
+        let currentDate = Date(timeIntervalSince1970: 1_800_000_000)
+        let fixture = makeFixture(now: currentDate)
+        let unavailableCalendarEvent = CalendarEvent(
+            id: "event-with-unavailable-calendar",
+            title: "Customer review",
+            startDate: currentDate.addingTimeInterval(5 * 60),
+            endDate: currentDate.addingTimeInterval(35 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: "opaque-calendar-id",
+            accountID: fixture.account.id
+        )
+        let legacyActivity = ProtectionActivity(
+            occurredAt: currentDate,
+            actor: .user,
+            kind: .dismissed,
+            title: "Reminders stopped",
+            detail: "Dismissed for this occurrence.",
+            commitmentTitle: unavailableCalendarEvent.title,
+            commitmentID: unavailableCalendarEvent.id,
+            commitmentStartDate: unavailableCalendarEvent.startDate,
+            accountID: fixture.account.id,
+            accountEmail: fixture.account.email
+        )
+        let defaultsFixture = makeDefaults()
+        let vaultRoot = makeVaultRoot()
+        defer {
+            defaultsFixture.cleanUp()
+            try? FileManager.default.removeItem(at: vaultRoot)
+        }
+        let vault = try makeVault(at: vaultRoot)
+        await persistProtectedAccounts(
+            [fixture],
+            defaults: defaultsFixture.store,
+            vault: vault,
+            now: currentDate
+        )
+        try vault.storeData(
+            JSONEncoder().encode([legacyActivity]),
+            as: .activity,
+            for: fixture.account.id
+        )
+        let relaunch = makeFlow(
+            connector: LifecycleCalendarConnector(
+                connection: fixture.connection,
+                events: [unavailableCalendarEvent],
+                honorsRequestedCalendar: false
+            ),
+            defaults: defaultsFixture.store,
+            vault: vault,
+            now: currentDate
+        )
+
+        await relaunch.restoreSavedConnection()
+
+        let migrated = try XCTUnwrap(
+            relaunch.activityLog.first { $0.id == legacyActivity.id }
+        )
+        XCTAssertEqual(migrated.calendarID, unavailableCalendarEvent.calendarID)
+        XCTAssertNil(migrated.calendarName)
+        XCTAssertEqual(
+            migrated.resolvedProvenanceSources.first?.calendarName,
+            nil
+        )
+    }
+
     func testEncryptedAccountStateAndAuthorizationSurviveRelaunch() async throws {
         let currentDate = Date(timeIntervalSince1970: 1_800_000_000)
         let fixture = makeFixture(now: currentDate)
@@ -537,6 +605,24 @@ final class EncryptedPersistenceLifecycleTests: XCTestCase {
         let activityIDsBeforeDisconnect = Set(
             flow.activityLog.filter { $0.accountID == fixture.account.id }.map(\.id)
         )
+        let calendarSelectionActivity = try XCTUnwrap(
+            flow.activityLog.first {
+                $0.kind == .configurationChanged &&
+                    $0.title == "Calendar selection changed"
+            }
+        )
+        XCTAssertEqual(
+            calendarSelectionActivity.provenanceSources,
+            [
+                ProtectionProvenanceSource(
+                    accountID: fixture.account.id,
+                    accountEmail: fixture.account.email,
+                    accountDisplayName: fixture.account.displayName,
+                    calendarID: fixture.calendar.id,
+                    calendarName: fixture.calendar.name
+                )
+            ]
+        )
 
         let didDisconnect = await flow.disconnectGoogleAccount(accountID: fixture.account.id)
         XCTAssertTrue(didDisconnect)
@@ -572,6 +658,10 @@ final class EncryptedPersistenceLifecycleTests: XCTestCase {
         XCTAssertTrue(relaunch.activityLog.contains {
             $0.kind == .accountDisconnected && $0.accountID == fixture.account.id
         })
+        XCTAssertEqual(
+            relaunch.activityLog.first { $0.id == calendarSelectionActivity.id }?.provenanceSources,
+            calendarSelectionActivity.provenanceSources
+        )
     }
 
     func testDisconnectStorageFailureDoesNotExposeVaultOperationPayload() async throws {
@@ -665,6 +755,90 @@ final class EncryptedPersistenceLifecycleTests: XCTestCase {
         await relaunch.restoreSavedConnection()
         XCTAssertTrue(relaunch.accountCoverages.isEmpty)
         XCTAssertTrue(relaunch.activityLog.isEmpty)
+    }
+
+    func testRemoveAccountDeletesMergedActivityOwnedByAnotherSourceAccount() async throws {
+        let currentDate = Date(timeIntervalSince1970: 1_800_000_000)
+        let first = makeFixture(
+            now: currentDate,
+            accountID: "first@example.com",
+            calendarID: "first-calendar",
+            eventID: "event-a"
+        )
+        let second = makeFixture(
+            now: currentDate,
+            accountID: "second@example.com",
+            calendarID: "second-calendar",
+            eventID: "event-b"
+        )
+        let meetingURL = URL(string: "https://meet.google.com/encrypted-merged-activity")!
+        let firstRepresentation = CalendarEvent(
+            id: "event-a",
+            title: "Merged review",
+            startDate: currentDate,
+            endDate: currentDate.addingTimeInterval(30 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: first.calendar.id,
+            accountID: first.account.id,
+            recognizedMeetingLink: meetingURL
+        )
+        let secondRepresentation = CalendarEvent(
+            id: "event-b",
+            title: "Merged review copy",
+            startDate: currentDate,
+            endDate: currentDate.addingTimeInterval(45 * 60),
+            timeZoneIdentifier: nil,
+            isAllDay: false,
+            isAccepted: true,
+            calendarID: second.calendar.id,
+            accountID: second.account.id,
+            recognizedMeetingLink: meetingURL
+        )
+        let defaultsFixture = makeDefaults()
+        let vaultRoot = makeVaultRoot()
+        defer {
+            defaultsFixture.cleanUp()
+            try? FileManager.default.removeItem(at: vaultRoot)
+        }
+        let vault = try makeVault(at: vaultRoot)
+        let connector = LifecycleMultiAccountConnector(
+            connectQueue: [first.connection, second.connection],
+            restoreConnections: [:],
+            eventsByAccountID: [
+                first.account.id: [firstRepresentation],
+                second.account.id: [secondRepresentation],
+            ]
+        )
+        let flow = makeFlow(
+            connector: connector,
+            defaults: defaultsFixture.store,
+            vault: vault,
+            now: currentDate
+        )
+        await connectAndProtect(flow, calendarID: first.calendar.id, at: currentDate)
+        await connectAndProtect(flow, calendarID: second.calendar.id, at: currentDate)
+        await flow.refreshCommitmentProtection(at: currentDate)
+        let mergedActivity = try XCTUnwrap(
+            flow.activityLog.first {
+                $0.kind == .strongAlertShown && $0.provenanceSources?.count == 2
+            }
+        )
+        XCTAssertEqual(mergedActivity.accountID, first.account.id)
+
+        let didRemove = await flow.removeGoogleAccount(accountID: second.account.id)
+        XCTAssertTrue(didRemove)
+
+        XCTAssertFalse(flow.activityLog.contains { $0.id == mergedActivity.id })
+        let ownerData = try XCTUnwrap(
+            vault.loadData(as: .activity, for: first.account.id)
+        )
+        let ownerActivities = try JSONDecoder().decode(
+            [ProtectionActivity].self,
+            from: ownerData
+        )
+        XCTAssertFalse(ownerActivities.contains { $0.id == mergedActivity.id })
     }
 
     func testCredentialOnlyVaultAccountIsRecoveredAndRemovable() async throws {
@@ -1136,10 +1310,41 @@ final class EncryptedPersistenceLifecycleTests: XCTestCase {
             accountEmail: first.account.email,
             calendarID: first.calendar.id,
             calendarName: first.calendar.name,
+            sourceAccountIDs: [first.account.id],
+            provenanceSources: [
+                ProtectionProvenanceSource(
+                    accountID: first.account.id,
+                    accountEmail: first.account.email,
+                    accountDisplayName: first.account.displayName,
+                    calendarID: first.calendar.id,
+                    calendarName: first.calendar.name
+                ),
+                ProtectionProvenanceSource(
+                    accountID: second.account.id,
+                    accountEmail: second.account.email,
+                    accountDisplayName: second.account.displayName,
+                    calendarID: second.calendar.id,
+                    calendarName: second.calendar.name
+                ),
+            ]
+        )
+        let legacyMergedActivity = ProtectionActivity(
+            occurredAt: currentDate.addingTimeInterval(-2),
+            actor: .user,
+            kind: .handled,
+            title: "Legacy merged reminder handled",
+            detail: "Both accounts contributed protected event data.",
+            commitmentTitle: "Legacy merged review",
+            commitmentID: "legacy-merged-event",
+            commitmentStartDate: first.event.startDate,
+            accountID: first.account.id,
+            accountEmail: first.account.email,
+            calendarID: first.calendar.id,
+            calendarName: first.calendar.name,
             sourceAccountIDs: [first.account.id, second.account.id]
         )
         try vault.storeData(
-            JSONEncoder().encode([retainedActivity, mergedActivity]),
+            JSONEncoder().encode([retainedActivity, mergedActivity, legacyMergedActivity]),
             as: .activity,
             for: first.account.id
         )
@@ -1159,6 +1364,7 @@ final class EncryptedPersistenceLifecycleTests: XCTestCase {
         await relaunch.restoreSavedConnection()
 
         XCTAssertFalse(relaunch.activityLog.contains { $0.id == mergedActivity.id })
+        XCTAssertFalse(relaunch.activityLog.contains { $0.id == legacyMergedActivity.id })
         XCTAssertEqual(relaunch.activityLog.map(\.id), [retainedActivity.id])
         let rewrittenData = try XCTUnwrap(
             vault.loadData(as: .activity, for: first.account.id)
@@ -1169,6 +1375,7 @@ final class EncryptedPersistenceLifecycleTests: XCTestCase {
         )
         XCTAssertEqual(rewrittenActivities.map(\.id), [retainedActivity.id])
         XCTAssertFalse(rewrittenActivities.contains { $0.id == mergedActivity.id })
+        XCTAssertFalse(rewrittenActivities.contains { $0.id == legacyMergedActivity.id })
     }
 
     func testInitialStorageFailureOnlyOffersResetForCorruption() {
@@ -1445,6 +1652,7 @@ private final class LifecycleCalendarConnector:
     private let credentialStore: EncryptedGoogleCredentialStore?
     private let restoreMode: LifecycleRestoreMode
     private let honorsRequestedWindow: Bool
+    private let honorsRequestedCalendar: Bool
     private let lock = NSLock()
     private var storedEvents: [CalendarEvent]
     private var storedConnectCallCount = 0
@@ -1456,13 +1664,15 @@ private final class LifecycleCalendarConnector:
         events: [CalendarEvent],
         credentialStore: EncryptedGoogleCredentialStore? = nil,
         restoreMode: LifecycleRestoreMode = .available,
-        honorsRequestedWindow: Bool = true
+        honorsRequestedWindow: Bool = true,
+        honorsRequestedCalendar: Bool = true
     ) {
         self.connection = connection
         storedEvents = events
         self.credentialStore = credentialStore
         self.restoreMode = restoreMode
         self.honorsRequestedWindow = honorsRequestedWindow
+        self.honorsRequestedCalendar = honorsRequestedCalendar
     }
 
     var connectCallCount: Int {
@@ -1532,7 +1742,7 @@ private final class LifecycleCalendarConnector:
         lock.withLock {
             storedEvents.filter { event in
                 guard event.accountID == accountID,
-                      event.calendarID == calendarID else {
+                      !honorsRequestedCalendar || event.calendarID == calendarID else {
                     return false
                 }
                 guard honorsRequestedWindow else { return true }
