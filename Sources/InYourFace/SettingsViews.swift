@@ -18,6 +18,97 @@ struct SettingsRootView: View {
     }
 }
 
+private enum SettingsPaneBodyLayout {
+    case groupedForm
+    case readable
+}
+
+private enum SettingsPaneMetrics {
+    static let readableContentWidth: CGFloat = 704
+    static let minimumHorizontalInset: CGFloat = 20
+    static let readableContentVerticalInset: CGFloat = 20
+    static let footerVerticalInset: CGFloat = 12
+}
+
+private struct SettingsPaneScaffold<Content: View, Footer: View>: View {
+    private let bodyLayout: SettingsPaneBodyLayout
+    private let content: Content
+    private let footer: Footer
+    private let showsFooter: Bool
+
+    init(
+        bodyLayout: SettingsPaneBodyLayout,
+        showsFooter: Bool = true,
+        @ViewBuilder content: () -> Content,
+        @ViewBuilder footer: () -> Footer
+    ) {
+        self.bodyLayout = bodyLayout
+        self.content = content()
+        self.footer = footer()
+        self.showsFooter = showsFooter
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            paneBody
+
+            if showsFooter {
+                Divider()
+                footer
+                    .frame(
+                        maxWidth: SettingsPaneMetrics.readableContentWidth,
+                        alignment: .topLeading
+                    )
+                    .padding(.horizontal, SettingsPaneMetrics.minimumHorizontalInset)
+                    .frame(maxWidth: .infinity, alignment: .top)
+                    .padding(.vertical, SettingsPaneMetrics.footerVerticalInset)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    @ViewBuilder
+    private var paneBody: some View {
+        switch bodyLayout {
+        case .groupedForm:
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        case .readable:
+            readableColumn {
+                content
+            }
+            .padding(.vertical, SettingsPaneMetrics.readableContentVerticalInset)
+        }
+    }
+
+    private func readableColumn<Column: View>(
+        @ViewBuilder content: () -> Column
+    ) -> some View {
+        content()
+            .frame(
+                maxWidth: SettingsPaneMetrics.readableContentWidth,
+                maxHeight: .infinity,
+                alignment: .topLeading
+            )
+            .padding(.horizontal, SettingsPaneMetrics.minimumHorizontalInset)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+}
+
+private extension SettingsPaneScaffold where Footer == EmptyView {
+    init(
+        bodyLayout: SettingsPaneBodyLayout,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.init(
+            bodyLayout: bodyLayout,
+            showsFooter: false,
+            content: content,
+            footer: { EmptyView() }
+        )
+    }
+}
+
 private struct AccountsSettingsPane: View {
     private enum AccountTerminationKind {
         case disconnect
@@ -36,162 +127,163 @@ private struct AccountsSettingsPane: View {
     @State private var isEncryptedStorageResetConfirmationPresented = false
 
     var body: some View {
-        Form {
-            Section("Protection") {
-                SettingsProtectionSummary()
-            }
+        SettingsPaneScaffold(bodyLayout: .groupedForm) {
+            Form {
+                Section("Protection") {
+                    SettingsProtectionSummary()
+                }
 
-            Section("Google Accounts") {
-                if flow.accountCoverages.isEmpty {
-                    ContentUnavailableView(
-                        "No Google Accounts",
-                        systemImage: "person.crop.circle.badge.exclamationmark",
-                        description: Text("Connect Google Calendar to protect selected calendars on this Mac.")
-                    )
-                } else {
-                    ForEach(flow.accountCoverages) { coverage in
-                        AdaptiveSettingsActionRow {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(accountLabel(for: coverage))
-                                    .lineLimit(2)
-                                    .help(accountLabel(for: coverage))
-                                    .textSelection(.enabled)
-                                CoverageHealthView(
-                                    coverage: coverage,
-                                    warning: flow.coverageWarning(for: coverage.account.id),
-                                    showsProgress: protectionStatusPresentation.state != .checkingCoverage
-                                )
+                Section("Google Accounts") {
+                    if flow.accountCoverages.isEmpty {
+                        ContentUnavailableView(
+                            "No Google Accounts",
+                            systemImage: "person.crop.circle.badge.exclamationmark",
+                            description: Text("Connect Google Calendar to protect selected calendars on this Mac.")
+                        )
+                    } else {
+                        ForEach(flow.accountCoverages) { coverage in
+                            AdaptiveSettingsActionRow {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(accountLabel(for: coverage))
+                                        .lineLimit(2)
+                                        .help(accountLabel(for: coverage))
+                                        .textSelection(.enabled)
+                                    CoverageHealthView(
+                                        coverage: coverage,
+                                        warning: flow.coverageWarning(for: coverage.account.id),
+                                        showsProgress: protectionStatusPresentation.state != .checkingCoverage
+                                    )
+                                }
+                            } actions: {
+                                accountActions(for: coverage)
                             }
-                        } actions: {
-                            accountActions(for: coverage)
+                        }
+
+                        if protectionStatusPresentation.state == .checkingCoverage {
+                            ProgressView("Checking calendar coverage…")
+                                .controlSize(.small)
+                        } else if needsCoverageRetry, flow.isRefreshingCoverage {
+                            ProgressView("Retrying calendar access…")
+                                .controlSize(.small)
+                        } else if needsCoverageRetry {
+                            Button {
+                                Task { await flow.refreshCommitmentProtection() }
+                            } label: {
+                                Label("Retry Calendar Access", systemImage: "arrow.clockwise")
+                            }
                         }
                     }
 
-                    if protectionStatusPresentation.state == .checkingCoverage {
-                        ProgressView("Checking calendar coverage…")
-                            .controlSize(.small)
-                    } else if needsCoverageRetry, flow.isRefreshingCoverage {
-                        ProgressView("Retrying calendar access…")
-                            .controlSize(.small)
-                    } else if needsCoverageRetry {
-                        Button {
-                            Task { await flow.refreshCommitmentProtection() }
-                        } label: {
-                            Label("Retry Calendar Access", systemImage: "arrow.clockwise")
-                        }
-                    }
-                }
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Label(
-                        testToolsController.isTestMode
-                            ? "Isolated simulated calendar access"
-                            : "Device-bound encrypted Google access",
-                        systemImage: testToolsController.isTestMode ? "testtube.2" : "lock.shield"
-                    )
-                        .font(.callout.weight(.semibold))
-                    Text(testToolsController.isTestMode
-                        ? "This account and its calendars are deterministic fixtures stored only in this test profile. No browser or Google grant is used."
-                        : "Google credentials and calendar data are encrypted for this Mac, excluded from backups, and never stored in Keychain. Routine relaunches do not require reconnection.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                if let storageError = flow.encryptedStorageError {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Label("Protected Google data needs attention", systemImage: "lock.trianglebadge.exclamationmark")
+                    VStack(alignment: .leading, spacing: 4) {
+                        Label(
+                            testToolsController.isTestMode
+                                ? "Isolated simulated calendar access"
+                                : "Device-bound encrypted Google access",
+                            systemImage: testToolsController.isTestMode ? "testtube.2" : "lock.shield"
+                        )
                             .font(.callout.weight(.semibold))
-                        Text(storageError)
+                        Text(testToolsController.isTestMode
+                            ? "This account and its calendars are deterministic fixtures stored only in this test profile. No browser or Google grant is used."
+                            : "Google credentials and calendar data are encrypted for this Mac, excluded from backups, and never stored in Keychain. Routine relaunches do not require reconnection.")
                             .font(.callout)
                             .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                        if flow.requiresEncryptedStorageReset {
-                            Button("Reset Local Encrypted Data…", role: .destructive) {
-                                isEncryptedStorageResetConfirmationPresented = true
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    if let storageError = flow.encryptedStorageError {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label("Protected Google data needs attention", systemImage: "lock.trianglebadge.exclamationmark")
+                                .font(.callout.weight(.semibold))
+                            Text(storageError)
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                            if flow.requiresEncryptedStorageReset {
+                                Button("Reset Local Encrypted Data…", role: .destructive) {
+                                    isEncryptedStorageResetConfirmationPresented = true
+                                }
+                                .disabled(flow.isGoogleAccountOperationInProgress)
                             }
-                            .disabled(flow.isGoogleAccountOperationInProgress)
                         }
                     }
-                }
 
-                if let reviewNotice = flow.googleAccessReviewNotice {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Label("Review Google Account access", systemImage: "person.crop.circle.badge.exclamationmark")
-                            .font(.callout.weight(.semibold))
-                        Text(reviewNotice)
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                    }
-                }
-
-                if !testToolsController.isTestMode {
-                    Button("Manage Google Account Access…") {
-                        openGoogleAccessManagement()
-                    }
-                }
-
-                Button {
-                    Task { await flow.connectGoogleAccount() }
-                } label: {
-                    Label(
-                        connectionActionTitle,
-                        systemImage: flow.accountConnectionError == nil ? "person.badge.plus" : "arrow.clockwise"
-                    )
-                }
-                .disabled(flow.isGoogleAccountOperationInProgress)
-
-                if let message = flow.accountConnectionError {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Label("Google Calendar couldn’t connect", systemImage: "exclamationmark.triangle")
-                        Text(message)
-                            .font(.callout)
-                            .textSelection(.enabled)
-                    }
-                        .foregroundStyle(.secondary)
-                        .accessibilityElement(children: .combine)
-                        .accessibilityLabel(InterfaceCopy.connectionFailureAnnouncement(message))
-                }
-
-                if let message = flow.accountDisconnectionError {
-                    VStack(alignment: .leading, spacing: 8) {
+                    if let reviewNotice = flow.googleAccessReviewNotice {
                         VStack(alignment: .leading, spacing: 4) {
-                            Label(accountTerminationFailureTitle, systemImage: "exclamationmark.triangle")
+                            Label("Review Google Account access", systemImage: "person.crop.circle.badge.exclamationmark")
+                                .font(.callout.weight(.semibold))
+                            Text(reviewNotice)
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+                    }
+
+                    if !testToolsController.isTestMode {
+                        Button("Manage Google Account Access…") {
+                            openGoogleAccessManagement()
+                        }
+                    }
+
+                    Button {
+                        Task { await flow.connectGoogleAccount() }
+                    } label: {
+                        Label(
+                            connectionActionTitle,
+                            systemImage: flow.accountConnectionError == nil ? "person.badge.plus" : "arrow.clockwise"
+                        )
+                    }
+                    .disabled(flow.isGoogleAccountOperationInProgress)
+
+                    if let message = flow.accountConnectionError {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label("Google Calendar couldn’t connect", systemImage: "exclamationmark.triangle")
                             Text(message)
                                 .font(.callout)
                                 .textSelection(.enabled)
                         }
-                        .accessibilityElement(children: .combine)
-                        .accessibilityLabel(accountTerminationFailureAnnouncement(message))
-                        if let coverage = failedDisconnectionCoverage {
-                            Button("Try Again…") {
-                                pendingAccountTermination = PendingAccountTermination(
-                                    coverage: coverage,
-                                    kind: lastAccountTerminationKind ?? .disconnect
-                                )
+                            .foregroundStyle(.secondary)
+                            .accessibilityElement(children: .combine)
+                            .accessibilityLabel(InterfaceCopy.connectionFailureAnnouncement(message))
+                    }
+
+                    if let message = flow.accountDisconnectionError {
+                        VStack(alignment: .leading, spacing: 8) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Label(accountTerminationFailureTitle, systemImage: "exclamationmark.triangle")
+                                Text(message)
+                                    .font(.callout)
+                                    .textSelection(.enabled)
+                            }
+                            .accessibilityElement(children: .combine)
+                            .accessibilityLabel(accountTerminationFailureAnnouncement(message))
+                            if let coverage = failedDisconnectionCoverage {
+                                Button("Try Again…") {
+                                    pendingAccountTermination = PendingAccountTermination(
+                                        coverage: coverage,
+                                        kind: lastAccountTerminationKind ?? .disconnect
+                                    )
+                                }
                             }
                         }
+                        .foregroundStyle(.secondary)
                     }
-                    .foregroundStyle(.secondary)
                 }
-            }
 
-            Section("Availability") {
-                Toggle("Start Meeting Incoming at login", isOn: launchAtLoginBinding)
-                Text(availabilityDetail)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                if flow.launchAtLoginError != nil {
-                    Button("Open Login Items…") {
-                        openLoginItemsSettings()
+                Section("Availability") {
+                    Toggle("Start Meeting Incoming at login", isOn: launchAtLoginBinding)
+                    Text(availabilityDetail)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if flow.launchAtLoginError != nil {
+                        Button("Open Login Items…") {
+                            openLoginItemsSettings()
+                        }
                     }
                 }
             }
+            .formStyle(.grouped)
         }
-        .formStyle(.grouped)
-        .padding(20)
         .onAppear { flow.refreshLaunchAtLoginStatus() }
         .onChange(of: flow.accountConnectionError) { _, message in
             announceConnectionError(message)
@@ -474,40 +566,45 @@ private struct CalendarsSettingsPane: View {
     @State private var searchText = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            if flow.accountCoverages.isEmpty {
-                ContentUnavailableView(
-                    "No Google Account",
-                    systemImage: "calendar.badge.exclamationmark",
-                    description: Text("Connect Google Calendar in Accounts. Authorization stays encrypted on this Mac across routine relaunches.")
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let coverage = selectedCoverage {
-                Picker("Account", selection: selectedAccountBinding) {
-                    ForEach(flow.accountCoverages) { accountCoverage in
-                        Text(InterfaceCopy.connectedAccountLabel(
-                            email: accountCoverage.account.email,
-                            displayName: accountCoverage.account.displayName
-                        ))
-                        .tag(Optional(accountCoverage.account.id))
+        SettingsPaneScaffold(
+            bodyLayout: .readable,
+            showsFooter: selectedCoverage != nil
+        ) {
+            VStack(alignment: .leading, spacing: 16) {
+                if flow.accountCoverages.isEmpty {
+                    ContentUnavailableView(
+                        "No Google Account",
+                        systemImage: "calendar.badge.exclamationmark",
+                        description: Text("Connect Google Calendar in Accounts. Authorization stays encrypted on this Mac across routine relaunches.")
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if let coverage = selectedCoverage {
+                    Picker("Account", selection: selectedAccountBinding) {
+                        ForEach(flow.accountCoverages) { accountCoverage in
+                            Text(InterfaceCopy.connectedAccountLabel(
+                                email: accountCoverage.account.email,
+                                displayName: accountCoverage.account.displayName
+                            ))
+                            .tag(Optional(accountCoverage.account.id))
+                        }
                     }
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: 420, alignment: .leading)
+
+                    CoverageHealthView(
+                        coverage: coverage,
+                        warning: flow.coverageWarning(for: coverage.account.id)
+                    )
+
+                    CalendarSelectionList(
+                        coverage: coverage,
+                        searchText: $searchText
+                    )
+                    .disabled(flow.isGoogleAccountOperationInProgress)
                 }
-                .pickerStyle(.menu)
-                .frame(maxWidth: 420, alignment: .leading)
-
-                CoverageHealthView(
-                    coverage: coverage,
-                    warning: flow.coverageWarning(for: coverage.account.id)
-                )
-
-                CalendarSelectionList(
-                    coverage: coverage,
-                    searchText: $searchText
-                )
-                .disabled(flow.isGoogleAccountOperationInProgress)
-
-                Divider()
-
+            }
+        } footer: {
+            if let coverage = selectedCoverage {
                 AdaptiveSettingsActionRow {
                     Label(
                         coverage.isProtectionConfirmed
@@ -531,7 +628,6 @@ private struct CalendarsSettingsPane: View {
                 }
             }
         }
-        .padding(24)
         .onAppear { synchronizeSelectedAccount() }
         .onChange(of: flow.accountCoverages.map(\.id)) { _, _ in
             synchronizeSelectedAccount()
@@ -566,81 +662,82 @@ private struct RemindersSettingsPane: View {
     @EnvironmentObject private var flow: CommitmentProtectionFlow
 
     var body: some View {
-        Form {
-            if flow.isProtectionConfirmationRequired {
-                let pendingCoveragePresentation = ProtectionCoveragePresentation(
-                    state: .noCoverage
-                )
-                Section {
-                    AdaptiveSettingsActionRow {
-                        Label {
-                            Text("Protection is off until you confirm these timing changes")
-                        } icon: {
-                            Image(systemName: pendingCoveragePresentation.systemImage)
-                                .accessibilityHidden(true)
+        SettingsPaneScaffold(bodyLayout: .groupedForm) {
+            Form {
+                if flow.isProtectionConfirmationRequired {
+                    let pendingCoveragePresentation = ProtectionCoveragePresentation(
+                        state: .noCoverage
+                    )
+                    Section {
+                        AdaptiveSettingsActionRow {
+                            Label {
+                                Text("Protection is off until you confirm these timing changes")
+                            } icon: {
+                                Image(systemName: pendingCoveragePresentation.systemImage)
+                                    .accessibilityHidden(true)
+                            }
+                            .foregroundStyle(pendingCoveragePresentation.tone.color)
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel(
+                                "Protection is off until you confirm these timing changes"
+                            )
+                        } actions: {
+                            Button("Confirm Changes and Resume Protection") {
+                                flow.confirmAllProtection()
+                            }
+                            .buttonStyle(.borderedProminent)
                         }
-                        .foregroundStyle(pendingCoveragePresentation.tone.color)
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityLabel(
-                            "Protection is off until you confirm these timing changes"
-                        )
-                    } actions: {
-                        Button("Confirm Changes and Resume Protection") {
-                            flow.confirmAllProtection()
-                        }
-                        .buttonStyle(.borderedProminent)
                     }
                 }
-            }
 
-            Section("Early Reminder") {
-                EarlyReminderTimingControls(
-                    isEnabled: Binding(
-                        get: { flow.isEarlyReminderEnabled },
-                        set: { flow.setEarlyReminderEnabled($0) }
-                    ),
-                    leadTimeMinutes: Binding(
-                        get: { flow.earlyReminderLeadTimeMinutes },
-                        set: { flow.setEarlyReminderLeadTime(minutes: $0) }
+                Section("Early Reminder") {
+                    EarlyReminderTimingControls(
+                        isEnabled: Binding(
+                            get: { flow.isEarlyReminderEnabled },
+                            set: { flow.setEarlyReminderEnabled($0) }
+                        ),
+                        leadTimeMinutes: Binding(
+                            get: { flow.earlyReminderLeadTimeMinutes },
+                            set: { flow.setEarlyReminderLeadTime(minutes: $0) }
+                        )
                     )
-                )
-            }
+                }
 
-            Section("Strong Alert") {
-                StrongAlertTimingControls(
-                    repeatIntervalMinutes: Binding(
-                        get: { flow.strongAlertRepeatIntervalMinutes },
-                        set: { flow.setStrongAlertRepeatInterval(minutes: $0) }
+                Section("Strong Alert") {
+                    StrongAlertTimingControls(
+                        repeatIntervalMinutes: Binding(
+                            get: { flow.strongAlertRepeatIntervalMinutes },
+                            set: { flow.setStrongAlertRepeatInterval(minutes: $0) }
+                        )
                     )
-                )
-            }
+                }
 
-            Section("Event Types") {
-                Toggle(
-                    "Protect out-of-office events",
-                    isOn: Binding(
-                        get: { flow.isOutOfOfficeProtectionEnabled },
-                        set: { flow.setOutOfOfficeProtectionEnabled($0) }
+                Section("Event Types") {
+                    Toggle(
+                        "Protect out-of-office events",
+                        isOn: Binding(
+                            get: { flow.isOutOfOfficeProtectionEnabled },
+                            set: { flow.setOutOfOfficeProtectionEnabled($0) }
+                        )
                     )
-                )
-                Text(
-                    "Off by default. When on, timed out-of-office events receive Strong Alerts and Early Reminders when Early Reminder is enabled."
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            }
+                    Text(
+                        "Off by default. When on, timed out-of-office events receive Strong Alerts and Early Reminders when Early Reminder is enabled."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
 
-            Section("Optional Blocking Mode") {
-                BlockingModeControls(showsCurrentReminderStatus: true)
+                Section("Optional Blocking Mode") {
+                    BlockingModeControls(showsCurrentReminderStatus: true)
+                }
             }
+            .formStyle(.grouped)
         }
-        .formStyle(.grouped)
-        .padding(20)
     }
 }
 
-private struct AdaptiveSettingsActionRow<Status: View, Actions: View>: View {
+struct AdaptiveSettingsActionRow<Status: View, Actions: View>: View {
     private let status: Status
     private let actions: Actions
 
@@ -672,9 +769,9 @@ private struct AdaptiveSettingsActionRow<Status: View, Actions: View>: View {
 
 private struct ActivitySettingsPane: View {
     var body: some View {
-        ProtectionActivityCard(isCard: false)
-            .padding(24)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        SettingsPaneScaffold(bodyLayout: .readable) {
+            ProtectionActivityCard(isCard: false)
+        }
     }
 }
 
