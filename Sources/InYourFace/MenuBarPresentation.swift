@@ -35,7 +35,8 @@ struct MenuBarProtectionPresentation: Equatable {
         pauseDetail: String,
         isLaunchAtLoginEnabled: Bool,
         hasUpcomingCommitment: Bool,
-        accounts: [MenuBarAccountPresentation]
+        accounts: [MenuBarAccountPresentation],
+        confirmation: ProtectionConfirmationPresentation
     ) -> Self {
         let reconnectAccounts = accounts.filter {
             $0.connectionState == .reconnectRequired || $0.health == .reconnectRequired
@@ -65,9 +66,18 @@ struct MenuBarProtectionPresentation: Equatable {
             )
 
         case .noCoverage:
+            let detail: String
+            if confirmation.isPending {
+                detail = InterfaceCopy.sentences([
+                    confirmation.detail ?? confirmation.title,
+                    "Open Calendars in Settings to confirm the selection and start reminders.",
+                ])
+            } else {
+                detail = "Choose Monitored Calendars in Settings to start reminders."
+            }
             return Self(
                 statusPresentation: statusPresentation,
-                detail: "Choose Monitored Calendars in Settings to start reminders.",
+                detail: detail,
                 primaryAction: .openSettings
             )
 
@@ -80,7 +90,12 @@ struct MenuBarProtectionPresentation: Equatable {
 
         case .activeProtection:
             let detail: String
-            if !isLaunchAtLoginEnabled {
+            if confirmation.isPending {
+                detail = InterfaceCopy.sentences([
+                    confirmation.detail ?? confirmation.title,
+                    "Open Calendars in Settings to confirm the change.",
+                ])
+            } else if !isLaunchAtLoginEnabled {
                 detail = "Reminders are active, but start at login needs attention."
             } else if hasUpcomingCommitment {
                 detail = "Reminders are ready for your next commitment."

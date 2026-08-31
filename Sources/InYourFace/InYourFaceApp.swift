@@ -3985,7 +3985,8 @@ struct MenuBarContent: View {
                     connectionState: coverage.connectionState,
                     health: effectiveHealth(for: coverage)
                 )
-            }
+            },
+            confirmation: .global(flow.accountCoverages)
         )
     }
 

@@ -201,7 +201,8 @@ final class MenuBarPresentationTests: XCTestCase {
             pauseDetail: "All protection paused · resumes in 1 hour (11:00 PM)",
             isLaunchAtLoginEnabled: true,
             hasUpcomingCommitment: false,
-            accounts: accounts
+            accounts: accounts,
+            confirmation: .global([])
         )
     }
 }

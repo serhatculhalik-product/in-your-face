@@ -605,26 +605,13 @@ private struct CalendarsSettingsPane: View {
             }
         } footer: {
             if let coverage = selectedCoverage {
-                AdaptiveSettingsActionRow {
-                    Label(
-                        coverage.isProtectionConfirmed
-                            ? "Selected calendars confirmed"
-                            : "Selected calendars are not protected yet",
-                        systemImage: coverage.isProtectionConfirmed
-                            ? "checkmark.circle"
-                            : "exclamationmark.circle"
-                    )
-                    .foregroundStyle(.secondary)
-                } actions: {
-                    Button("Protect Selected Calendars") {
+                ProtectionConfirmationRegion(
+                    presentation: .account(coverage),
+                    isActionEnabled: !flow.isGoogleAccountOperationInProgress
+                ) {
+                    if !coverage.selectedCalendarIDs.isEmpty {
                         flow.confirmProtection(for: coverage.account.id)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(
-                        coverage.isProtectionConfirmed ||
-                            flow.selectedCalendarIDs(for: coverage.account.id).isEmpty ||
-                            flow.isGoogleAccountOperationInProgress
-                    )
                 }
             }
         }
@@ -664,28 +651,18 @@ private struct RemindersSettingsPane: View {
     var body: some View {
         SettingsPaneScaffold(bodyLayout: .groupedForm) {
             Form {
-                if flow.isProtectionConfirmationRequired {
-                    let pendingCoveragePresentation = ProtectionCoveragePresentation(
-                        state: .noCoverage
-                    )
+                let confirmationPresentation = ProtectionConfirmationPresentation.global(
+                    flow.accountCoverages
+                )
+                if confirmationPresentation.isPending {
                     Section {
-                        AdaptiveSettingsActionRow {
-                            Label {
-                                Text("Protection is off until you confirm these timing changes")
-                            } icon: {
-                                Image(systemName: pendingCoveragePresentation.systemImage)
-                                    .accessibilityHidden(true)
-                            }
-                            .foregroundStyle(pendingCoveragePresentation.tone.color)
-                            .accessibilityElement(children: .ignore)
-                            .accessibilityLabel(
-                                "Protection is off until you confirm these timing changes"
-                            )
-                        } actions: {
-                            Button("Confirm Changes and Resume Protection") {
+                        ProtectionConfirmationRegion(
+                            presentation: confirmationPresentation,
+                            isActionEnabled: !flow.isGoogleAccountOperationInProgress
+                        ) {
+                            if confirmationPresentation.isPending {
                                 flow.confirmAllProtection()
                             }
-                            .buttonStyle(.borderedProminent)
                         }
                     }
                 }
@@ -802,31 +779,14 @@ private struct SettingsProtectionSummary: View {
     }
 
     private var statusDetail: String {
-        switch statusPresentation.state {
-        case .protectionPaused:
-            return flow.pauseExpirationText()
-        case .reconnectRequired:
-            if reconnectRequiredCoverages.count == 1,
-               let coverage = reconnectRequiredCoverages.first {
-                return "Reconnect \(accountLabel(for: coverage)) to resume protection. Routine relaunches keep valid authorization."
+        settingsProtectionStatusDetail(
+            statusPresentation: statusPresentation,
+            confirmationPresentation: confirmationPresentation,
+            pauseDetail: flow.pauseExpirationText(),
+            reconnectAccountLabels: reconnectRequiredCoverages.map {
+                accountLabel(for: $0)
             }
-            return "Reconnect Google Calendar to resume protection. Routine relaunches keep valid authorization."
-        case .activeProtection:
-            return "Selected calendars are protected."
-        case .noCoverage, .finishSetup:
-            return "Choose and confirm at least one calendar."
-        case .loadingProtection, .checkingCoverage:
-            return "Checking Google Calendar before protection becomes active."
-        case .coverageNeedsAttention:
-            return "Calendar coverage needs attention."
-        case .freshCoverage,
-             .staleCoverage,
-             .coverageUnavailable,
-             .unverifiedReminder,
-             .commitmentConflict,
-             .primary:
-            return "Calendar coverage needs attention."
-        }
+        )
     }
 
     private var reconnectRequiredCoverages: [AccountCoverage] {
@@ -836,11 +796,60 @@ private struct SettingsProtectionSummary: View {
         }
     }
 
+    private var confirmationPresentation: ProtectionConfirmationPresentation {
+        .global(flow.accountCoverages)
+    }
+
     private func accountLabel(for coverage: AccountCoverage) -> String {
         InterfaceCopy.connectedAccountLabel(
             email: coverage.account.email,
             displayName: coverage.account.displayName
         )
+    }
+}
+
+func settingsProtectionStatusDetail(
+    statusPresentation: ProtectionCoveragePresentation,
+    confirmationPresentation: ProtectionConfirmationPresentation,
+    pauseDetail: String,
+    reconnectAccountLabels: [String]
+) -> String {
+    switch statusPresentation.state {
+    case .protectionPaused:
+        return pauseDetail
+    case .reconnectRequired:
+        if reconnectAccountLabels.count == 1,
+           let accountLabel = reconnectAccountLabels.first {
+            return "Reconnect \(accountLabel) to resume protection. Routine relaunches keep valid authorization."
+        }
+        return "Reconnect Google Calendar to resume protection. Routine relaunches keep valid authorization."
+    case .activeProtection:
+        if confirmationPresentation.isPending {
+            return InterfaceCopy.sentences([
+                confirmationPresentation.detail ?? confirmationPresentation.title,
+                "Confirm the calendar changes in Calendars.",
+            ])
+        }
+        return "Selected calendars are protected."
+    case .noCoverage, .finishSetup:
+        if confirmationPresentation.isPending {
+            return InterfaceCopy.sentences([
+                confirmationPresentation.detail ?? confirmationPresentation.title,
+                "Confirm the calendar selection in Calendars to start protection.",
+            ])
+        }
+        return "Choose and confirm at least one calendar."
+    case .loadingProtection, .checkingCoverage:
+        return "Checking Google Calendar before protection becomes active."
+    case .coverageNeedsAttention:
+        return "Calendar coverage needs attention."
+    case .freshCoverage,
+         .staleCoverage,
+         .coverageUnavailable,
+         .unverifiedReminder,
+         .commitmentConflict,
+         .primary:
+        return "Calendar coverage needs attention."
     }
 }
 
