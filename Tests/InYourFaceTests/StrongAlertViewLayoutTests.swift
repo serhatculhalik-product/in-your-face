@@ -6,6 +6,66 @@ import XCTest
 
 @MainActor
 final class StrongAlertViewLayoutTests: XCTestCase {
+    func testHostedHandledActionUsesTheRealStrongAlertFlow() async throws {
+        let fixture = await makeStrongAlertTestFlow()
+        XCTAssertTrue(fixture.flow.isStrongAlertPresented)
+        let actionPresentation = AlertPresentationContract(variant: .strongAlert)
+            .actionPresentation(
+                for: .strongAlert(
+                    primary: .stopReminders,
+                    repeatIntervalMinutes: fixture.flow.strongAlertRepeatIntervalMinutes
+                )
+            )
+        let hostingView = NSHostingView(
+            rootView: StrongAlertView(
+                title: fixture.commitment.title,
+                timing: fixture.flow.strongAlertTimingText(
+                    for: fixture.commitment,
+                    at: Date(timeIntervalSince1970: 1_000_000)
+                ),
+                provenance: ProvenancePresentation(
+                    sources: fixture.flow.strongAlertProvenanceSources(
+                        for: fixture.commitment
+                    )
+                ),
+                actionPresentation: actionPresentation,
+                dispatchAction: { intent in
+                    performStrongAlertAction(
+                        intent,
+                        for: fixture.commitment,
+                        flow: fixture.flow
+                    )
+                }
+            )
+        )
+        hostingView.sizingOptions = [.intrinsicContentSize]
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 620, height: 680),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostingView
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        hostingView.frame = window.contentView?.bounds ?? .zero
+        settle(hostingView)
+        let handledButton = try XCTUnwrap(
+            descendants(in: hostingView)
+                .compactMap { $0 as? NSButton }
+                .first { $0.accessibilityLabel() == "I joined another way" }
+        )
+
+        handledButton.performClick(nil)
+        settle(hostingView)
+
+        XCTAssertFalse(fixture.flow.isStrongAlertPresented)
+        XCTAssertEqual(
+            fixture.flow.lastActionMessage,
+            "Handled for this occurrence. Protection is off until it ends."
+        )
+    }
+
     func testHostedSharedProvenanceRendererPreservesUrgentAndFullSemantics() throws {
         _ = NSApplication.shared
         struct Case {
@@ -98,7 +158,11 @@ final class StrongAlertViewLayoutTests: XCTestCase {
             hostingView.layoutSubtreeIfNeeded()
 
             XCTAssertGreaterThan(hostingView.fittingSize.height, 300, timing)
-            XCTAssertLessThan(hostingView.fittingSize.height, 559, timing)
+            XCTAssertLessThan(
+                hostingView.fittingSize.height,
+                StrongAlertDisplayMetrics.maximumContentHeightLimit,
+                timing
+            )
         }
     }
 
@@ -122,16 +186,8 @@ final class StrongAlertViewLayoutTests: XCTestCase {
             title: "Customer review",
             timing: "Starting now",
             provenance: testProvenance,
-            repeatConsequence: "Closes this alert now. Protection stays active and Strong Alert returns in 1 minute unless you Join, choose I joined another way, Stop reminders, or Pause All Protection.",
-            primaryActionTitle: "Join",
-            primaryAction: {},
-            secondaryActionTitle: "Stop reminders",
-            secondaryAction: {},
-            handledActionTitle: "I joined another way",
-            handledAction: {},
-            tertiaryActionTitle: "Got it",
-            tertiaryAction: {},
-            pauseAction: { _ in true }
+            actionPresentation: testActionPresentation,
+            dispatchAction: { _ in true }
         )
         let hostingView = NSHostingView(rootView: view)
         hostingView.sizingOptions = [.intrinsicContentSize]
@@ -141,8 +197,8 @@ final class StrongAlertViewLayoutTests: XCTestCase {
         XCTAssertGreaterThan(hostingView.fittingSize.height, 300)
         XCTAssertLessThan(
             hostingView.fittingSize.height,
-            559,
-            "A standard alert should fit its content instead of inheriting the old fixed 560-point ideal height."
+            StrongAlertDisplayMetrics.maximumContentHeightLimit,
+            "A standard alert should fit its semantic action content without reaching the scroll cap."
         )
     }
 
@@ -155,10 +211,8 @@ final class StrongAlertViewLayoutTests: XCTestCase {
             supportingContent: AnyView(
                 Color.clear.frame(width: 500, height: 900)
             ),
-            primaryActionTitle: "Join",
-            primaryAction: {},
-            tertiaryActionTitle: "Got it",
-            tertiaryAction: {}
+            actionPresentation: testActionPresentation,
+            dispatchAction: { _ in true }
         )
         let hostingView = NSHostingView(rootView: view)
         hostingView.sizingOptions = [.intrinsicContentSize]
@@ -181,10 +235,8 @@ final class StrongAlertViewLayoutTests: XCTestCase {
             supportingContent: AnyView(
                 Color.clear.frame(width: 500, height: 900)
             ),
-            primaryActionTitle: "Join",
-            primaryAction: {},
-            tertiaryActionTitle: "Got it",
-            tertiaryAction: {},
+            actionPresentation: testActionPresentation,
+            dispatchAction: { _ in true },
             maximumContentHeight: 420
         )
         let hostingView = NSHostingView(rootView: view)
@@ -207,10 +259,8 @@ final class StrongAlertViewLayoutTests: XCTestCase {
             timing: "Starting now",
             provenance: testProvenance,
             supportingContent: AnyView(StrongAlertMountProbe(counter: counter)),
-            primaryActionTitle: "Join",
-            primaryAction: {},
-            tertiaryActionTitle: "Got it",
-            tertiaryAction: {}
+            actionPresentation: testActionPresentation,
+            dispatchAction: { _ in true }
         )
         let hostingView = NSHostingView(rootView: view)
         hostingView.sizingOptions = [.intrinsicContentSize]
@@ -249,6 +299,16 @@ final class StrongAlertViewLayoutTests: XCTestCase {
         return nil
     }
 
+    private func settle(_ view: NSView) {
+        view.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.08))
+        view.layoutSubtreeIfNeeded()
+    }
+
+    private func descendants(in view: NSView) -> [NSView] {
+        [view] + view.subviews.flatMap(descendants)
+    }
+
     private struct ExpectedProvenanceSemantics {
         let primaryText: String
         let secondaryText: String?
@@ -282,6 +342,16 @@ final class StrongAlertViewLayoutTests: XCTestCase {
         )
     }
 
+    private var testActionPresentation: AlertActionPresentation {
+        AlertActionPresentation(
+            context: .strongAlert(
+                primary: .join(URL(fileURLWithPath: "/test-meeting")),
+                repeatIntervalMinutes: 1
+            ),
+            locale: Locale(identifier: "en_US")
+        )
+    }
+
     private func source(
         accountID: String,
         email: String,
@@ -302,14 +372,8 @@ final class StrongAlertViewLayoutTests: XCTestCase {
             title: "Customer review",
             timing: timing,
             provenance: testProvenance,
-            primaryActionTitle: "Join",
-            primaryAction: {},
-            secondaryActionTitle: "Stop reminders",
-            secondaryAction: {},
-            handledActionTitle: "I joined another way",
-            handledAction: {},
-            tertiaryActionTitle: "Got it",
-            tertiaryAction: {}
+            actionPresentation: testActionPresentation,
+            dispatchAction: { _ in true }
         )
     }
 }

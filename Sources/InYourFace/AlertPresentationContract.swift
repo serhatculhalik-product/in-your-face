@@ -37,4 +37,11 @@ struct AlertPresentationContract: Equatable, Sendable {
         preservesProtectionWhenSurfaceCloses = true
         sharingPolicy = .visibleDuringDisplaySharing
     }
+
+    func actionPresentation(
+        for context: AlertActionPresentation.Context,
+        locale: Locale = .autoupdatingCurrent
+    ) -> AlertActionPresentation {
+        AlertActionPresentation(context: context, locale: locale)
+    }
 }

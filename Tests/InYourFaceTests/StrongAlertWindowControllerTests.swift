@@ -512,16 +512,14 @@ final class StrongAlertWindowControllerTests: XCTestCase {
                     ],
                     locale: Locale(identifier: "en_US")
                 ),
-                repeatConsequence: "Closes this alert now. Protection stays active and Strong Alert returns in 1 minute unless you Join, choose I joined another way, Stop reminders, or Pause All Protection.",
-                primaryActionTitle: "Join",
-                primaryAction: {},
-                secondaryActionTitle: "Stop reminders",
-                secondaryAction: {},
-                handledActionTitle: "I joined another way",
-                handledAction: {},
-                tertiaryActionTitle: "Got it",
-                tertiaryAction: {},
-                pauseAction: { _ in true }
+                actionPresentation: AlertActionPresentation(
+                    context: .strongAlert(
+                        primary: .join(URL(fileURLWithPath: "/test-meeting")),
+                        repeatIntervalMinutes: 1
+                    ),
+                    locale: Locale(identifier: "en_US")
+                ),
+                dispatchAction: { _ in true }
             )
         )
         let primaryWindow = NSWindow(

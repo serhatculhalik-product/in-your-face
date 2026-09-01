@@ -135,6 +135,23 @@ final class InterfaceCopyTests: XCTestCase {
         let locale = Locale(identifier: "en_US")
 
         XCTAssertEqual(
+            InterfaceCopy.closeForNowConsequence(locale: locale),
+            "Close for now hides this Early Reminder. Strong Alert still appears when the commitment begins."
+        )
+        XCTAssertEqual(
+            InterfaceCopy.snoozeConsequence(locale: locale),
+            "Snooze delays both reminders for this occurrence and can continue past its start time."
+        )
+        XCTAssertTrue(
+            InterfaceCopy.joinConsequence(locale: locale).contains("only after the link opens successfully")
+        )
+        XCTAssertTrue(
+            InterfaceCopy.handledConsequence(locale: locale).contains("Google Calendar RSVP")
+        )
+        XCTAssertTrue(
+            InterfaceCopy.makePrimaryConsequence(locale: locale).contains("does not Join")
+        )
+        XCTAssertEqual(
             InterfaceCopy.strongAlertRepeatConsequence(minutes: 1, locale: locale),
             "Closes this alert now. Protection stays active, and Strong Alert returns in 1 minute unless you Join, choose I joined another way, Stop reminders, or Pause All Protection."
         )

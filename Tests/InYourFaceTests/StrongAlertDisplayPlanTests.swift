@@ -520,6 +520,18 @@ final class StrongAlertDisplayPlanTests: XCTestCase {
 
         XCTAssertEqual(normal.actionSource, fallback.actionSource)
         XCTAssertEqual(strongAlert.actionSource, conflict.actionSource)
+        let sharedContext = AlertActionPresentation.Context.earlyReminder(
+            snoozeOptionsMinutes: [5, 10, 15, 30],
+            canSnooze: true
+        )
+        XCTAssertEqual(
+            normal.actionPresentation(for: sharedContext),
+            fallback.actionPresentation(for: sharedContext)
+        )
+        XCTAssertEqual(
+            strongAlert.actionPresentation(for: sharedContext),
+            conflict.actionPresentation(for: sharedContext)
+        )
         XCTAssertTrue(normal.preservesProtectionWhenSurfaceCloses)
         XCTAssertTrue(fallback.preservesProtectionWhenSurfaceCloses)
         XCTAssertTrue(strongAlert.preservesProtectionWhenSurfaceCloses)
@@ -571,7 +583,7 @@ final class StrongAlertDisplayPlanTests: XCTestCase {
 }
 
 @MainActor
-private func makeEarlyReminderTestFlow() async -> (flow: CommitmentProtectionFlow, commitment: CalendarEvent) {
+func makeEarlyReminderTestFlow() async -> (flow: CommitmentProtectionFlow, commitment: CalendarEvent) {
     let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
     let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
     let now = Date(timeIntervalSince1970: 1_000_000)
@@ -604,7 +616,7 @@ private func makeEarlyReminderTestFlow() async -> (flow: CommitmentProtectionFlo
 }
 
 @MainActor
-private func makeEarlyReminderConflictTestFlow() async -> (
+func makeEarlyReminderConflictTestFlow() async -> (
     flow: CommitmentProtectionFlow,
     primary: CalendarEvent,
     secondary: CalendarEvent,
@@ -650,6 +662,42 @@ private func makeEarlyReminderConflictTestFlow() async -> (
     await settleScheduledRefreshes()
     await flow.refreshCommitmentProtection(at: now)
     return (flow, primary, secondary, now)
+}
+
+@MainActor
+func makeStrongAlertTestFlow() async -> (
+    flow: CommitmentProtectionFlow,
+    commitment: CalendarEvent
+) {
+    let account = GoogleAccount(id: "account-1", email: "alex@example.com", displayName: "Alex")
+    let calendar = CalendarOption(id: "calendar-1", name: "Work", accountID: account.id)
+    let now = Date(timeIntervalSince1970: 1_000_000)
+    let commitment = CalendarEvent(
+        id: "strong-event",
+        title: "Customer review",
+        startDate: now.addingTimeInterval(-5 * 60),
+        endDate: now.addingTimeInterval(55 * 60),
+        timeZoneIdentifier: nil,
+        isAllDay: false,
+        isAccepted: true,
+        calendarID: calendar.id,
+        accountID: account.id
+    )
+    let flow = CommitmentProtectionFlow(
+        calendarConnector: StaticCalendarConnector(
+            connection: GoogleCalendarConnection(account: account, calendars: [calendar]),
+            events: [commitment]
+        ),
+        launchAtLogin: StaticLaunchAtLoginController(),
+        stateStore: UserDefaults(suiteName: "InYourFaceTests.\(UUID().uuidString)")!,
+        now: { now }
+    )
+    await flow.connectGoogleAccount()
+    flow.setCalendarSelected(true, calendarID: calendar.id)
+    _ = flow.confirmProtection()
+    await settleScheduledRefreshes()
+    await flow.refreshCommitmentProtection(at: now)
+    return (flow, commitment)
 }
 
 private struct StaticCalendarConnector: GoogleCalendarConnecting {

@@ -988,8 +988,6 @@ struct EarlyReminderContentView: View {
     let closingActionCompleted: (Bool) -> Void
     var maximumContentHeight: CGFloat? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var isStopRemindersConfirmationPresented = false
-    @State private var pendingStopRemindersCommitment: CalendarEvent?
 
     var body: some View {
         EarlyReminderViewport(maximumContentHeight: resolvedMaximumContentHeight) {
@@ -1001,11 +999,6 @@ struct EarlyReminderContentView: View {
                 transaction.animation = nil
             }
         }
-        .stopRemindersConfirmation(
-            isPresented: $isStopRemindersConfirmationPresented,
-            onCancel: { pendingStopRemindersCommitment = nil },
-            onConfirm: confirmStopReminders
-        )
     }
 
     private var resolvedMaximumContentHeight: CGFloat {
@@ -1032,7 +1025,20 @@ struct EarlyReminderContentView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if surface.conflict?.requiresPrimarySelection == true {
-                    EarlyReminderConflictSelectionView(flow: flow, surface: surface)
+                    EarlyReminderConflictSelectionView(
+                        flow: flow,
+                        surface: surface,
+                        presentationContract: presentationContract
+                    ) {
+                        earlyActionRegion(
+                            for: surface,
+                            actionContext: conflictActionContext(
+                                for: surface.commitment,
+                                among: surface.primarySelectionOptions,
+                                flow: flow
+                            )
+                        )
+                    }
                 } else {
                     Text(commitment.title)
                         .font(.title2.bold())
@@ -1051,31 +1057,7 @@ struct EarlyReminderContentView: View {
                     if let meetingDescription = commitment.meetingDescription {
                         MeetingDescriptionView(text: meetingDescription)
                     }
-                }
-                Text("Close for now hides this Early Reminder. Strong Alert still appears when the commitment begins.")
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Menu("Snooze") {
-                    ForEach(flow.snoozeOptionsMinutes, id: \.self) { minutes in
-                        Button(InterfaceCopy.minuteDuration(minutes)) {
-                            finishClosingAction(surface.actions.snooze(minutes))
-                        }
-                    }
-                }
-                .disabled(!flow.canSnoozeEarlyReminder)
-                .accessibilityHint("Choose how long to delay this occurrence’s Early Reminder and Strong Alert.")
-                Text("Snooze delays both reminders for this occurrence and can continue past its start time.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 10) {
-                        actionButtons(for: surface)
-                    }
-                    VStack(spacing: 8) {
-                        actionButtons(for: surface)
-                    }
+                    earlyActionRegion(for: surface)
                 }
             } else {
                 Color.clear
@@ -1083,23 +1065,6 @@ struct EarlyReminderContentView: View {
             }
         }
         .padding(flow.earlyReminderCommitment == nil ? 0 : 28)
-    }
-
-    @ViewBuilder
-    private func actionButtons(for surface: EarlyReminderSurfaceModel) -> some View {
-        Button("Close for now") {
-            finishClosingAction(surface.actions.clear())
-        }
-        .keyboardShortcut(.defaultAction)
-        .buttonStyle(.borderedProminent)
-        .accessibilityHint("Close this Early Reminder while keeping Strong Alert active at the commitment start.")
-
-        Button("Stop reminders") {
-            pendingStopRemindersCommitment = surface.commitment
-            isStopRemindersConfirmationPresented = true
-        }
-        .buttonStyle(.bordered)
-        .accessibilityHint("Stop Early Reminder and Strong Alert for this occurrence without changing Google Calendar.")
     }
 
     private func surfaceModel(for commitment: CalendarEvent) -> EarlyReminderSurfaceModel {
@@ -1111,21 +1076,54 @@ struct EarlyReminderContentView: View {
         }
     }
 
-    private func confirmStopReminders() {
-        guard let pendingStopRemindersCommitment else {
-            self.pendingStopRemindersCommitment = nil
-            return
+    private var presentationContract: AlertPresentationContract {
+        switch variant {
+        case .normal:
+            AlertPresentationContract(variant: .earlyReminderNormal)
+        case .fallback:
+            AlertPresentationContract(variant: .earlyReminderFallback)
         }
-        let didApply = surfaceModel(for: pendingStopRemindersCommitment).actions.dismiss()
-        self.pendingStopRemindersCommitment = nil
-        finishClosingAction(didApply)
     }
 
-    private func finishClosingAction(_ didApply: Bool) {
+    private func earlyActionRegion(
+        for surface: EarlyReminderSurfaceModel,
+        actionContext: AlertActionPresentation.ConflictActionContext? = nil
+    ) -> some View {
+        AlertActionRegion(
+            presentation: presentationContract.actionPresentation(
+                for: .earlyReminder(
+                    snoozeOptionsMinutes: flow.snoozeOptionsMinutes,
+                    canSnooze: flow.canSnoozeEarlyReminder,
+                    actionContext: actionContext
+                )
+            )
+        ) { intent in
+            dispatch(intent, on: surface)
+        }
+    }
+
+    private func dispatch(
+        _ intent: AlertActionPresentation.Intent,
+        on surface: EarlyReminderSurfaceModel
+    ) -> Bool {
+        switch intent {
+        case .closeForNow:
+            finishClosingAction(surface.actions.clear())
+        case .snooze(let minutes):
+            finishClosingAction(surface.actions.snooze(minutes))
+        case .stopReminders:
+            finishClosingAction(surface.actions.dismiss())
+        case .join, .makePrimary, .handled, .gotIt, .pause:
+            false
+        }
+    }
+
+    private func finishClosingAction(_ didApply: Bool) -> Bool {
         if didApply {
             announceActionResult(flow.lastActionMessage)
         }
         closingActionCompleted(didApply)
+        return didApply
     }
 }
 
@@ -1183,9 +1181,33 @@ private struct EarlyReminderConflictSummaryView: View {
     }
 }
 
-private struct EarlyReminderConflictSelectionView: View {
+@MainActor
+private func conflictActionContext(
+    for commitment: CalendarEvent,
+    among commitments: [CalendarEvent],
+    flow: CommitmentProtectionFlow
+) -> AlertActionPresentation.ConflictActionContext {
+    let optionPosition = commitments.firstIndex(where: {
+        $0.occurrenceID == commitment.occurrenceID
+    }).map {
+        "option \($0 + 1) of \(commitments.count)"
+    } ?? "conflict option"
+    let provenance = ProvenancePresentation(
+        sources: flow.strongAlertProvenanceSources(for: commitment)
+    )
+    return AlertActionPresentation.ConflictActionContext(
+        commitmentTitle: commitment.title,
+        localStartTime: flow.localStartTimeText(for: commitment),
+        provenance: provenance.accessibilityDescription,
+        optionPosition: optionPosition
+    )
+}
+
+private struct EarlyReminderConflictSelectionView<LeadingActions: View>: View {
     @ObservedObject var flow: CommitmentProtectionFlow
     let surface: EarlyReminderSurfaceModel
+    let presentationContract: AlertPresentationContract
+    @ViewBuilder let leadingActions: LeadingActions
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1196,6 +1218,7 @@ private struct EarlyReminderConflictSelectionView: View {
             Text("These commitments start at the same time. You can choose which commitment Strong Alert features; otherwise they remain equal choices.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            leadingActions
             ForEach(surface.primarySelectionOptions, id: \.occurrenceID) { commitment in
                 VStack(alignment: .leading, spacing: 6) {
                     Text(commitment.title)
@@ -1207,13 +1230,24 @@ private struct EarlyReminderConflictSelectionView: View {
                     if let meetingDescription = commitment.meetingDescription {
                         MeetingDescriptionView(text: meetingDescription)
                     }
-                    Button("Make primary") {
-                        if surface.actions.selectPrimary(commitment) {
+                    AlertActionRegion(
+                        presentation: presentationContract.actionPresentation(
+                            for: .conflictSelection(
+                                actionContext: conflictActionContext(
+                                    for: commitment,
+                                    among: surface.primarySelectionOptions,
+                                    flow: flow
+                                )
+                            )
+                        )
+                    ) { intent in
+                        guard intent == .makePrimary else { return false }
+                        let didSelect = surface.actions.selectPrimary(commitment)
+                        if didSelect {
                             announceActionResult(flow.lastActionMessage)
                         }
+                        return didSelect
                     }
-                    .buttonStyle(.bordered)
-                    .accessibilityLabel("Make \(commitment.title) primary")
                 }
             }
         }
@@ -1275,8 +1309,9 @@ private struct StrongAlertWindowView: View {
 
 private struct StrongAlertContentView: View {
     @ObservedObject var flow: CommitmentProtectionFlow
-    @State private var isStopRemindersConfirmationPresented = false
-    @State private var pendingStopRemindersCommitment: CalendarEvent?
+    private let presentationContract = AlertPresentationContract(
+        variant: .strongAlert
+    )
 
     var body: some View {
         Group {
@@ -1286,15 +1321,11 @@ private struct StrongAlertContentView: View {
                     StrongAlertConflictContentView(
                         flow: flow,
                         conflict: conflict,
-                        date: context.date,
-                        requestStopReminders: requestStopReminders
+                        date: context.date
                     )
                 }
             } else if let commitment = flow.strongAlertCommitment {
                 TimelineView(.periodic(from: Date(), by: 1)) { context in
-                    let meetingLinkChoices = InterfaceCopy.meetingLinkChoices(
-                        flow.strongAlertMeetingLinkOptions
-                    )
                     StrongAlertView(
                         title: commitment.title,
                         timing: flow.strongAlertTimingText(for: commitment, at: context.date),
@@ -1306,56 +1337,24 @@ private struct StrongAlertContentView: View {
                             ? ProtectionCoveragePresentation(state: .unverifiedReminder)
                             : nil,
                         statusMessage: meetingLinkFailure(for: commitment),
-                        repeatConsequence: InterfaceCopy.strongAlertRepeatConsequence(
-                            minutes: flow.strongAlertRepeatIntervalMinutes,
-                            canJoin: !flow.strongAlertMeetingLinkOptions.isEmpty
-                        ),
                         supportingContent: flow.strongAlertConflict.map { conflict in
                             AnyView(StrongAlertConflictSummaryView(flow: flow, conflict: conflict))
                         },
-                        primaryActionHint: flow.strongAlertMeetingLinkOptions.isEmpty
-                            ? "Stop reminders for this occurrence without changing Google Calendar."
-                            : "Open a recognized meeting link and stop reminders for this occurrence.",
-                        primaryActionTitle: flow.strongAlertPrimaryActionTitle,
-                        primaryAction: {
-                            if flow.strongAlertMeetingLinkOptions.isEmpty {
-                                requestStopReminders(for: commitment)
-                            } else if let primaryLink = flow.strongAlertPrimaryMeetingLink {
-                                openMeetingLink(primaryLink, for: commitment)
-                            } else if flow.strongAlertMeetingLinkOptions.count == 1,
-                                      let link = flow.strongAlertMeetingLinkOptions.first {
-                                openMeetingLink(link, for: commitment)
-                            }
-                        },
-                        primaryActionChoices: flow.strongAlertPrimaryMeetingLink == nil &&
-                            flow.strongAlertMeetingLinkOptions.count > 1
-                            ? meetingLinkChoices.map { choice in
-                                (choice.title, {
-                                    openMeetingLink(choice.url, for: commitment)
-                                })
-                            }
-                            : [],
-                        secondaryActionTitle: flow.strongAlertMeetingLinkOptions.isEmpty ? nil : "Stop reminders",
-                        secondaryAction: {
-                            requestStopReminders(for: commitment)
-                        },
-                        handledActionTitle: "I joined another way",
-                        handledAction: {
-                            guard flow.handleStrongAlert(for: commitment) else { return }
-                            announceActionResult(flow.lastActionMessage)
-                            finishStrongAlertAction(flow)
-                        },
-                        tertiaryActionTitle: "Got it",
-                        tertiaryAction: {
-                            closeStrongAlertAndYieldFocus(flow)
-                        },
-                        pauseAction: { duration in
-                            let didPause = flow.pause(for: duration)
-                            if didPause {
-                                announceActionResult(flow.lastActionMessage)
-                                finishStrongAlertAction(flow)
-                            }
-                            return didPause
+                        actionPresentation: presentationContract.actionPresentation(
+                            for: .strongAlert(
+                                primary: .resolve(
+                                    meetingLinks: flow.strongAlertMeetingLinkOptions,
+                                    primaryMeetingLink: flow.strongAlertPrimaryMeetingLink
+                                ),
+                                repeatIntervalMinutes: flow.strongAlertRepeatIntervalMinutes
+                            )
+                        ),
+                        dispatchAction: { intent in
+                            performStrongAlertAction(
+                                intent,
+                                for: commitment,
+                                flow: flow
+                            )
                         },
                         maximumContentHeight: StrongAlertDisplayMetrics.maximumContentHeight(
                             visibleFrameHeights: NSScreen.screens.map(\.visibleFrame.height)
@@ -1372,34 +1371,6 @@ private struct StrongAlertContentView: View {
         }
         .accessibilityAddTraits(.isModal)
         .frame(minWidth: 360, minHeight: 300)
-        .stopRemindersConfirmation(
-            isPresented: $isStopRemindersConfirmationPresented,
-            onCancel: { pendingStopRemindersCommitment = nil },
-            onConfirm: {
-                guard let pendingStopRemindersCommitment,
-                      flow.dismissCommitment(for: pendingStopRemindersCommitment) else {
-                    self.pendingStopRemindersCommitment = nil
-                    return
-                }
-                announceActionResult(flow.lastActionMessage)
-                finishStrongAlertAction(flow)
-                self.pendingStopRemindersCommitment = nil
-            }
-        )
-    }
-
-    private func requestStopReminders(for commitment: CalendarEvent) {
-        pendingStopRemindersCommitment = commitment
-        isStopRemindersConfirmationPresented = true
-    }
-
-    private func openMeetingLink(_ link: URL, for commitment: CalendarEvent) {
-        _ = flow.openStrongAlertMeetingLink(
-            for: commitment,
-            using: link,
-            open: NSWorkspace.shared.open
-        )
-        announceActionResult(flow.lastActionMessage)
     }
 
     private func meetingLinkFailure(for commitment: CalendarEvent) -> String? {
@@ -1464,9 +1435,9 @@ private struct StrongAlertConflictContentView: View {
     @ObservedObject var flow: CommitmentProtectionFlow
     let conflict: CommitmentConflict
     let date: Date
-    let requestStopReminders: (CalendarEvent) -> Void
-    @State private var customPauseExpiration = Date().addingTimeInterval(60 * 60)
-    @State private var isCustomPausePresented = false
+    private let presentationContract = AlertPresentationContract(
+        variant: .strongAlertConflict
+    )
 
     var body: some View {
         IntrinsicHeightCappedLayout(
@@ -1477,200 +1448,124 @@ private struct StrongAlertConflictContentView: View {
         ) {
             ScrollView {
                 VStack(spacing: 16) {
-            Label("Strong Alert", systemImage: "bell.and.waves.left.and.right.fill")
-                .font(.headline)
-            ProtectionCoverageStatusLabel(
-                presentation: ProtectionCoveragePresentation(state: .commitmentConflict)
-            )
-            .font(.subheadline.weight(.semibold))
-            if flow.isStrongAlertUnverified {
-                ProtectionCoverageStatusLabel(
-                    presentation: ProtectionCoveragePresentation(state: .unverifiedReminder)
-                )
+                    Label(
+                        "Strong Alert",
+                        systemImage: "bell.and.waves.left.and.right.fill"
+                    )
+                    .font(.headline)
+                    ProtectionCoverageStatusLabel(
+                        presentation: ProtectionCoveragePresentation(
+                            state: .commitmentConflict
+                        )
+                    )
                     .font(.subheadline.weight(.semibold))
-                Text(InterfaceCopy.unverifiedReminderDetail())
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Text("Choose a commitment")
-                .font(.title2.bold())
-            Text("These commitments start at the same time. Choose which one to make primary, or act on either one.")
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
-
-                LazyVStack(alignment: .leading, spacing: 12) {
-                    ForEach(conflict.commitments, id: \.occurrenceID) { commitment in
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(commitment.title)
-                                .font(.headline)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .accessibilityAddTraits(.isHeader)
-                            Text(flow.strongAlertTimingText(for: commitment, at: date))
-                                .font(.subheadline.weight(.semibold))
-                                .fixedSize(horizontal: false, vertical: true)
-                            strongAlertProvenanceRenderer(
-                                ProvenancePresentation(
-                                    sources: flow.strongAlertProvenanceSources(for: commitment)
-                                )
+                    if flow.isStrongAlertUnverified {
+                        ProtectionCoverageStatusLabel(
+                            presentation: ProtectionCoveragePresentation(
+                                state: .unverifiedReminder
                             )
-                            if let meetingDescription = commitment.meetingDescription {
-                                MeetingDescriptionView(text: meetingDescription)
-                            }
-                            ViewThatFits(in: .horizontal) {
-                                HStack(spacing: 8) {
-                                    conflictActions(for: commitment)
+                        )
+                        .font(.subheadline.weight(.semibold))
+                        Text(InterfaceCopy.unverifiedReminderDetail())
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Text("Choose a commitment")
+                        .font(.title2.bold())
+                    Text("These commitments start at the same time. Choose which one to make primary, or act on either one.")
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.secondary)
+
+                    LazyVStack(alignment: .leading, spacing: 12) {
+                        ForEach(conflict.commitments, id: \.occurrenceID) { commitment in
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(commitment.title)
+                                    .font(.headline)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .accessibilityAddTraits(.isHeader)
+                                Text(flow.strongAlertTimingText(for: commitment, at: date))
+                                    .font(.subheadline.weight(.semibold))
+                                    .fixedSize(horizontal: false, vertical: true)
+                                strongAlertProvenanceRenderer(
+                                    ProvenancePresentation(
+                                        sources: flow.strongAlertProvenanceSources(
+                                            for: commitment
+                                        )
+                                    )
+                                )
+                                if let meetingDescription = commitment.meetingDescription {
+                                    MeetingDescriptionView(text: meetingDescription)
                                 }
-                                VStack(alignment: .leading, spacing: 8) {
-                                    conflictActions(for: commitment)
+                                AlertActionRegion(
+                                    presentation: commitmentActionPresentation(
+                                        for: commitment
+                                    )
+                                ) { intent in
+                                    performStrongAlertAction(
+                                        intent,
+                                        for: commitment,
+                                        flow: flow
+                                    )
                                 }
-                            }
-                            if let meetingLinkError = meetingLinkFailure(for: commitment) {
-                                Label(meetingLinkError, systemImage: "exclamationmark.triangle")
+                                if let meetingLinkError = meetingLinkFailure(for: commitment) {
+                                    Label(
+                                        meetingLinkError,
+                                        systemImage: "exclamationmark.triangle"
+                                    )
                                     .font(.caption)
                                     .foregroundStyle(.red)
                                     .fixedSize(horizontal: false, vertical: true)
+                                }
                             }
+                            .padding(12)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(
+                                .quaternary.opacity(0.35),
+                                in: RoundedRectangle(cornerRadius: 12)
+                            )
                         }
-                        .padding(12)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
                     }
-                }
 
-            Button("Got it") {
-                closeStrongAlertAndYieldFocus(flow)
-            }
-            .buttonStyle(.bordered)
-            .accessibilityHint("Close this Strong Alert. Protection remains active and it will repeat after the configured interval.")
-                Text(InterfaceCopy.strongAlertRepeatConsequence(
-                    minutes: flow.strongAlertRepeatIntervalMinutes,
-                    canJoin: conflict.commitments.contains {
-                        !flow.strongAlertMeetingLinkOptions(for: $0).isEmpty
+                    AlertActionRegion(
+                        presentation: presentationContract.actionPresentation(
+                            for: .strongConflictSurface(
+                                repeatIntervalMinutes: flow.strongAlertRepeatIntervalMinutes,
+                                canJoin: conflict.commitments.contains {
+                                    !flow.strongAlertMeetingLinkOptions(for: $0).isEmpty
+                                }
+                            )
+                        )
+                    ) { intent in
+                        performStrongAlertAction(intent, for: nil, flow: flow)
                     }
-            ))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            if let pauseAction = pauseAction {
-                Menu("Pause All Protection") {
-                    Button("Pause all for 1 hour") {
-                        _ = pauseAction(.oneHour)
-                    }
-                    Button("Pause all until end of day") {
-                        _ = pauseAction(.endOfDay)
-                    }
-                    Button("Choose when to resume all protection…") {
-                        customPauseExpiration = Date().addingTimeInterval(60 * 60)
-                        isCustomPausePresented = true
-                    }
-                }
-                Text(InterfaceCopy.pauseAllProtectionDetail())
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
                 }
                 .padding(28)
             }
         }
         .frame(minWidth: 360, idealWidth: 560, maxWidth: 620)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
-        .sheet(isPresented: $isCustomPausePresented) {
-            if let pauseAction {
-                CustomPauseSheet(
-                    expiration: $customPauseExpiration,
-                    pause: pauseAction
-                )
-            }
-        }
     }
 
-    @ViewBuilder
-    private func conflictActions(for commitment: CalendarEvent) -> some View {
+    private func commitmentActionPresentation(
+        for commitment: CalendarEvent
+    ) -> AlertActionPresentation {
         let links = flow.strongAlertMeetingLinkOptions(for: commitment)
-        let choices = InterfaceCopy.meetingLinkChoices(links)
-        let conflictPosition = conflict.commitments.firstIndex(where: {
-            $0.occurrenceID == commitment.occurrenceID
-        }).map { "option \($0 + 1) of \(conflict.commitments.count)" } ?? "conflict option"
-        let provenance = ProvenancePresentation(
-            sources: flow.strongAlertProvenanceSources(for: commitment)
+        return presentationContract.actionPresentation(
+            for: .strongConflictCommitment(
+                primary: .resolve(
+                    meetingLinks: links,
+                    primaryMeetingLink: flow.strongAlertPrimaryMeetingLink(
+                        for: commitment
+                    )
+                ),
+                actionContext: conflictActionContext(
+                    for: commitment,
+                    among: conflict.commitments,
+                    flow: flow
+                )
+            )
         )
-        let actionContext = [
-            commitment.title,
-            flow.localStartTimeText(for: commitment),
-            provenance.accessibilityDescription,
-            conflictPosition,
-        ].joined(separator: ", ")
-
-        Button("Make primary") {
-            if flow.selectPrimary(for: commitment) {
-                announceActionResult(flow.lastActionMessage)
-            }
-        }
-        .buttonStyle(.borderedProminent)
-        .accessibilityLabel("Make \(actionContext) primary")
-        .accessibilityHint("Use this commitment as the primary choice for this conflict.")
-
-        if links.isEmpty {
-            Button("Stop reminders") {
-                requestStopReminders(commitment)
-            }
-            .buttonStyle(.bordered)
-            .accessibilityLabel("Stop reminders for \(actionContext)")
-        } else if let primaryLink = flow.strongAlertPrimaryMeetingLink(for: commitment) {
-            Button("Join") {
-                openMeetingLink(primaryLink, for: commitment)
-            }
-            .buttonStyle(.bordered)
-            .accessibilityLabel("Join \(actionContext)")
-        } else {
-            Menu("Choose link") {
-                ForEach(choices, id: \.url.absoluteString) { choice in
-                    Button(choice.title) {
-                        openMeetingLink(choice.url, for: commitment)
-                    }
-                }
-            }
-            .buttonStyle(.bordered)
-            .accessibilityLabel("Choose a meeting link for \(actionContext)")
-        }
-
-        if !links.isEmpty {
-            Button("Stop reminders") {
-                requestStopReminders(commitment)
-            }
-            .buttonStyle(.bordered)
-            .accessibilityLabel("Stop reminders for \(actionContext)")
-        }
-
-        Button("I joined another way") {
-            guard flow.handleStrongAlert(for: commitment) else { return }
-            announceActionResult(flow.lastActionMessage)
-            finishStrongAlertAction(flow)
-        }
-        .buttonStyle(.bordered)
-        .accessibilityLabel("I joined \(actionContext) another way")
-        .accessibilityHint("Mark this commitment as handled because you joined it outside Meeting Incoming.")
-    }
-
-    private var pauseAction: ((PauseDuration) -> Bool)? {
-        { duration in
-            let didPause = flow.pause(for: duration)
-            if didPause {
-                announceActionResult(flow.lastActionMessage)
-                finishStrongAlertAction(flow)
-            }
-            return didPause
-        }
-    }
-
-    private func openMeetingLink(_ link: URL, for commitment: CalendarEvent) {
-        _ = flow.openStrongAlertMeetingLink(
-            for: commitment,
-            using: link,
-            open: NSWorkspace.shared.open
-        )
-        announceActionResult(flow.lastActionMessage)
     }
 
     private func meetingLinkFailure(for commitment: CalendarEvent) -> String? {
@@ -3052,37 +2947,6 @@ final class EarlyReminderWindowController: NSObject, NSWindowDelegate, Observabl
     }
 }
 
-private struct StopRemindersConfirmationModifier: ViewModifier {
-    @Binding var isPresented: Bool
-    let onCancel: () -> Void
-    let onConfirm: () -> Void
-
-    func body(content: Content) -> some View {
-        content.alert("Stop reminders for this commitment?", isPresented: $isPresented) {
-            Button("Keep reminders", role: .cancel, action: onCancel)
-            Button("Stop reminders", role: .destructive, action: onConfirm)
-        } message: {
-            Text(InterfaceCopy.stopRemindersConfirmationMessage())
-        }
-    }
-}
-
-private extension View {
-    func stopRemindersConfirmation(
-        isPresented: Binding<Bool>,
-        onCancel: @escaping () -> Void,
-        onConfirm: @escaping () -> Void
-    ) -> some View {
-        modifier(
-            StopRemindersConfirmationModifier(
-                isPresented: isPresented,
-                onCancel: onCancel,
-                onConfirm: onConfirm
-            )
-        )
-    }
-}
-
 private struct MeetingDescriptionView: View {
     let text: String
     @State private var isExpanded = false
@@ -3127,22 +2991,10 @@ struct StrongAlertView: View {
     var meetingDescription: String? = nil
     var verificationPresentation: ProtectionCoveragePresentation? = nil
     var statusMessage: String? = nil
-    var repeatConsequence: String? = nil
     var supportingContent: AnyView? = nil
-    var primaryActionHint: String = "Take the primary action for this commitment."
-    let primaryActionTitle: String
-    let primaryAction: () -> Void
-    var primaryActionChoices: [(String, () -> Void)] = []
-    var secondaryActionTitle: String? = nil
-    var secondaryAction: (() -> Void)? = nil
-    var handledActionTitle: String? = nil
-    var handledAction: (() -> Void)? = nil
-    var tertiaryActionTitle: String? = nil
-    var tertiaryAction: (() -> Void)? = nil
-    var pauseAction: ((PauseDuration) -> Bool)? = nil
+    let actionPresentation: AlertActionPresentation
+    let dispatchAction: (AlertActionPresentation.Intent) -> Bool
     var maximumContentHeight: CGFloat = StrongAlertDisplayMetrics.maximumContentHeightLimit
-    @State private var customPauseExpiration = Date().addingTimeInterval(60 * 60)
-    @State private var isCustomPausePresented = false
 
     var body: some View {
         IntrinsicHeightCappedLayout(
@@ -3155,14 +3007,6 @@ struct StrongAlertView: View {
         }
         .frame(minWidth: 360, idealWidth: 500, maxWidth: 620)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
-        .sheet(isPresented: $isCustomPausePresented) {
-            if let pauseAction {
-                CustomPauseSheet(
-                    expiration: $customPauseExpiration,
-                    pause: pauseAction
-                )
-            }
-        }
     }
 
     private var alertContent: some View {
@@ -3211,84 +3055,13 @@ struct StrongAlertView: View {
                 supportingContent
             }
 
-            VStack(spacing: 12) {
-                primaryActionControl
-
-                if let handledActionTitle, let handledAction {
-                    Button(handledActionTitle, action: handledAction)
-                        .keyboardShortcut("i")
-                        .buttonStyle(.bordered)
-                        .accessibilityLabel(handledActionTitle)
-                        .accessibilityHint("Mark this commitment as handled because you joined it outside Meeting Incoming.")
-                }
-
-                if let secondaryActionTitle, let secondaryAction {
-                    Button(secondaryActionTitle, action: secondaryAction)
-                        .buttonStyle(.bordered)
-                        .accessibilityLabel(secondaryActionTitle)
-                        .accessibilityHint("Stop Early Reminder and Strong Alert for this commitment occurrence without changing Google Calendar.")
-                }
-
-                if let tertiaryActionTitle, let tertiaryAction {
-                    VStack(spacing: 6) {
-                        Button(tertiaryActionTitle, action: tertiaryAction)
-                            .buttonStyle(.bordered)
-                            .accessibilityLabel(tertiaryActionTitle)
-                            .accessibilityHint("Close this Strong Alert. Protection remains active and it will repeat after the configured interval.")
-                        Text(repeatConsequence ?? "Closes this alert now. Protection stays active and Strong Alert returns at the configured interval.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            }
-
-            if let pauseAction {
-                VStack(spacing: 6) {
-                    Divider()
-                        .padding(.bottom, 6)
-                    Menu("Pause All Protection") {
-                        Button("Pause all for 1 hour") {
-                            _ = pauseAction(.oneHour)
-                        }
-                        Button("Pause all until end of day") {
-                            _ = pauseAction(.endOfDay)
-                        }
-                        Button("Choose when to resume all protection…") {
-                            customPauseExpiration = Date().addingTimeInterval(60 * 60)
-                            isCustomPausePresented = true
-                        }
-                    }
-                    Text(InterfaceCopy.pauseAllProtectionDetail())
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
+            AlertActionRegion(
+                presentation: actionPresentation,
+                dispatch: dispatchAction
+            )
         }
         .multilineTextAlignment(.center)
         .padding(32)
-    }
-
-    @ViewBuilder
-    private var primaryActionControl: some View {
-        if primaryActionChoices.isEmpty {
-            Button(primaryActionTitle, action: primaryAction)
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
-                .accessibilityLabel(primaryActionTitle)
-                .accessibilityHint(primaryActionHint)
-        } else {
-            Menu(primaryActionTitle) {
-                ForEach(Array(primaryActionChoices.enumerated()), id: \.offset) { _, choice in
-                    Button(choice.0, action: choice.1)
-                }
-            }
-            .keyboardShortcut(.defaultAction)
-            .buttonStyle(.borderedProminent)
-            .accessibilityLabel(primaryActionTitle)
-            .accessibilityHint(primaryActionHint)
-        }
     }
 
     var provenanceRenderer: StrongAlertProvenanceView {
@@ -3420,7 +3193,7 @@ private struct IntrinsicHeightCappedLayout: Layout {
     }
 }
 
-private struct CustomPauseSheet: View {
+struct CustomPauseSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Binding var expiration: Date
     let pause: (PauseDuration) -> Bool
@@ -3477,7 +3250,61 @@ private struct CustomPauseSheet: View {
 }
 
 @MainActor
-private func announceActionResult(_ message: String?) {
+func performStrongAlertAction(
+    _ intent: AlertActionPresentation.Intent,
+    for commitment: CalendarEvent?,
+    flow: CommitmentProtectionFlow
+) -> Bool {
+    switch intent {
+    case .join(let link):
+        guard let commitment else { return false }
+        let didOpen = flow.openStrongAlertMeetingLink(
+            for: commitment,
+            using: link,
+            open: NSWorkspace.shared.open
+        )
+        announceActionResult(flow.lastActionMessage)
+        return didOpen
+    case .makePrimary:
+        guard let commitment else { return false }
+        let didSelect = flow.selectPrimary(for: commitment)
+        if didSelect {
+            announceActionResult(flow.lastActionMessage)
+        }
+        return didSelect
+    case .handled:
+        guard let commitment else { return false }
+        let didHandle = flow.handleStrongAlert(for: commitment)
+        if didHandle {
+            announceActionResult(flow.lastActionMessage)
+            finishStrongAlertAction(flow)
+        }
+        return didHandle
+    case .stopReminders:
+        guard let commitment else { return false }
+        let didStop = flow.dismissCommitment(for: commitment)
+        if didStop {
+            announceActionResult(flow.lastActionMessage)
+            finishStrongAlertAction(flow)
+        }
+        return didStop
+    case .gotIt:
+        closeStrongAlertAndYieldFocus(flow)
+        return true
+    case .pause(let duration):
+        let didPause = flow.pause(for: duration)
+        if didPause {
+            announceActionResult(flow.lastActionMessage)
+            finishStrongAlertAction(flow)
+        }
+        return didPause
+    case .closeForNow, .snooze:
+        return false
+    }
+}
+
+@MainActor
+func announceActionResult(_ message: String?) {
     guard let message else { return }
     NSAccessibility.post(
         element: NSApplication.shared,

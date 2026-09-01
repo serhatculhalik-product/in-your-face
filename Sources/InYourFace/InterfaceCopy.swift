@@ -1,7 +1,7 @@
 import Foundation
 
 enum InterfaceCopy {
-    struct MeetingLinkChoice: Equatable {
+    struct MeetingLinkChoice: Equatable, Sendable {
         let url: URL
         let title: String
     }
@@ -222,6 +222,55 @@ enum InterfaceCopy {
             )
         }
         return plainText(value)
+    }
+
+    static func closeForNowConsequence(locale: Locale = .autoupdatingCurrent) -> String {
+        plainText(
+            AttributedString(
+                localized: "Close for now hides this Early Reminder. Strong Alert still appears when the commitment begins.",
+                locale: locale
+            )
+        )
+    }
+
+    static func snoozeConsequence(locale: Locale = .autoupdatingCurrent) -> String {
+        plainText(
+            AttributedString(
+                localized: "Snooze delays both reminders for this occurrence and can continue past its start time.",
+                locale: locale
+            )
+        )
+    }
+
+    static func joinConsequence(locale: Locale = .autoupdatingCurrent) -> String {
+        plainText(
+            AttributedString(
+                localized: "Opens the selected Recognized Meeting Link. Reminders stop for this occurrence only after the link opens successfully.",
+                locale: locale
+            )
+        )
+    }
+
+    static func handledConsequence(locale: Locale = .autoupdatingCurrent) -> String {
+        plainText(
+            AttributedString(
+                localized: "Records this occurrence as Handled without changing your Google Calendar RSVP.",
+                locale: locale
+            )
+        )
+    }
+
+    static func makePrimaryConsequence(locale: Locale = .autoupdatingCurrent) -> String {
+        plainText(
+            AttributedString(
+                localized: "Makes this commitment the primary choice for this conflict. It does not Join, mark it Handled, or Stop reminders.",
+                locale: locale
+            )
+        )
+    }
+
+    static func stopRemindersConsequence(locale: Locale = .autoupdatingCurrent) -> String {
+        stopRemindersConfirmationMessage(locale: locale)
     }
 
     static func unverifiedReminderDetail(locale: Locale = .autoupdatingCurrent) -> String {
